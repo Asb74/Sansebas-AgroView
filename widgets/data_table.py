@@ -25,10 +25,20 @@ class DataTable(ttk.Frame):
             self.tree.heading(col, text=col)
             self.tree.column(col, width=120, stretch=True)
 
+        # Tags semaforo reutilizables para tablas analiticas.
+        self.tree.tag_configure("tag_green", foreground="#1b5e20")
+        self.tree.tag_configure("tag_yellow", foreground="#8d6e00")
+        self.tree.tag_configure("tag_red", foreground="#b71c1c")
+
     def set_rows(self, rows: list[dict]) -> None:
         for item in self.tree.get_children():
             self.tree.delete(item)
 
         for row in rows:
             values = [row.get(col, "") for col in self.columns]
-            self.tree.insert("", "end", values=values)
+            tags = row.get("__tags__", ())
+            if isinstance(tags, str):
+                tags = (tags,)
+            elif not isinstance(tags, (tuple, list)):
+                tags = ()
+            self.tree.insert("", "end", values=values, tags=tuple(tags))

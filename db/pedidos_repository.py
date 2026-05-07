@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Any
 
 from db.connection import get_connection
+from db.query_filters import build_pedidos_filters, pedidos_base_where
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class PedidosRepository:
     ]
 
     _warned_missing_columns: set[str] = set()
+    _warned_cancelado_missing = False
 
     def get_missing_filter_columns(self) -> list[str]:
         available_columns = self._get_available_columns()
@@ -45,12 +47,25 @@ class PedidosRepository:
         where_clauses: list[str] = []
         params: list[Any] = []
 
-        self._add_filter(where_clauses, params, available_columns, filters, "campana", self.CAMPANA_COLUMN, exact=True)
-        self._add_filter(where_clauses, params, available_columns, filters, "cliente", "Cliente", exact=False)
-        self._add_filter(where_clauses, params, available_columns, filters, "var_coop", "VarCoop", exact=False)
-        self._add_filter(where_clauses, params, available_columns, filters, "pais", "Pais", exact=False)
-        self._add_filter(where_clauses, params, available_columns, filters, "cultivo", "Cultivo", exact=False)
-        self._add_filter(where_clauses, params, available_columns, filters, "empresa", "Empresa", exact=False)
+        if "Cancelado" in available_columns:
+            base_clauses, base_params = pedidos_base_where(alias=self._quote_identifier(self.TABLE_NAME))
+            # base where returned with alias.field style; convert to plain identifier for this query
+            where_clauses.append(f"{self._quote_identifier('Cancelado')} = ?")
+            params.extend(base_params or [0])
+            logger.info("Filtro Cancelado=0 aplicado")
+        else:
+            if not self._warned_cancelado_missing:
+                logger.warning("Columna Cancelado no encontrada en Pedidos")
+                self._warned_cancelado_missing = True
+
+        mapped_filters = dict(filters)
+        filter_clauses, filter_params, _ = build_pedidos_filters(mapped_filters, alias="")
+        for raw_clause, param in zip(filter_clauses, filter_params):
+            clause = raw_clause.replace('."','"').replace('""', '"')
+            column_name = clause.split('"')[1] if '"' in clause else ""
+            if column_name and column_name in available_columns:
+                where_clauses.append(clause)
+                params.append(param)
 
         if filters.get("fecha_desde") and "FechaSalida" in available_columns:
             self._validate_date(str(filters["fecha_desde"]))
