@@ -36,10 +36,9 @@ class BOAPreciosScreen(ttk.Frame):
     ]
     TABLE_DESV_CLIENTE_COLUMNS = [
         "Ranking", "Cliente", "Pais", "Kg cliente", "N pedidos", "Precio medio real", "Precio referencia ajustado",
-        "Desviación €/kg", "Impacto €", "Coste confección €/kg", "Coste confección total €",
-        "Coste total forfait €/kg", "Impacto ajustado €", "Ranking ajustado", "Estado forfait",
-        "Variedades principales", "Categorías principales",
-        "Calibres principales", "Pedidos reclamados", "Importe reclamado",
+        "Desviación €/kg", "Impacto €", "Coste material €/kg", "Coste mano obra €/kg",
+        "Coste total forfait €/kg", "Coste forfait total €", "Margen industrial €/kg", "Margen industrial total €",
+        "Impacto ajustado €", "Ranking ajustado", "Estado forfait", "Kg con forfait", "Kg sin forfait", "% cobertura forfait",
         "Kg total (debug)", "Kg con EurosKG válido (debug)", "Suma ponderada EurosKG (debug)",
         "Precio real calculado (debug)", "Precio referencia (debug)",
     ]
@@ -132,7 +131,7 @@ class BOAPreciosScreen(ttk.Frame):
             "cov": tk.StringVar(value="% cobertura precio orientativo: 0.00%"),
         }
         self.desv_kpi_vars = {
-            "kg_con_forfait": tk.StringVar(value="Kg con forfait validado: 0.00"),
+            "kg_con_forfait": tk.StringVar(value="Kg con forfait: 0.00"),
             "kg_sin_forfait": tk.StringVar(value="Kg sin forfait: 0.00"),
             "cov_forfait": tk.StringVar(value="% cobertura forfait: 0.00%"),
             "coste_conf": tk.StringVar(value="Coste confección estimado total: 0.00 EUR"),
@@ -391,17 +390,18 @@ class BOAPreciosScreen(ttk.Frame):
                     "Precio referencia ajustado": f'{float(r.get("precio_referencia_ajustado", 0) or 0):,.4f}',
                     "Desviación €/kg": f'{float(r.get("desviacion_eurkg", 0) or 0):,.4f}',
                     "Impacto €": f'{float(r.get("impacto_eur", 0) or 0):,.2f}',
-                    "Coste confección €/kg": self._fmt_optional(r.get("coste_confeccion_eurkg"), 4),
-                    "Coste confección total €": self._fmt_optional(r.get("coste_confeccion_total_eur"), 2),
+                    "Coste material €/kg": self._fmt_optional(r.get("coste_confeccion_eurkg"), 4),
+                    "Coste mano obra €/kg": self._fmt_optional(r.get("coste_mano_obra_eurkg"), 4),
                     "Coste total forfait €/kg": self._fmt_optional(r.get("coste_total_forfait_eurkg"), 4),
+                    "Coste forfait total €": self._fmt_optional(r.get("coste_total_forfait_total_eur"), 2),
+                    "Margen industrial €/kg": self._fmt_optional(r.get("margen_industrial_eurkg"), 4),
+                    "Margen industrial total €": self._fmt_optional(r.get("margen_industrial_total_eur"), 2),
                     "Impacto ajustado €": self._fmt_optional(r.get("impacto_ajustado_eur"), 2),
                     "Ranking ajustado": int(r.get("ranking_ajustado", 0) or 0) if r.get("ranking_ajustado") else "",
-                    "Estado forfait": r.get("estado_forfait", "SIN_COSTE_FORFAIT"),
-                    "Variedades principales": r.get("variedades_principales", ""),
-                    "Categorías principales": r.get("categorias_principales", ""),
-                    "Calibres principales": r.get("calibres_principales", ""),
-                    "Pedidos reclamados": int(r.get("pedidos_reclamados", 0) or 0),
-                    "Importe reclamado": f'{float(r.get("importe_reclamado", 0) or 0):,.2f}',
+                    "Estado forfait": r.get("estado_forfait", "SIN_FORFAIT"),
+                    "Kg con forfait": f'{float(r.get("kg_forfait_validado", 0) or 0):,.2f}',
+                    "Kg sin forfait": f'{float(r.get("kg_sin_forfait", 0) or 0):,.2f}',
+                    "% cobertura forfait": f'{float(r.get("pct_cobertura_forfait", 0) or 0):,.2f}%',
                     "Kg total (debug)": f'{float(r.get("debug_kg_total", 0) or 0):,.2f}',
                     "Kg con EurosKG válido (debug)": f'{float(r.get("debug_kg_euroskg_valido", 0) or 0):,.2f}',
                     "Suma ponderada EurosKG (debug)": f'{float(r.get("debug_suma_ponderada_euroskg", 0) or 0):,.2f}',
@@ -423,7 +423,7 @@ class BOAPreciosScreen(ttk.Frame):
 
     def _fill_desv_kpis(self, kpis: dict[str, Any]) -> None:
         self.desv_kpi_vars["kg_con_forfait"].set(
-            f'Kg con forfait validado: {float(kpis.get("kg_con_forfait_validado", 0) or 0):,.2f}'
+            f'Kg con forfait: {float(kpis.get("kg_con_forfait_validado", 0) or 0):,.2f}'
         )
         self.desv_kpi_vars["kg_sin_forfait"].set(
             f'Kg sin forfait: {float(kpis.get("kg_sin_forfait", 0) or 0):,.2f}'
