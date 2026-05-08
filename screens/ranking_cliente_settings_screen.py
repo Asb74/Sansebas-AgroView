@@ -17,14 +17,15 @@ class RankingClienteSettingsScreen(ttk.Frame):
     def _build_ui(self) -> None:
         ttk.Label(self, text="Configuración ranking clientes", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         fields = [
-            ("PesoRentabilidad", "Peso rentabilidad"), ("PesoCumplimiento", "Peso cumplimiento precio"),
-            ("PesoVolumen", "Peso volumen"), ("PesoReclamaciones", "Peso reclamaciones"),
+            ("PesoPrioridadKg", "Peso prioridad kg"), ("PesoPrioridadMargenTotal", "Peso prioridad margen total"),
+            ("PesoPrioridadFacturacion", "Peso prioridad facturación"),
+            ("UmbralCritica", "Umbral CRÍTICA"), ("UmbralMuyAlta", "Umbral MUY ALTA"),
+            ("UmbralAlta", "Umbral ALTA"), ("UmbralMedia", "Umbral MEDIA"),
             ("MargenBuenoEurKg", "Margen bueno €/kg"), ("MargenAceptableEurKg", "Margen aceptable €/kg"),
             ("CumplimientoBuenoPct", "Cumplimiento bueno %"), ("CumplimientoAceptablePct", "Cumplimiento aceptable %"),
             ("CoberturaForfaitMinPct", "Cobertura forfait mínima %"),
             ("ReclamacionesAltasPor100kKg", "Reclamaciones altas / 100.000 kg"),
-            ("ReclamadoAltoEurKg", "Reclamado alto €/kg"), ("PenalizacionReclamacionesMax", "Penalización máxima reclamaciones"),
-            ("PenalizarCoberturaParcial", "Penalizar cobertura parcial (0/1)"), ("PesoCobertura", "Peso cobertura"),
+            ("ReclamadoAltoEurKg", "Reclamado alto €/kg"),
         ]
         for i, (key, label) in enumerate(fields, start=1):
             ttk.Label(self, text=label).grid(row=i, column=0, sticky="w", pady=2)
@@ -48,10 +49,10 @@ class RankingClienteSettingsScreen(ttk.Frame):
                 num = float(v.get())
                 if num < 0:
                     raise ValueError("No se permiten valores negativos")
-                data[k] = int(num) if k == "PenalizarCoberturaParcial" else num
-            pesos = data["PesoRentabilidad"] + data["PesoCumplimiento"] + data["PesoVolumen"] + data["PesoReclamaciones"]
+                data[k] = num
+            pesos = data["PesoPrioridadKg"] + data["PesoPrioridadMargenTotal"] + data["PesoPrioridadFacturacion"]
             if abs(pesos - 100.0) > 0.001:
-                messagebox.showwarning("Validación", "Los pesos deben sumar 100.", parent=self)
+                messagebox.showwarning("Validación", "Los pesos de prioridad deben sumar 100.", parent=self)
                 return
             self.service.update_ranking_cliente_settings(data)
             self.service.clear_cache()
