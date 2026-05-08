@@ -29,6 +29,7 @@ class DataTable(ttk.Frame):
         self.tree.tag_configure("tag_green", foreground="#1b5e20")
         self.tree.tag_configure("tag_yellow", foreground="#8d6e00")
         self.tree.tag_configure("tag_red", foreground="#b71c1c")
+        self.tree.tag_configure("tag_orange", foreground="#e65100")
 
     def set_rows(self, rows: list[dict]) -> None:
         for item in self.tree.get_children():
