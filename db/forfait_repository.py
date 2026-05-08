@@ -37,6 +37,20 @@ def format_forfait_label(row: dict[str, Any] | None) -> str:
 class ForfaitRepository:
     TABLE_FORFAIT = "ForfaitConfeccion"
     TABLE_EQUIV = "EquivalenciaForfaitConfeccion"
+    TABLE_RELATED = "ForfaitConfeccionRelacionada"
+    RELATED_REQUIRED_COLUMNS = [
+        "Campaña",
+        "Cultivo",
+        "Variedad",
+        "Condicion1",
+        "IdConfeccion",
+        "GRUPO",
+        "Eur/kg Material",
+        "Eur/kg Recoleción y Transporte",
+        "Eur/kg Gastos Generales",
+        "Eur/kg Mano obra",
+        "Eur/kg total",
+    ]
     EDITABLE_FORFAIT_FIELDS = {
         "GrupoForfait",
         "KgForfait",
@@ -153,6 +167,29 @@ class ForfaitRepository:
                 )
                 """
             )
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS "{self.TABLE_RELATED}" (
+                    Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    "Campaña" TEXT NOT NULL,
+                    Cultivo TEXT NOT NULL,
+                    Variedad TEXT NOT NULL,
+                    Condicion1 TEXT NOT NULL,
+                    IdConfeccion TEXT NOT NULL,
+                    Grupo TEXT,
+                    CosteMaterialEurKg REAL,
+                    CosteRecoleccionTransporteEurKg REAL,
+                    CosteGastosGeneralesEurKg REAL,
+                    CosteManoObraEurKg REAL,
+                    CosteTotalEurKg REAL,
+                    Estado TEXT,
+                    Observaciones TEXT,
+                    OrigenArchivo TEXT,
+                    HojaOrigen TEXT,
+                    FechaImportacion TEXT
+                )
+                """
+            )
             self._ensure_columns(conn, self.TABLE_FORFAIT, self.FORFAIT_EXTRA_COLUMNS)
             self._ensure_columns(conn, self.TABLE_EQUIV, self.EQUIV_EXTRA_COLUMNS)
             conn.execute("DROP INDEX IF EXISTS ux_forfait_confeccion")
@@ -168,7 +205,92 @@ class ForfaitRepository:
                 ON "{self.TABLE_EQUIV}" (Cultivo, "Campaña", ConfeccionPedido)
                 """
             )
+            conn.execute(
+                f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_forfait_related_logic
+                ON "{self.TABLE_RELATED}" ("Campaña", Cultivo, Variedad, Condicion1, IdConfeccion)
+                """
+            )
             conn.commit()
+
+    def fetch_excel_sheet_names(self, file_path: str) -> list[str]:
+        wb = load_workbook(Path(file_path), data_only=True, read_only=True)
+        return list(wb.sheetnames)
+
+    def validate_related_forfait_sheet(self, file_path: str, sheet_name: str) -> tuple[bool, list[str], list[str]]:
+        wb = load_workbook(Path(file_path), data_only=True, read_only=True)
+        if sheet_name not in wb.sheetnames:
+            raise ValueError(f"No existe la hoja {sheet_name}.")
+        ws = wb[sheet_name]
+        found = [self._clean_text(ws.cell(1, i).value) for i in range(1, len(self.RELATED_REQUIRED_COLUMNS) + 1)]
+        expected = list(self.RELATED_REQUIRED_COLUMNS)
+        if found[7] == "Eur/kg Recolección y Transporte":
+            found[7] = "Eur/kg Recoleción y Transporte"
+        return found == expected, expected, found
+
+    def import_related_forfait_excel(self, file_path: str, sheet_name: str) -> dict[str, Any]:
+        ok, expected, found = self.validate_related_forfait_sheet(file_path, sheet_name)
+        if not ok:
+            raise ValueError(
+                "La hoja seleccionada no tiene la estructura de forfait relacionado.\n"
+                f"Esperadas: {expected}\nEncontradas: {found}"
+            )
+        wb = load_workbook(Path(file_path), data_only=True, read_only=True)
+        ws = wb[sheet_name]
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        nuevos = actualizados = revisar = errores = 0
+        imported_keys: list[tuple[str, str, str, str, str]] = []
+        with self._connect_calc() as conn:
+            for row_num in range(2, ws.max_row + 1):
+                vals = [ws.cell(row_num, i).value for i in range(1, 12)]
+                if not any(str(v or "").strip() for v in vals):
+                    continue
+                campana, cultivo, variedad, condicion1, id_conf = [self._clean_text(v) for v in vals[:5]]
+                if not id_conf:
+                    errores += 1
+                    continue
+                coste_vals = [self._to_float(v) for v in vals[6:11]]
+                estado = "IMPORTADO"
+                if any(v is None for v in coste_vals):
+                    estado = "REVISAR"
+                    revisar += 1
+                exists = conn.execute(
+                    f'SELECT 1 FROM "{self.TABLE_RELATED}" WHERE "Campaña"=? AND Cultivo=? AND Variedad=? AND Condicion1=? AND IdConfeccion=?',
+                    [campana, cultivo, variedad, condicion1, id_conf],
+                ).fetchone()
+                conn.execute(
+                    f"""
+                    INSERT INTO "{self.TABLE_RELATED}" ("Campaña", Cultivo, Variedad, Condicion1, IdConfeccion, Grupo,
+                        CosteMaterialEurKg, CosteRecoleccionTransporteEurKg, CosteGastosGeneralesEurKg, CosteManoObraEurKg, CosteTotalEurKg,
+                        Estado, OrigenArchivo, HojaOrigen, FechaImportacion)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT("Campaña", Cultivo, Variedad, Condicion1, IdConfeccion) DO UPDATE SET
+                        Grupo=excluded.Grupo,
+                        CosteMaterialEurKg=excluded.CosteMaterialEurKg,
+                        CosteRecoleccionTransporteEurKg=excluded.CosteRecoleccionTransporteEurKg,
+                        CosteGastosGeneralesEurKg=excluded.CosteGastosGeneralesEurKg,
+                        CosteManoObraEurKg=excluded.CosteManoObraEurKg,
+                        CosteTotalEurKg=excluded.CosteTotalEurKg,
+                        Estado=excluded.Estado,
+                        OrigenArchivo=excluded.OrigenArchivo,
+                        HojaOrigen=excluded.HojaOrigen,
+                        FechaImportacion=excluded.FechaImportacion
+                    """,
+                    [campana, cultivo, variedad, condicion1, id_conf, self._clean_text(vals[5]), *coste_vals, estado, str(file_path), sheet_name, now],
+                )
+                imported_keys.append((campana, cultivo, variedad, condicion1, id_conf))
+                actualizados += 1 if exists else 0
+                nuevos += 0 if exists else 1
+            conn.commit()
+            rows = []
+            for key in imported_keys:
+                rec = conn.execute(
+                    f'SELECT * FROM "{self.TABLE_RELATED}" WHERE "Campaña"=? AND Cultivo=? AND Variedad=? AND Condicion1=? AND IdConfeccion=?',
+                    list(key),
+                ).fetchone()
+                if rec:
+                    rows.append(dict(rec))
+        return {"nuevos": nuevos, "actualizados": actualizados, "revisar": revisar, "errores": errores, "rows": rows}
 
     def import_forfait_excel(
         self,
@@ -523,6 +645,45 @@ class ForfaitRepository:
             )
             conn.commit()
             return int(cursor.rowcount or 0)
+
+    def fetch_related_forfait(self, cultivo: str | None = None, campana: str | None = None) -> list[dict[str, Any]]:
+        where = []
+        params: list[Any] = []
+        if cultivo:
+            where.append("Cultivo = ?")
+            params.append(self._clean_text(cultivo))
+        if campana:
+            where.append('"Campaña" = ?')
+            params.append(self._clean_text(campana))
+        where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        with self._connect_calc() as conn:
+            rows = conn.execute(
+                f'SELECT * FROM "{self.TABLE_RELATED}" {where_sql} ORDER BY "Campaña", Cultivo, Variedad, Condicion1, IdConfeccion',
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update_related_forfait_field(self, id_forfait: int, field_name: str, value: Any) -> dict[str, Any]:
+        editable = {
+            "Variedad", "Condicion1", "Grupo", "CosteMaterialEurKg", "CosteRecoleccionTransporteEurKg",
+            "CosteGastosGeneralesEurKg", "CosteManoObraEurKg", "CosteTotalEurKg", "Estado", "Observaciones",
+        }
+        if field_name not in editable:
+            raise ValueError(f"El campo {field_name} no es editable.")
+        cast_value = self._to_float(value) if field_name.startswith("Coste") else self._clean_text(value)
+        with self._connect_calc() as conn:
+            conn.execute(f'UPDATE "{self.TABLE_RELATED}" SET "{field_name}" = ? WHERE Id = ?', [cast_value, int(id_forfait)])
+            conn.commit()
+            row = conn.execute(f'SELECT * FROM "{self.TABLE_RELATED}" WHERE Id = ?', [int(id_forfait)]).fetchone()
+        if not row:
+            raise ValueError("No se encontró el registro.")
+        return dict(row)
+
+    def reset_related_forfait(self, cultivo: str, campana: str) -> int:
+        with self._connect_calc() as conn:
+            cur = conn.execute(f'DELETE FROM "{self.TABLE_RELATED}" WHERE Cultivo = ? AND "Campaña" = ?', [self._clean_text(cultivo), self._clean_text(campana)])
+            conn.commit()
+            return int(cur.rowcount or 0)
 
     def ensure_equivalence_rows(self, cultivo: str, campana: str) -> int:
         rows = self._fetch_pedido_confecciones(cultivo, campana)

@@ -16,6 +16,24 @@ class ForfaitService:
     ) -> tuple[int, int, list[dict[str, Any]]]:
         return self.repository.import_forfait_excel(file_path, cultivo, campana, sheet_name)
 
+    def fetch_excel_sheet_names(self, file_path: str) -> list[str]:
+        return self.repository.fetch_excel_sheet_names(file_path)
+
+    def validate_related_forfait_sheet(self, file_path: str, sheet_name: str) -> tuple[bool, list[str], list[str]]:
+        return self.repository.validate_related_forfait_sheet(file_path, sheet_name)
+
+    def import_related_forfait_excel(self, file_path: str, sheet_name: str) -> dict[str, Any]:
+        return self.repository.import_related_forfait_excel(file_path, sheet_name)
+
+    def fetch_related_forfait(self, cultivo: str | None = None, campana: str | None = None) -> list[dict[str, Any]]:
+        return self.repository.fetch_related_forfait(cultivo, campana)
+
+    def update_related_forfait_field(self, id_forfait: int, field_name: str, value: Any) -> dict[str, Any]:
+        return self.repository.update_related_forfait_field(id_forfait, field_name, value)
+
+    def reset_related_forfait(self, cultivo: str, campana: str) -> int:
+        return self.repository.reset_related_forfait(cultivo, campana)
+
     def fetch_forfaits(self, cultivo: str, campana: str) -> list[dict[str, Any]]:
         return self.repository.fetch_forfaits(cultivo, campana)
 

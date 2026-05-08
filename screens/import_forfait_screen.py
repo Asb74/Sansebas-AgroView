@@ -8,35 +8,30 @@ from widgets.data_table import DataTable
 
 class ImportForfaitScreen(ttk.Frame):
     EDITABLE_COLUMNS = {
-        "GrupoForfait",
-        "KgForfait",
-        "UnidadesForfait",
-        "KgUnidad",
-        "Medidas",
-        "TipoEnvase",
-        "MaterialEnvase",
-        "DescripcionForfait",
-        "DescripcionNormalizada",
-    }
-    CRITICAL_COLUMNS = {"GrupoForfait", "KgForfait", "TipoEnvase", "MaterialEnvase"}
-
-    TABLE_COLUMNS = [
-        "Cultivo",
-        "Campaña",
-        "NombreForfait",
-        "DescripcionForfait",
-        "DescripcionNormalizada",
-        "GrupoForfait",
-        "KgForfait",
-        "UnidadesForfait",
-        "KgUnidad",
-        "Medidas",
-        "TipoEnvase",
-        "MaterialEnvase",
-        "ClaveForfait",
-        "CosteConfeccionEurKg",
+        "Variedad",
+        "Condicion1",
+        "Grupo",
+        "CosteMaterialEurKg",
+        "CosteRecoleccionTransporteEurKg",
+        "CosteGastosGeneralesEurKg",
+        "CosteManoObraEurKg",
         "CosteTotalEurKg",
-        "Revision",
+        "Estado",
+        "Observaciones",
+    }
+    TABLE_COLUMNS = [
+        "Campaña",
+        "Cultivo",
+        "Variedad",
+        "Condicion1",
+        "IdConfeccion",
+        "Grupo",
+        "CosteMaterialEurKg",
+        "CosteRecoleccionTransporteEurKg",
+        "CosteGastosGeneralesEurKg",
+        "CosteManoObraEurKg",
+        "CosteTotalEurKg",
+        "Estado",
     ]
 
     def __init__(self, master: tk.Misc, on_back) -> None:
@@ -46,7 +41,7 @@ class ImportForfaitScreen(ttk.Frame):
         self.file_var = tk.StringVar()
         self.cultivo_var = tk.StringVar(value="CITRICOS")
         self.campana_var = tk.StringVar(value="2025")
-        self.sheet_var = tk.StringVar(value="NARANJA")
+        self.sheet_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="")
         self.rows: list[dict[str, Any]] = []
         self._edit_entry: tk.Entry | None = None
@@ -78,7 +73,8 @@ class ImportForfaitScreen(ttk.Frame):
         ttk.Entry(form, textvariable=self.campana_var, width=20).grid(row=2, column=1, sticky="w", pady=(0, 6))
 
         ttk.Label(form, text="Hoja").grid(row=3, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(form, textvariable=self.sheet_var, width=20).grid(row=3, column=1, sticky="w")
+        self.sheet_combo = ttk.Combobox(form, textvariable=self.sheet_var, width=28, state="readonly")
+        self.sheet_combo.grid(row=3, column=1, sticky="w")
 
         actions = ttk.Frame(form)
         actions.grid(row=4, column=0, columnspan=3, sticky="w", pady=(10, 0))
@@ -101,23 +97,33 @@ class ImportForfaitScreen(ttk.Frame):
         )
         if path:
             self.file_var.set(path)
+            try:
+                sheets = self.service.fetch_excel_sheet_names(path)
+                self.sheet_combo["values"] = sheets
+                if sheets:
+                    self.sheet_var.set(sheets[0])
+            except Exception as exc:
+                messagebox.showerror("Excel", str(exc), parent=self)
 
     def _import(self) -> None:
         file_path = self.file_var.get().strip()
         cultivo = self.cultivo_var.get().strip()
         campana = self.campana_var.get().strip()
-        sheet = self.sheet_var.get().strip() or "NARANJA"
-        if not file_path or not cultivo or not campana:
-            messagebox.showwarning("Faltan datos", "Selecciona Excel, cultivo y campaña.", parent=self)
+        sheet = self.sheet_var.get().strip()
+        if not file_path or not sheet:
+            messagebox.showwarning("Faltan datos", "Selecciona Excel y hoja.", parent=self)
             return
         try:
-            inserted, updated, rows = self.service.import_forfait_excel(file_path, cultivo, campana, sheet)
+            result = self.service.import_related_forfait_excel(file_path, sheet)
         except Exception as exc:
             messagebox.showerror("Importar forfait", str(exc), parent=self)
             return
-        self.rows = rows
-        self.table.set_rows(self._map_rows(rows))
-        self.status_var.set(f"Forfait importado. Nuevos: {inserted}. Actualizados: {updated}. Filas: {len(rows)}.")
+        self.rows = result["rows"]
+        self.table.set_rows(self._map_rows(self.rows))
+        self.status_var.set(
+            f"Forfait importado. Nuevos: {result['nuevos']}. Actualizados: {result['actualizados']}. "
+            f"Revisar: {result['revisar']}. Errores: {result['errores']}."
+        )
 
     def _clear(self) -> None:
         self._destroy_editor()
@@ -131,30 +137,19 @@ class ImportForfaitScreen(ttk.Frame):
             self.status_var.set("No hay filas de forfait para guardar.")
             return
         try:
-            updated_rows = []
-            for row in self.rows:
-                updated_rows.append(self.service.update_forfait_row(int(row["Id"]), row))
+            updated_rows = self.service.fetch_related_forfait(self.cultivo_var.get().strip() or None, self.campana_var.get().strip() or None)
         except Exception as exc:
             messagebox.showerror("Guardar cambios", str(exc), parent=self)
             return
         self.rows = updated_rows
         self.table.set_rows(self._map_rows(self.rows))
-        self.status_var.set(f"Cambios guardados. Filas actualizadas: {len(updated_rows)}.")
+        self.status_var.set(f"Datos recargados. Filas: {len(updated_rows)}.")
 
     def _recalculate_keys(self) -> None:
         if not self.rows:
             self.status_var.set("No hay filas de forfait para recalcular.")
             return
-        try:
-            updated_rows = []
-            for row in self.rows:
-                updated_rows.append(self.service.update_forfait_row(int(row["Id"]), row))
-        except Exception as exc:
-            messagebox.showerror("Recalcular claves", str(exc), parent=self)
-            return
-        self.rows = updated_rows
-        self.table.set_rows(self._map_rows(self.rows))
-        self.status_var.set(f"Claves recalculadas. Filas actualizadas: {len(updated_rows)}.")
+        self.status_var.set("La recarga de claves no aplica al nuevo formato relacionado.")
 
     def _normalize_groups(self) -> None:
         if not self.rows:
@@ -164,13 +159,12 @@ class ImportForfaitScreen(ttk.Frame):
         updated_rows = list(self.rows)
         try:
             for index, row in enumerate(self.rows):
-                original = str(row.get("GrupoForfait") or "")
+                original = str(row.get("Grupo") or "")
                 normalized = self._normalize_group_value(original)
                 if normalized == original:
                     continue
                 new_row = dict(row)
-                new_row["GrupoForfait"] = normalized
-                updated_rows[index] = self.service.update_forfait_row(int(row["Id"]), new_row)
+                updated_rows[index] = self.service.update_related_forfait_field(int(row["Id"]), "Grupo", normalized)
                 changed += 1
         except Exception as exc:
             self.rows = updated_rows
@@ -226,13 +220,13 @@ class ImportForfaitScreen(ttk.Frame):
         if value == old_display_value:
             return
         try:
-            updated = self.service.update_forfait_field(int(old_row["Id"]), column, value)
+            updated = self.service.update_related_forfait_field(int(old_row["Id"]), column, value)
         except Exception as exc:
             messagebox.showerror("Editar forfait", str(exc), parent=self)
             return
         self.rows[row_index] = updated
         self.table.set_rows(self._map_rows(self.rows))
-        self.status_var.set(f"Campo {column} guardado. Clave: {updated.get('ClaveForfait') or ''}")
+        self.status_var.set(f"Campo {column} guardado.")
         if row_id in self.table.tree.get_children():
             self.table.tree.selection_set(row_id)
 
@@ -254,37 +248,33 @@ class ImportForfaitScreen(ttk.Frame):
             needs_review = self._needs_review(row)
             out.append(
                 {
-                    "Cultivo": row.get("Cultivo", ""),
                     "Campaña": row.get("Campaña", ""),
-                    "NombreForfait": row.get("NombreForfait", ""),
-                    "DescripcionForfait": row.get("DescripcionForfait", ""),
-                    "DescripcionNormalizada": row.get("DescripcionNormalizada", ""),
-                    "GrupoForfait": row.get("GrupoForfait", ""),
-                    "KgForfait": self._fmt_optional(row.get("KgForfait"), 2),
-                    "UnidadesForfait": row.get("UnidadesForfait", "") or "",
-                    "KgUnidad": self._fmt_optional(row.get("KgUnidad"), 2),
-                    "Medidas": row.get("Medidas", ""),
-                    "TipoEnvase": row.get("TipoEnvase", ""),
-                    "MaterialEnvase": row.get("MaterialEnvase", ""),
-                    "ClaveForfait": row.get("ClaveForfait", ""),
-                    "CosteConfeccionEurKg": f'{float(row.get("CosteConfeccionEurKg") or 0):,.4f}',
-                    "CosteTotalEurKg": f'{float(row.get("CosteTotalEurKg") or 0):,.4f}',
-                    "Revision": "REVISAR" if needs_review else "",
+                    "Cultivo": row.get("Cultivo", ""),
+                    "Variedad": row.get("Variedad", ""),
+                    "Condicion1": row.get("Condicion1", ""),
+                    "IdConfeccion": row.get("IdConfeccion", ""),
+                    "Grupo": row.get("Grupo", ""),
+                    "CosteMaterialEurKg": self._fmt_optional(row.get("CosteMaterialEurKg"), 4),
+                    "CosteRecoleccionTransporteEurKg": self._fmt_optional(row.get("CosteRecoleccionTransporteEurKg"), 4),
+                    "CosteGastosGeneralesEurKg": self._fmt_optional(row.get("CosteGastosGeneralesEurKg"), 4),
+                    "CosteManoObraEurKg": self._fmt_optional(row.get("CosteManoObraEurKg"), 4),
+                    "CosteTotalEurKg": self._fmt_optional(row.get("CosteTotalEurKg"), 4),
+                    "Estado": row.get("Estado", ""),
                     "__tags__": "tag_yellow" if needs_review else (),
                 }
             )
         return out
 
     def _display_value(self, row: dict[str, Any], column: str) -> str:
-        if column in {"KgForfait", "KgUnidad"}:
-            return self._fmt_optional(row.get(column), 2)
+        if column.startswith("Coste"):
+            return self._fmt_optional(row.get(column), 4)
         return str(row.get(column, "") or "")
 
     def _needs_review(self, row: dict[str, Any]) -> bool:
-        group = str(row.get("GrupoForfait") or "").strip().upper()
-        if not group or group in {"SIN_GRUPO", "PENDIENTE_REVISION"}:
+        group = str(row.get("Grupo") or "").strip().upper()
+        if not group:
             return True
-        for column in ("KgForfait", "TipoEnvase", "MaterialEnvase"):
+        for column in ("CosteMaterialEurKg", "CosteRecoleccionTransporteEurKg", "CosteGastosGeneralesEurKg", "CosteManoObraEurKg", "CosteTotalEurKg"):
             value = row.get(column)
             if value is None or str(value).strip() == "":
                 return True

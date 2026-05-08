@@ -238,6 +238,10 @@ class ComercialRepository:
                 "SELECT name FROM calcdb.sqlite_master WHERE type='table' AND name='EquivalenciaForfaitConfeccion'"
             ).fetchone()
             self._has_forfait_equiv = bool(forfait_row)
+            related_row = conn.execute(
+                "SELECT name FROM calcdb.sqlite_master WHERE type='table' AND name='ForfaitConfeccionRelacionada'"
+            ).fetchone()
+            self._has_related_forfait = bool(related_row)
             logger.info("Tabla equivalencias forfait encontrada: %s", "sí" if self._has_forfait_equiv else "no")
             return True
         except Exception as exc:
@@ -255,10 +259,26 @@ class ComercialRepository:
         return 'LEFT JOIN calcdb."PreciosOrientativosCalc" poc ON poc."IdPedidoLora" = p."IdPedidoLora" AND COALESCE(poc."Linea", 0) = 0'
 
     def _forfait_join_sql(self, has_calc: bool, cols: set[str]) -> str:
-        if not has_calc or not self._has_forfait_equiv:
+        if not has_calc:
             return ""
-        required = {"Cultivo", "Campaña", "Confeccion"}
+        required = {"Cultivo", "Campaña", "Confeccion", "Variedad", "Confeccion", "Condicion1"}
         if not required.issubset(cols):
+            return ""
+        if self._has_related_forfait:
+            return (
+                'LEFT JOIN calcdb."ForfaitConfeccionRelacionada" ef ON ef.Id = ('
+                'SELECT fr.Id FROM calcdb."ForfaitConfeccionRelacionada" fr '
+                'WHERE fr."Campaña" = CAST(p."Campaña" AS TEXT) '
+                'AND fr."Cultivo" = CAST(p."Cultivo" AS TEXT) '
+                'AND fr."IdConfeccion" = CAST(p."Confeccion" AS TEXT) '
+                'AND fr."Variedad" IN (CAST(p."Variedad" AS TEXT), \'TODAS\') '
+                'AND fr."Condicion1" IN (CAST(p."Condicion1" AS TEXT), \'TODAS\') '
+                'ORDER BY '
+                'CASE WHEN fr."Variedad" = CAST(p."Variedad" AS TEXT) THEN 0 ELSE 1 END, '
+                'CASE WHEN fr."Condicion1" = CAST(p."Condicion1" AS TEXT) THEN 0 ELSE 1 END '
+                'LIMIT 1)'
+            )
+        if not self._has_forfait_equiv:
             return ""
         return (
             'LEFT JOIN calcdb."EquivalenciaForfaitConfeccion" ef '
