@@ -214,10 +214,21 @@ class ForfaitRepository:
             )
             conn.execute(
                 f"""
-                CREATE UNIQUE INDEX IF NOT EXISTS ux_forfait_related_logic
+                DELETE FROM "{self.TABLE_RELATED}"
+                WHERE Id NOT IN (
+                    SELECT MAX(Id)
+                    FROM "{self.TABLE_RELATED}"
+                    GROUP BY "Campaña", Cultivo, IdConfeccion
+                )
+                """
+            )
+            conn.execute(
+                f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_forfait_relacionado_confeccion
                 ON "{self.TABLE_RELATED}" ("Campaña", Cultivo, IdConfeccion)
                 """
             )
+            conn.execute("DROP INDEX IF EXISTS ux_forfait_related_logic")
             conn.commit()
 
     def fetch_excel_sheet_names(self, file_path: str) -> list[str]:
