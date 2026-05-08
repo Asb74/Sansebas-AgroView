@@ -57,6 +57,8 @@ class PdfReportService:
         body_style.leading = 8
         body_style.alignment = 0
         story = []
+        if report_data.get("report_variant") == "desviacion_cliente_executive":
+            return self._generate_desviacion_cliente_executive(doc, story, styles, report_data, output)
 
         title = report_data.get("title", "Informe")
         generated_at = report_data.get("generated_at", "")
@@ -157,6 +159,102 @@ class PdfReportService:
 
         doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
         return True, f"Informe PDF generado: {output}"
+
+    def _generate_desviacion_cliente_executive(self, doc, story, styles, report_data: dict[str, Any], output: Path) -> tuple[bool, str]:
+        title = report_data.get("title", "RANKING DE CLIENTES")
+        subtitle = report_data.get("subtitle", "Análisis comercial y rentabilidad")
+        story.append(self.Paragraph(f"<b>{title}</b>", styles["Title"]))
+        story.append(self.Paragraph(subtitle, styles["Heading3"]))
+        story.append(self.Spacer(1, 6))
+
+        generated_at = report_data.get("generated_at", "")
+        filters = report_data.get("filters", [])
+        filtros_txt = " / ".join([f"{k}: {v}" for k, v in filters]) if filters else "Sin filtros"
+        story.append(self.Paragraph(f"Filtros activos: {filtros_txt}", styles["Normal"]))
+        story.append(self.Paragraph(f"Fecha generación: {generated_at}", styles["Normal"]))
+        story.append(self.Spacer(1, 8))
+
+        kpis = report_data.get("kpis", [])
+        if kpis:
+            kpi_data: list[list[Any]] = []
+            for i in range(0, len(kpis), 2):
+                left = kpis[i]
+                right = kpis[i + 1] if i + 1 < len(kpis) else ("", "")
+                kpi_data.append([f"<b>{left[0]}</b><br/>{left[1]}", f"<b>{right[0]}</b><br/>{right[1]}"])
+            kpi_table = self.Table(
+                [[self.Paragraph(c, styles["Normal"]) for c in row] for row in kpi_data],
+                colWidths=[13.5 * self.cm, 13.5 * self.cm],
+            )
+            kpi_table.setStyle(
+                self.TableStyle(
+                    [
+                        ("GRID", (0, 0), (-1, -1), 0.4, self.colors.lightgrey),
+                        ("BACKGROUND", (0, 0), (-1, -1), self.colors.whitesmoke),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ]
+                )
+            )
+            story.append(kpi_table)
+            story.append(self.Spacer(1, 10))
+
+        tables = report_data.get("tables", [])
+        if tables:
+            ranking = tables[0]
+            columns = ranking.get("columns", [])
+            rows = ranking.get("rows", [])
+            body = [columns]
+            for row in rows:
+                body.append([row.get(col, "") for col in columns])
+            t = self.Table(body, colWidths=[1.5 * self.cm, 8.2 * self.cm, 3.0 * self.cm, 4.0 * self.cm, 4.0 * self.cm, 4.0 * self.cm], repeatRows=1)
+            style = [
+                ("GRID", (0, 0), (-1, -1), 0.25, self.colors.grey),
+                ("BACKGROUND", (0, 0), (-1, 0), self.colors.lightgrey),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("ALIGN", (0, 0), (0, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+            for idx, r in enumerate(rows, start=1):
+                style.append(("BACKGROUND", (3, idx), (3, idx), self._priority_color(str(r.get("Prioridad", "")))))
+                style.append(("BACKGROUND", (4, idx), (4, idx), self._estado_color(str(r.get("Estado", "")))))
+            t.setStyle(self.TableStyle(style))
+            story.append(self.Paragraph("<b>Ranking de clientes</b>", styles["Heading3"]))
+            story.append(t)
+
+        story.append(self.Spacer(1, 10))
+        story.append(self.Paragraph("Estado: calidad comercial/rentabilidad del cliente.", styles["Normal"]))
+        story.append(self.Paragraph("Prioridad: importancia estratégica para el negocio.", styles["Normal"]))
+
+        def _footer(canvas, doc_obj):
+            canvas.saveState()
+            canvas.setFont("Helvetica", 8)
+            canvas.drawString(doc_obj.leftMargin, 0.7 * self.cm, "Sansebas AgroView")
+            canvas.restoreState()
+
+        doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
+        return True, f"Informe PDF generado: {output}"
+
+    def _estado_color(self, estado: str):
+        mapping = {
+            "BUENO": self.colors.HexColor("#4CAF50"),
+            "ACEPTABLE": self.colors.HexColor("#A5D6A7"),
+            "MALO": self.colors.HexColor("#EF5350"),
+            "REVISAR": self.colors.HexColor("#FFB74D"),
+            "SIN_DATOS": self.colors.HexColor("#BDBDBD"),
+        }
+        return mapping.get((estado or "").upper(), self.colors.white)
+
+    def _priority_color(self, prioridad: str):
+        mapping = {
+            "CRÍTICA": self.colors.HexColor("#B71C1C"),
+            "CRITICA": self.colors.HexColor("#B71C1C"),
+            "MUY ALTA": self.colors.HexColor("#E64A19"),
+            "ALTA": self.colors.HexColor("#FB8C00"),
+            "MEDIA": self.colors.HexColor("#FDD835"),
+            "BAJA": self.colors.HexColor("#C5E1A5"),
+        }
+        return mapping.get((prioridad or "").upper(), self.colors.white)
 
     @staticmethod
     def _wrap_header(text: str) -> str:
