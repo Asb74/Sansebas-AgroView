@@ -219,21 +219,21 @@ ANALYSIS_NOTES = {
             "Precio referencia ajustado = media ponderada del precio orientativo final segun semana, variedad, categoria y calibre.",
             "Desviacion EUR/kg = precio real - precio referencia ajustado.",
             "Impacto EUR = desviacion EUR/kg * kg cliente con EurosKG valido.",
-            "Si existe equivalencia forfait VALIDADO para el mismo Cultivo, Campaña y Confeccion, se calcula coste de confeccion y margen ajustado.",
-            "Impacto ajustado EUR = (precio real - precio referencia ajustado - coste confeccion EUR/kg) * kg con forfait validado.",
+            "El coste de forfait se obtiene de ForfaitConfeccionRelacionada por Campaña + Cultivo + IdConfeccion (con LEFT JOIN).",
+            "Impacto ajustado EUR = Impacto EUR - Coste forfait total EUR.",
             "Ranking = ordenado por impacto EUR de mayor a menor.",
-            "Ranking ajustado = ordenado por impacto ajustado EUR, usando solo equivalencias forfait VALIDADO.",
+            "Ranking ajustado = ordenado por impacto ajustado EUR.",
             "Verde = impacto/desviacion positiva; rojo = impacto/desviacion negativa; amarillo = zona neutra.",
         ],
         "datos_usados": (
             "Pedidos.Cliente, Pais, NetoCliente, EurosKG, Semana, VarCoop, Categoria, Calibre, Reclamado y precios "
-            "orientativos originales o calculados. Para forfait se usa EquivalenciaForfaitConfeccion enlazada por "
-            "Cultivo, Campaña y ConfeccionPedido."
+            "orientativos originales o calculados. Para forfait se usa ForfaitConfeccionRelacionada enlazada por "
+            "Campaña, Cultivo e IdConfeccion."
         ),
         "limitaciones": (
             "Si un cliente tiene mezcla de producto muy distinta, la referencia depende de que existan suficientes datos "
-            "comparables. Lineas sin EurosKG valido no entran en el precio real ni en el impacto. Si no hay forfait validado, "
-            "se informa como SIN_COSTE_FORFAIT y no se inventa coste."
+            "comparables. Lineas sin EurosKG valido no entran en el precio real ni en el impacto. Si no hay coste de forfait "
+            "importado para una confeccion, el cliente queda como PARCIAL o SIN_FORFAIT."
         ),
         "interpretacion": (
             "Impacto positivo indica que el cliente vende por encima de su referencia ajustada. Impacto negativo senala "

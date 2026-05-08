@@ -149,7 +149,7 @@ class ComercialService:
                 row["ranking_tipo"] = "NEUTRO"
         ajustables = [
             row for row in rows_sorted
-            if row.get("impacto_ajustado_eur") is not None and str(row.get("estado_forfait") or "") != "SIN_COSTE_FORFAIT"
+            if row.get("impacto_ajustado_eur") is not None and str(row.get("estado_forfait") or "") != "SIN_FORFAIT"
         ]
         ajustables.sort(key=lambda r: float(r.get("impacto_ajustado_eur") or 0), reverse=True)
         for idx, row in enumerate(ajustables, start=1):
@@ -158,7 +158,7 @@ class ComercialService:
         warnings = list(payload.get("warnings", []))
         if kpis_forfait["kg_sin_forfait"] > 0:
             warnings.append(
-                f"Forfait sin cobertura: {kpis_forfait['kg_sin_forfait']:,.2f} kg sin equivalencia VALIDADO."
+                f"Forfait sin cobertura: {kpis_forfait['kg_sin_forfait']:,.2f} kg sin coste importado por IdConfeccion."
             )
         out = {
             "rows": rows_sorted,
@@ -177,7 +177,7 @@ class ComercialService:
         kg_total = sum(float(r.get("debug_kg_euroskg_valido") or 0) for r in rows)
         kg_forfait = sum(float(r.get("kg_forfait_validado") or 0) for r in rows)
         kg_sin = max(kg_total - kg_forfait, 0.0)
-        coste_total = sum(float(r.get("coste_confeccion_total_eur") or 0) for r in rows)
+        coste_total = sum(float(r.get("coste_total_forfait_total_eur") or 0) for r in rows)
         impacto_ajustado = sum(
             float(r.get("impacto_ajustado_eur") or 0)
             for r in rows
