@@ -13207,3 +13207,48 @@
 2026-05-06 13:59:57,001 [INFO] db.comercial_repository: Reclamaciones grafica_causas filas: 10
 2026-05-06 13:59:57,958 [INFO] screens.boa_reclamaciones_screen: Pantalla reclamaciones por_causa filas: 18
 2026-05-06 13:59:57,958 [INFO] screens.boa_reclamaciones_screen: Pantalla reclamaciones grafica_causas filas: 10
+2026-05-07 08:41:35,558 [INFO] widgets.table_chart_toggle: TableChartToggleFrame inicializado. Vista inicial=chart
+2026-05-07 08:41:35,559 [INFO] widgets.table_chart_toggle: TableChartToggleFrame: grafica sin datos
+2026-05-07 08:41:35,590 [INFO] screens.boa_reclamaciones_screen: Matplotlib disponible para reclamaciones: True
+2026-05-07 08:41:35,889 [INFO] db.comercial_repository: Tabla auxiliar encontrada: sí
+2026-05-07 08:41:35,889 [INFO] db.comercial_repository: Columnas PreciosOrientativosCalc: ['Calibre', 'CalibreU', 'Campaña', 'Cliente', 'Confeccion', 'Cultivo', 'EMPRESA', 'EurosOrientativosCalc', 'EurosOrientativosOriginal', 'FechaCalculo', 'FechaSalida', 'GrupoConfeccion', 'IdPedidoLora', 'IdsUsados', 'Linea', 'MediaCalibre', 'MediaGrupo', 'Metodo', 'MuestrasUsadas', 'Observaciones', 'Origen', 'Semana', 'SemanaPrecioUsada', 'UsuarioCalculo', 'VarCoop']
+2026-05-07 08:41:35,889 [INFO] db.comercial_repository: Columna usada para precio calculado: EurosOrientativosCalc
+2026-05-07 08:41:35,890 [INFO] db.comercial_repository: Tabla equivalencias forfait encontrada: sí
+2026-05-07 08:41:35,890 [INFO] db.comercial_repository: Filtro Cancelado=0 aplicado
+2026-05-07 08:41:35,890 [INFO] db.comercial_repository: Filtro Semana aplicado
+2026-05-07 08:41:35,890 [INFO] db.comercial_repository: Filtros recibidos: {'campana': ['2026'], 'cultivo': ['CITRICOS'], 'empresa': [], 'semana': [], 'cliente': [], 'pais': [], 'calibre': [], 'categoria': [], 'var_cliente': [], 'var_coop': [], 'marca': [], 'fecha_desde': '', 'fecha_hasta': ''}
+2026-05-07 08:41:35,891 [INFO] db.comercial_repository: WHERE generado: WHERE COALESCE(p."Cancelado", 0) = 0 AND CAST(p."Campaña" AS TEXT) = ? AND CAST(p."Cultivo" AS TEXT) = ?
+2026-05-07 08:41:35,891 [INFO] db.comercial_repository: PARAMS generados: ['2026', 'CITRICOS']
+2026-05-07 08:41:36,288 [INFO] db.comercial_repository: Tabla auxiliar encontrada: sí
+2026-05-07 08:41:36,289 [INFO] db.comercial_repository: Columnas PreciosOrientativosCalc: ['Calibre', 'CalibreU', 'Campaña', 'Cliente', 'Confeccion', 'Cultivo', 'EMPRESA', 'EurosOrientativosCalc', 'EurosOrientativosOriginal', 'FechaCalculo', 'FechaSalida', 'GrupoConfeccion', 'IdPedidoLora', 'IdsUsados', 'Linea', 'MediaCalibre', 'MediaGrupo', 'Metodo', 'MuestrasUsadas', 'Observaciones', 'Origen', 'Semana', 'SemanaPrecioUsada', 'UsuarioCalculo', 'VarCoop']
+2026-05-07 08:41:36,289 [INFO] db.comercial_repository: Columna usada para precio calculado: EurosOrientativosCalc
+2026-05-07 08:41:36,290 [INFO] db.comercial_repository: Tabla equivalencias forfait encontrada: sí
+2026-05-07 08:41:36,290 [INFO] db.comercial_repository: Filtro Cancelado=0 aplicado
+2026-05-07 08:41:36,290 [INFO] db.comercial_repository: Filtro Semana aplicado
+2026-05-07 08:41:36,290 [INFO] db.comercial_repository: Filtros recibidos: {'campana': ['2026'], 'cultivo': ['CITRICOS'], 'empresa': [], 'semana': [], 'cliente': [], 'pais': [], 'calibre': [], 'categoria': [], 'var_cliente': [], 'var_coop': [], 'marca': [], 'fecha_desde': '', 'fecha_hasta': ''}
+2026-05-07 08:41:36,290 [INFO] db.comercial_repository: WHERE generado: WHERE COALESCE(p."Cancelado", 0) = 0 AND CAST(p."Campaña" AS TEXT) = ? AND CAST(p."Cultivo" AS TEXT) = ?
+2026-05-07 08:41:36,290 [INFO] db.comercial_repository: PARAMS generados: ['2026', 'CITRICOS']
+2026-05-07 08:41:42,106 [INFO] db.comercial_repository: Tabla auxiliar encontrada: sí
+2026-05-07 08:41:42,106 [INFO] db.comercial_repository: Columnas PreciosOrientativosCalc: ['Calibre', 'CalibreU', 'Campaña', 'Cliente', 'Confeccion', 'Cultivo', 'EMPRESA', 'EurosOrientativosCalc', 'EurosOrientativosOriginal', 'FechaCalculo', 'FechaSalida', 'GrupoConfeccion', 'IdPedidoLora', 'IdsUsados', 'Linea', 'MediaCalibre', 'MediaGrupo', 'Metodo', 'MuestrasUsadas', 'Observaciones', 'Origen', 'Semana', 'SemanaPrecioUsada', 'UsuarioCalculo', 'VarCoop']
+2026-05-07 08:41:42,106 [INFO] db.comercial_repository: Columna usada para precio calculado: EurosOrientativosCalc
+2026-05-07 08:41:42,106 [INFO] db.comercial_repository: Tabla equivalencias forfait encontrada: sí
+2026-05-07 08:41:42,106 [INFO] db.comercial_repository: Filtro Cancelado=0 aplicado
+2026-05-07 08:41:42,107 [INFO] db.comercial_repository: Filtro Semana aplicado
+2026-05-07 08:41:42,107 [INFO] db.comercial_repository: Filtros recibidos: {'campana': ['2026'], 'cultivo': ['CITRICOS'], 'empresa': [], 'semana': [], 'cliente': [], 'pais': [], 'calibre': [], 'categoria': [], 'var_cliente': [], 'var_coop': [], 'marca': [], 'fecha_desde': '', 'fecha_hasta': ''}
+2026-05-07 08:41:42,107 [INFO] db.comercial_repository: WHERE generado: WHERE COALESCE(p."Cancelado", 0) = 0 AND CAST(p."Campaña" AS TEXT) = ? AND CAST(p."Cultivo" AS TEXT) = ?
+2026-05-07 08:41:42,107 [INFO] db.comercial_repository: PARAMS generados: ['2026', 'CITRICOS']
+2026-05-07 08:41:42,295 [INFO] db.comercial_repository: Tabla auxiliar encontrada: sí
+2026-05-07 08:41:42,296 [INFO] db.comercial_repository: Columnas PreciosOrientativosCalc: ['Calibre', 'CalibreU', 'Campaña', 'Cliente', 'Confeccion', 'Cultivo', 'EMPRESA', 'EurosOrientativosCalc', 'EurosOrientativosOriginal', 'FechaCalculo', 'FechaSalida', 'GrupoConfeccion', 'IdPedidoLora', 'IdsUsados', 'Linea', 'MediaCalibre', 'MediaGrupo', 'Metodo', 'MuestrasUsadas', 'Observaciones', 'Origen', 'Semana', 'SemanaPrecioUsada', 'UsuarioCalculo', 'VarCoop']
+2026-05-07 08:41:42,296 [INFO] db.comercial_repository: Columna usada para precio calculado: EurosOrientativosCalc
+2026-05-07 08:41:42,296 [INFO] db.comercial_repository: Tabla equivalencias forfait encontrada: sí
+2026-05-07 08:41:42,296 [INFO] db.comercial_repository: Filtro Cancelado=0 aplicado
+2026-05-07 08:41:42,296 [INFO] db.comercial_repository: Filtro Semana aplicado
+2026-05-07 08:41:42,296 [INFO] db.comercial_repository: Filtros recibidos: {'campana': ['2026'], 'cultivo': ['CITRICOS'], 'empresa': [], 'semana': [], 'cliente': [], 'pais': [], 'calibre': [], 'categoria': [], 'var_cliente': [], 'var_coop': [], 'marca': [], 'fecha_desde': '', 'fecha_hasta': ''}
+2026-05-07 08:41:42,296 [INFO] db.comercial_repository: WHERE generado: WHERE COALESCE(p."Cancelado", 0) = 0 AND CAST(p."Campaña" AS TEXT) = ? AND CAST(p."Cultivo" AS TEXT) = ?
+2026-05-07 08:41:42,296 [INFO] db.comercial_repository: PARAMS generados: ['2026', 'CITRICOS']
+2026-05-07 08:41:42,379 [INFO] db.comercial_repository: Desviacion clientes: filas=49, kg_total=6619169.9130, importe_total=4582491.0894, precio_medio_calc=0.692306
+2026-05-07 08:41:42,379 [INFO] db.comercial_repository: Desviacion clientes referencia (primera fila): cliente=ANECOOP//LIDL precio_real=0.706124 precio_ref=0.617619
+2026-05-07 08:41:42,379 [INFO] screens.boa_precios_screen: Desviacion por cliente: filas recibidas=49, vista inicial=chart
+2026-05-07 08:41:42,437 [INFO] widgets.table_chart_toggle: TableChartToggleFrame: grafica pintada (49 filas)
+2026-05-07 08:41:42,438 [INFO] screens.boa_precios_screen: Desviacion por cliente: tabla actualizada (49 filas)
+2026-05-07 08:41:49,516 [INFO] widgets.table_chart_toggle: TableChartToggleFrame: tabla pintada (49 filas)
