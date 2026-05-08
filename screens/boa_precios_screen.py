@@ -374,22 +374,56 @@ class BOAPreciosScreen(ttk.Frame):
         report["subtitle"] = "Análisis comercial y rentabilidad"
         report["report_variant"] = "desviacion_cliente_executive"
         report["kpis"] = [
-            ("Kg analizados", self.kpi_vars["kg_cliente"].get().replace("Kg cliente: ", "")),
-            ("Margen total €", self.kpi_vars["margen_total"].get().replace("Margen total EUR: ", "")),
-            ("Margen medio €/kg", self.kpi_vars["margen_kg"].get().replace("Margen EUR/kg: ", "")),
-            ("Cobertura forfait %", self.kpi_vars["cobertura"].get().replace("Cobertura forfait: ", "")),
-            ("N reclamaciones", self.kpi_vars["n_reclam"].get().replace("N reclamaciones: ", "")),
-            ("Importe reclamado €", self.kpi_vars["reclamado_eur"].get().replace("Reclamado EUR: ", "")),
-            ("Nº clientes analizados", self.kpi_vars["clientes"].get().replace("N clientes: ", "")),
+            ("Kg analizados", self._kpi_value("kg_analizados", prefix="Kg analizados: ")),
+            ("Margen total €", self._kpi_value("margen_total", prefix="Margen total €: ")),
+            ("Margen ajustado total €", self._kpi_value("kg_con_forfait", prefix="Margen ajustado total €: ")),
+            ("Margen medio €/kg", self._kpi_value("margen_medio", prefix="Margen medio €/kg: ")),
+            ("Cobertura forfait %", self._kpi_value("cov_forfait", prefix="Cobertura forfait %: ")),
+            ("N reclamaciones", self._kpi_value("precio_real", prefix="N reclamaciones: ")),
+            ("Importe reclamado total €", self._kpi_value("precio_ori", prefix="Importe reclamado total €: ")),
+            ("Reclamado €/kg medio", self._kpi_value("coste_forfait", prefix="Reclamado €/kg medio: ")),
         ]
+        executive_rows: list[dict[str, Any]] = []
+        for row in self.desv_toggle.rows:
+            executive_rows.append(
+                {
+                    "Ranking": row.get("Ranking", ""),
+                    "Cliente": row.get("Cliente", row.get("cliente", "")),
+                    "Pais": row.get("Pais", row.get("pais", "")),
+                    "Prioridad": row.get("Prioridad", row.get("prioridad", "")),
+                    "Estado": row.get("Estado", row.get("estado", "")),
+                    "Margen total €": row.get("Margen total €", row.get("margen_total_eur", "")),
+                    "Margen ajustado total €": row.get(
+                        "Margen ajustado total €",
+                        row.get("margen_ajustado_total_eur", ""),
+                    ),
+                }
+            )
         report["tables"] = [
             {
                 "title": "Ranking comercial",
-                "columns": ["Ranking", "Cliente", "Pais", "Prioridad", "Estado", "Margen total €"],
-                "rows": self.desv_toggle.rows,
+                "columns": [
+                    "Ranking",
+                    "Cliente",
+                    "Pais",
+                    "Prioridad",
+                    "Estado",
+                    "Margen total €",
+                    "Margen ajustado total €",
+                ],
+                "rows": executive_rows,
             },
         ]
         return report
+
+    def _kpi_value(self, key: str, prefix: str = "") -> str:
+        var = self.desv_kpi_vars.get(key) or self.kpi_vars.get(key)
+        if not var:
+            return ""
+        value = var.get()
+        if prefix and isinstance(value, str):
+            return value.replace(prefix, "")
+        return value
 
     def _fill_desv_cliente_table(self, rows: list[dict[str, Any]]) -> None:
         if not rows:
