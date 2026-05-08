@@ -226,8 +226,8 @@ ANALYSIS_NOTES = {
             "% reclamado = importe reclamado € / importe real vendido * 100.",
             "Margen ajustado €/kg = margen €/kg - reclamado €/kg.",
             "Margen ajustado total € = margen ajustado €/kg * kg cliente.",
-            "Índice cliente (0 a 100) = 50% margen ajustado + 20% cumplimiento + 15% volumen + 15% reclamaciones.",
-            "Reclamaciones penalizan por frecuencia y por importe reclamado.",
+            "Índice cliente = Pts rentabilidad + Pts cumplimiento + Pts volumen - Penalización reclamaciones, usando los pesos de Configuración ranking clientes.",
+            "Estado indica valoración comercial (BUENO/ACEPTABLE/MALO/REVISAR/SIN_DATOS). Estado cobertura indica COMPLETA/PARCIAL/SIN_FORFAIT.",
         ],
         "datos_usados": (
             "Pedidos.Cliente, Pais, NetoCliente, EurosKG, Semana, VarCoop, Categoria, Calibre, Reclamado, precios orientativos y DReclamacion."

@@ -38,7 +38,7 @@ class BOAPreciosScreen(ttk.Frame):
         "Ranking", "Cliente", "Pais", "Kg", "Precio real €/kg", "Precio orientativo €/kg",
         "Dif. precio €/kg", "Coste forfait €/kg", "Margen €/kg", "Margen total €",
         "N reclam.", "Reclam. €/kg", "% reclamado", "Margen ajustado €/kg", "Margen ajustado total €",
-        "Cumplimiento %", "Cobertura forfait %", "Índice cliente", "Estado",
+        "Cumplimiento %", "Cobertura forfait %", "Estado cobertura", "Pts rentabilidad", "Pts precio", "Pts volumen", "Penalización reclam.", "Índice cliente", "Estado",
     ]
 
     class _SimpleTableView(ttk.Frame):
@@ -415,6 +415,11 @@ class BOAPreciosScreen(ttk.Frame):
                     "Margen ajustado total €": f'{float(r.get("margen_ajustado_total_eur", 0) or 0):,.2f}',
                     "Cumplimiento %": f'{float(r.get("cumplimiento_pct", 0) or 0):,.2f}%',
                     "Cobertura forfait %": f'{float(r.get("cobertura_forfait_pct", 0) or 0):,.2f}%',
+                    "Estado cobertura": r.get("estado_cobertura", "COMPLETA"),
+                    "Pts rentabilidad": f'{float(r.get("pts_rentabilidad", 0) or 0):,.2f}',
+                    "Pts precio": f'{float(r.get("pts_precio", 0) or 0):,.2f}',
+                    "Pts volumen": f'{float(r.get("pts_volumen", 0) or 0):,.2f}',
+                    "Penalización reclam.": f'{float(r.get("penalizacion_reclam", 0) or 0):,.2f}',
                     "Índice cliente": f'{float(r.get("indice_cliente", 0) or 0):,.2f}',
                     "Estado": r.get("estado", "REVISAR"),
                     "cliente": r.get("cliente", ""),
@@ -469,9 +474,9 @@ class BOAPreciosScreen(ttk.Frame):
             return "tag_green"
         if estado == "ACEPTABLE":
             return "tag_green_soft"
-        if estado in {"REVISAR", "PARCIAL"}:
+        if estado in {"REVISAR", "COBERTURA PARCIAL"}:
             return "tag_yellow"
-        if estado in {"MALO", "SIN_FORFAIT"}:
+        if estado in {"MALO", "SIN_FORFAIT", "SIN_DATOS"}:
             return "tag_red"
         return "tag_yellow"
 
