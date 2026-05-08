@@ -8,12 +8,10 @@ from widgets.data_table import DataTable
 
 class ImportForfaitScreen(ttk.Frame):
     EDITABLE_COLUMNS = {
-        "Variedad",
-        "Condicion1",
-        "Grupo",
+        "GrupoConfeccion",
+        "NombreConfeccion",
+        "Marca",
         "CosteMaterialEurKg",
-        "CosteRecoleccionTransporteEurKg",
-        "CosteGastosGeneralesEurKg",
         "CosteManoObraEurKg",
         "CosteTotalEurKg",
         "Estado",
@@ -22,13 +20,11 @@ class ImportForfaitScreen(ttk.Frame):
     TABLE_COLUMNS = [
         "Campaña",
         "Cultivo",
-        "Variedad",
-        "Condicion1",
         "IdConfeccion",
-        "Grupo",
+        "NombreConfeccion",
+        "GrupoConfeccion",
+        "Marca",
         "CosteMaterialEurKg",
-        "CosteRecoleccionTransporteEurKg",
-        "CosteGastosGeneralesEurKg",
         "CosteManoObraEurKg",
         "CosteTotalEurKg",
         "Estado",
@@ -250,13 +246,11 @@ class ImportForfaitScreen(ttk.Frame):
                 {
                     "Campaña": row.get("Campaña", ""),
                     "Cultivo": row.get("Cultivo", ""),
-                    "Variedad": row.get("Variedad", ""),
-                    "Condicion1": row.get("Condicion1", ""),
                     "IdConfeccion": row.get("IdConfeccion", ""),
-                    "Grupo": row.get("Grupo", ""),
+                    "NombreConfeccion": row.get("NombreConfeccion", ""),
+                    "GrupoConfeccion": row.get("Grupo", ""),
+                    "Marca": row.get("Marca", ""),
                     "CosteMaterialEurKg": self._fmt_optional(row.get("CosteMaterialEurKg"), 4),
-                    "CosteRecoleccionTransporteEurKg": self._fmt_optional(row.get("CosteRecoleccionTransporteEurKg"), 4),
-                    "CosteGastosGeneralesEurKg": self._fmt_optional(row.get("CosteGastosGeneralesEurKg"), 4),
                     "CosteManoObraEurKg": self._fmt_optional(row.get("CosteManoObraEurKg"), 4),
                     "CosteTotalEurKg": self._fmt_optional(row.get("CosteTotalEurKg"), 4),
                     "Estado": row.get("Estado", ""),
@@ -271,10 +265,10 @@ class ImportForfaitScreen(ttk.Frame):
         return str(row.get(column, "") or "")
 
     def _needs_review(self, row: dict[str, Any]) -> bool:
-        group = str(row.get("Grupo") or "").strip().upper()
+        group = str(row.get("Grupo") or row.get("GrupoConfeccion") or "").strip().upper()
         if not group:
             return True
-        for column in ("CosteMaterialEurKg", "CosteRecoleccionTransporteEurKg", "CosteGastosGeneralesEurKg", "CosteManoObraEurKg", "CosteTotalEurKg"):
+        for column in ("CosteMaterialEurKg", "CosteManoObraEurKg", "CosteTotalEurKg"):
             value = row.get(column)
             if value is None or str(value).strip() == "":
                 return True

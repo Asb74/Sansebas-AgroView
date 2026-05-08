@@ -41,15 +41,10 @@ class ForfaitRepository:
     RELATED_REQUIRED_COLUMNS = [
         "Campaña",
         "Cultivo",
-        "Variedad",
-        "Condicion1",
         "IdConfeccion",
-        "GRUPO",
-        "Eur/kg Material",
-        "Eur/kg Recoleción y Transporte",
-        "Eur/kg Gastos Generales",
-        "Eur/kg Mano obra",
-        "Eur/kg total",
+        "CosteMaterialEurKg",
+        "CosteManoObraEurKg",
+        "CosteTotalEurKg",
     ]
     EDITABLE_FORFAIT_FIELDS = {
         "GrupoForfait",
@@ -94,6 +89,11 @@ class ForfaitRepository:
         "MaterialEnvase": "TEXT",
         "ClaveForfait": "TEXT",
         "ConfianzaSugerencia": "REAL",
+    }
+    RELATED_EXTRA_COLUMNS = {
+        "NombreConfeccion": "TEXT",
+        "GrupoConfeccion": "TEXT",
+        "Marca": "TEXT",
     }
 
     def __init__(self, db_calc: str | None = None, db_pedidos: str | None = None) -> None:
@@ -177,6 +177,9 @@ class ForfaitRepository:
                     Condicion1 TEXT NOT NULL,
                     IdConfeccion TEXT NOT NULL,
                     Grupo TEXT,
+                    NombreConfeccion TEXT,
+                    GrupoConfeccion TEXT,
+                    Marca TEXT,
                     CosteMaterialEurKg REAL,
                     CosteRecoleccionTransporteEurKg REAL,
                     CosteGastosGeneralesEurKg REAL,
@@ -192,6 +195,7 @@ class ForfaitRepository:
             )
             self._ensure_columns(conn, self.TABLE_FORFAIT, self.FORFAIT_EXTRA_COLUMNS)
             self._ensure_columns(conn, self.TABLE_EQUIV, self.EQUIV_EXTRA_COLUMNS)
+            self._ensure_columns(conn, self.TABLE_RELATED, self.RELATED_EXTRA_COLUMNS)
             conn.execute("DROP INDEX IF EXISTS ux_forfait_confeccion")
             conn.execute(
                 f"""
@@ -208,7 +212,7 @@ class ForfaitRepository:
             conn.execute(
                 f"""
                 CREATE UNIQUE INDEX IF NOT EXISTS ux_forfait_related_logic
-                ON "{self.TABLE_RELATED}" ("Campaña", Cultivo, Variedad, Condicion1, IdConfeccion)
+                ON "{self.TABLE_RELATED}" ("Campaña", Cultivo, IdConfeccion)
                 """
             )
             conn.commit()
@@ -222,11 +226,10 @@ class ForfaitRepository:
         if sheet_name not in wb.sheetnames:
             raise ValueError(f"No existe la hoja {sheet_name}.")
         ws = wb[sheet_name]
-        found = [self._clean_text(ws.cell(1, i).value) for i in range(1, len(self.RELATED_REQUIRED_COLUMNS) + 1)]
+        header_values = [self._clean_text(v) for v in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())]
         expected = list(self.RELATED_REQUIRED_COLUMNS)
-        if found[7] == "Eur/kg Recolección y Transporte":
-            found[7] = "Eur/kg Recoleción y Transporte"
-        return found == expected, expected, found
+        missing = [col for col in expected if col not in header_values]
+        return not missing, expected, header_values
 
     def import_related_forfait_excel(self, file_path: str, sheet_name: str) -> dict[str, Any]:
         ok, expected, found = self.validate_related_forfait_sheet(file_path, sheet_name)
@@ -239,36 +242,48 @@ class ForfaitRepository:
         ws = wb[sheet_name]
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         nuevos = actualizados = revisar = errores = 0
-        imported_keys: list[tuple[str, str, str, str, str]] = []
+        imported_keys: list[tuple[str, str, str]] = []
         with self._connect_calc() as conn:
+            header_values = [self._clean_text(v) for v in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())]
+            col_map = {name: idx for idx, name in enumerate(header_values)}
             for row_num in range(2, ws.max_row + 1):
-                vals = [ws.cell(row_num, i).value for i in range(1, 12)]
+                vals = [ws.cell(row_num, i).value for i in range(1, ws.max_column + 1)]
                 if not any(str(v or "").strip() for v in vals):
                     continue
-                campana, cultivo, variedad, condicion1, id_conf = [self._clean_text(v) for v in vals[:5]]
+                campana = self._clean_text(vals[col_map["Campaña"]]) if "Campaña" in col_map else ""
+                cultivo = self._clean_text(vals[col_map["Cultivo"]]) if "Cultivo" in col_map else ""
+                id_conf = self._clean_text(vals[col_map["IdConfeccion"]]) if "IdConfeccion" in col_map else ""
                 if not id_conf:
                     errores += 1
                     continue
-                coste_vals = [self._to_float(v) for v in vals[6:11]]
-                estado = "IMPORTADO"
-                if any(v is None for v in coste_vals):
-                    estado = "REVISAR"
+                nombre_conf = self._clean_text(vals[col_map["NombreConfeccion"]]) if "NombreConfeccion" in col_map else ""
+                grupo = self._clean_text(vals[col_map["GrupoConfeccion"]]) if "GrupoConfeccion" in col_map else ""
+                marca = self._clean_text(vals[col_map["Marca"]]) if "Marca" in col_map else ""
+                coste_material = self._to_float(vals[col_map["CosteMaterialEurKg"]]) if "CosteMaterialEurKg" in col_map else None
+                coste_mano_obra = self._to_float(vals[col_map["CosteManoObraEurKg"]]) if "CosteManoObraEurKg" in col_map else None
+                coste_total = self._to_float(vals[col_map["CosteTotalEurKg"]]) if "CosteTotalEurKg" in col_map else None
+                estado = self._clean_text(vals[col_map["Estado"]]) if "Estado" in col_map else ""
+                if not estado:
+                    estado = "IMPORTADO" if coste_total is not None else "REVISAR"
+                if estado == "REVISAR":
                     revisar += 1
+                variedad = self._clean_text(vals[col_map["Variedad"]]) if "Variedad" in col_map else "TODAS"
+                condicion1 = self._clean_text(vals[col_map["Condicion1"]]) if "Condicion1" in col_map else "TODAS"
                 exists = conn.execute(
-                    f'SELECT 1 FROM "{self.TABLE_RELATED}" WHERE "Campaña"=? AND Cultivo=? AND Variedad=? AND Condicion1=? AND IdConfeccion=?',
-                    [campana, cultivo, variedad, condicion1, id_conf],
+                    f'SELECT 1 FROM "{self.TABLE_RELATED}" WHERE "Campaña"=? AND Cultivo=? AND IdConfeccion=?',
+                    [campana, cultivo, id_conf],
                 ).fetchone()
                 conn.execute(
                     f"""
-                    INSERT INTO "{self.TABLE_RELATED}" ("Campaña", Cultivo, Variedad, Condicion1, IdConfeccion, Grupo,
-                        CosteMaterialEurKg, CosteRecoleccionTransporteEurKg, CosteGastosGeneralesEurKg, CosteManoObraEurKg, CosteTotalEurKg,
+                    INSERT INTO "{self.TABLE_RELATED}" ("Campaña", Cultivo, Variedad, Condicion1, IdConfeccion, Grupo, NombreConfeccion, Marca,
+                        CosteMaterialEurKg, CosteManoObraEurKg, CosteTotalEurKg,
                         Estado, OrigenArchivo, HojaOrigen, FechaImportacion)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT("Campaña", Cultivo, Variedad, Condicion1, IdConfeccion) DO UPDATE SET
+                    ON CONFLICT("Campaña", Cultivo, IdConfeccion) DO UPDATE SET
                         Grupo=excluded.Grupo,
+                        NombreConfeccion=excluded.NombreConfeccion,
+                        Marca=excluded.Marca,
                         CosteMaterialEurKg=excluded.CosteMaterialEurKg,
-                        CosteRecoleccionTransporteEurKg=excluded.CosteRecoleccionTransporteEurKg,
-                        CosteGastosGeneralesEurKg=excluded.CosteGastosGeneralesEurKg,
                         CosteManoObraEurKg=excluded.CosteManoObraEurKg,
                         CosteTotalEurKg=excluded.CosteTotalEurKg,
                         Estado=excluded.Estado,
@@ -276,16 +291,16 @@ class ForfaitRepository:
                         HojaOrigen=excluded.HojaOrigen,
                         FechaImportacion=excluded.FechaImportacion
                     """,
-                    [campana, cultivo, variedad, condicion1, id_conf, self._clean_text(vals[5]), *coste_vals, estado, str(file_path), sheet_name, now],
+                    [campana, cultivo, variedad or "TODAS", condicion1 or "TODAS", id_conf, grupo, nombre_conf, marca, coste_material, coste_mano_obra, coste_total, estado, str(file_path), sheet_name, now],
                 )
-                imported_keys.append((campana, cultivo, variedad, condicion1, id_conf))
+                imported_keys.append((campana, cultivo, id_conf))
                 actualizados += 1 if exists else 0
                 nuevos += 0 if exists else 1
             conn.commit()
             rows = []
             for key in imported_keys:
                 rec = conn.execute(
-                    f'SELECT * FROM "{self.TABLE_RELATED}" WHERE "Campaña"=? AND Cultivo=? AND Variedad=? AND Condicion1=? AND IdConfeccion=?',
+                    f'SELECT * FROM "{self.TABLE_RELATED}" WHERE "Campaña"=? AND Cultivo=? AND IdConfeccion=?',
                     list(key),
                 ).fetchone()
                 if rec:
@@ -643,8 +658,6 @@ class ForfaitRepository:
             coverage = {
                 "Campaña": campana_norm,
                 "Cultivo": cultivo_norm,
-                "Variedad": record.get("Variedad", "") if record else "",
-                "Condicion1": record.get("Condicion1", "") if record else "",
                 "IdConfeccion": str(row.get("ConfeccionPedido") or ""),
                 "NombreConfeccion": row.get("NombreConfeccion", ""),
                 "GrupoConfeccion": row.get("GrupoConfeccion", ""),
@@ -656,7 +669,7 @@ class ForfaitRepository:
                 "OrigenCoste": record.get("OrigenCoste") if record else "SIN_FORFAIT",
             }
             if not coverage["Estado"]:
-                coverage["Estado"] = "OK" if coverage["OrigenCoste"] == "EXACTO" else ("APROXIMADO" if coverage["OrigenCoste"] != "SIN_FORFAIT" else "SIN_FORFAIT")
+                coverage["Estado"] = "OK" if coverage["OrigenCoste"] == "EXACTO" else "SIN_FORFAIT"
             if only_missing and coverage["OrigenCoste"] != "SIN_FORFAIT":
                 continue
             out.append(coverage)
@@ -664,37 +677,16 @@ class ForfaitRepository:
 
     def _resolve_related_forfait(self, campana: str, cultivo: str, id_confeccion: str) -> dict[str, Any] | None:
         with self._connect_calc() as conn:
-            variants = [
-                ("EXACTO", None, None),
-                ("VARIEDAD_TODAS", "TODAS", None),
-                ("CONDICION_TODAS", None, "TODAS"),
-                ("TODAS", "TODAS", "TODAS"),
-            ]
-            for origen, var_filter, cond_filter in variants:
-                where = ['"Campaña" = ?', 'Cultivo = ?', 'IdConfeccion = ?']
-                params: list[Any] = [campana, cultivo, id_confeccion]
-                if var_filter is None:
-                    where.append('(Variedad <> "TODAS" AND TRIM(Variedad) <> "")')
-                else:
-                    where.append('Variedad = ?')
-                    params.append(var_filter)
-                if cond_filter is None:
-                    where.append('(Condicion1 <> "TODAS" AND TRIM(Condicion1) <> "")')
-                else:
-                    where.append('Condicion1 = ?')
-                    params.append(cond_filter)
-                rec = conn.execute(
-                    f'SELECT * FROM "{self.TABLE_RELATED}" WHERE {' AND '.join(where)} ORDER BY Id DESC LIMIT 1',
-                    params,
-                ).fetchone()
-                if rec:
-                    row = dict(rec)
-                    row["OrigenCoste"] = origen
-                    if origen == "EXACTO" and row.get("Estado") in {None, "", "IMPORTADO"}:
-                        row["Estado"] = "OK"
-                    elif origen != "EXACTO" and row.get("Estado") in {None, "", "IMPORTADO"}:
-                        row["Estado"] = "APROXIMADO"
-                    return row
+            rec = conn.execute(
+                f'SELECT * FROM "{self.TABLE_RELATED}" WHERE "Campaña" = ? AND Cultivo = ? AND IdConfeccion = ? ORDER BY Id DESC LIMIT 1',
+                [campana, cultivo, id_confeccion],
+            ).fetchone()
+            if rec:
+                row = dict(rec)
+                row["OrigenCoste"] = "EXACTO"
+                if row.get("Estado") in {None, "", "IMPORTADO"}:
+                    row["Estado"] = "OK"
+                return row
         return None
     def reset_mapping_rows(self, cultivo: str, campana: str) -> int:
         cultivo_norm = self._norm_key(cultivo)
@@ -724,15 +716,14 @@ class ForfaitRepository:
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         with self._connect_calc() as conn:
             rows = conn.execute(
-                f'SELECT * FROM "{self.TABLE_RELATED}" {where_sql} ORDER BY "Campaña", Cultivo, Variedad, Condicion1, IdConfeccion',
+                f'SELECT * FROM "{self.TABLE_RELATED}" {where_sql} ORDER BY "Campaña", Cultivo, IdConfeccion',
                 params,
             ).fetchall()
         return [dict(r) for r in rows]
 
     def update_related_forfait_field(self, id_forfait: int, field_name: str, value: Any) -> dict[str, Any]:
         editable = {
-            "Variedad", "Condicion1", "Grupo", "CosteMaterialEurKg", "CosteRecoleccionTransporteEurKg",
-            "CosteGastosGeneralesEurKg", "CosteManoObraEurKg", "CosteTotalEurKg", "Estado", "Observaciones",
+            "Grupo", "NombreConfeccion", "Marca", "CosteMaterialEurKg", "CosteManoObraEurKg", "CosteTotalEurKg", "Estado", "Observaciones",
         }
         if field_name not in editable:
             raise ValueError(f"El campo {field_name} no es editable.")
