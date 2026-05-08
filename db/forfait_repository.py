@@ -42,9 +42,12 @@ class ForfaitRepository:
         "Campaña",
         "Cultivo",
         "IdConfeccion",
-        "CosteMaterialEurKg",
-        "CosteManoObraEurKg",
-        "CosteTotalEurKg",
+        "GRUPO",
+        "Eur/kg Material",
+        "Eur/kg Recoleción y Transporte",
+        "Eur/kg Gastos Generales",
+        "Eur/kg Mano obra",
+        "Eur/kg total",
     ]
     EDITABLE_FORFAIT_FIELDS = {
         "GrupoForfait",
@@ -228,7 +231,8 @@ class ForfaitRepository:
         ws = wb[sheet_name]
         header_values = [self._clean_text(v) for v in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())]
         expected = list(self.RELATED_REQUIRED_COLUMNS)
-        missing = [col for col in expected if col not in header_values]
+        normalized = [h.replace("Eur/kg Recolección y Transporte", "Eur/kg Recoleción y Transporte") for h in header_values]
+        missing = [col for col in expected if col not in normalized]
         return not missing, expected, header_values
 
     def import_related_forfait_excel(self, file_path: str, sheet_name: str) -> dict[str, Any]:
@@ -246,6 +250,8 @@ class ForfaitRepository:
         with self._connect_calc() as conn:
             header_values = [self._clean_text(v) for v in next(ws.iter_rows(min_row=1, max_row=1, values_only=True), ())]
             col_map = {name: idx for idx, name in enumerate(header_values)}
+            if "Eur/kg Recoleción y Transporte" not in col_map and "Eur/kg Recolección y Transporte" in col_map:
+                col_map["Eur/kg Recoleción y Transporte"] = col_map["Eur/kg Recolección y Transporte"]
             for row_num in range(2, ws.max_row + 1):
                 vals = [ws.cell(row_num, i).value for i in range(1, ws.max_column + 1)]
                 if not any(str(v or "").strip() for v in vals):
@@ -256,16 +262,15 @@ class ForfaitRepository:
                 if not id_conf:
                     errores += 1
                     continue
-                nombre_conf = self._clean_text(vals[col_map["NombreConfeccion"]]) if "NombreConfeccion" in col_map else ""
-                grupo = self._clean_text(vals[col_map["GrupoConfeccion"]]) if "GrupoConfeccion" in col_map else ""
-                marca = self._clean_text(vals[col_map["Marca"]]) if "Marca" in col_map else ""
-                coste_material = self._to_float(vals[col_map["CosteMaterialEurKg"]]) if "CosteMaterialEurKg" in col_map else None
-                coste_mano_obra = self._to_float(vals[col_map["CosteManoObraEurKg"]]) if "CosteManoObraEurKg" in col_map else None
-                coste_total = self._to_float(vals[col_map["CosteTotalEurKg"]]) if "CosteTotalEurKg" in col_map else None
-                estado = self._clean_text(vals[col_map["Estado"]]) if "Estado" in col_map else ""
-                if not estado:
-                    estado = "IMPORTADO" if coste_total is not None else "REVISAR"
-                if estado == "REVISAR":
+                grupo = self._clean_text(vals[col_map["GRUPO"]]) if "GRUPO" in col_map else ""
+                coste_material = self._to_float(vals[col_map["Eur/kg Material"]]) if "Eur/kg Material" in col_map else None
+                coste_recoleccion = self._to_float(vals[col_map["Eur/kg Recoleción y Transporte"]]) if "Eur/kg Recoleción y Transporte" in col_map else None
+                coste_gastos = self._to_float(vals[col_map["Eur/kg Gastos Generales"]]) if "Eur/kg Gastos Generales" in col_map else None
+                coste_mano_obra = self._to_float(vals[col_map["Eur/kg Mano obra"]]) if "Eur/kg Mano obra" in col_map else None
+                coste_total = self._to_float(vals[col_map["Eur/kg total"]]) if "Eur/kg total" in col_map else None
+                missing_any_cost = any(v is None for v in [coste_material, coste_recoleccion, coste_gastos, coste_mano_obra, coste_total])
+                estado = "IMPORTADO" if (coste_total is not None and not missing_any_cost) else "REVISAR"
+                if estado != "IMPORTADO":
                     revisar += 1
                 variedad = self._clean_text(vals[col_map["Variedad"]]) if "Variedad" in col_map else "TODAS"
                 condicion1 = self._clean_text(vals[col_map["Condicion1"]]) if "Condicion1" in col_map else "TODAS"
@@ -276,14 +281,14 @@ class ForfaitRepository:
                 conn.execute(
                     f"""
                     INSERT INTO "{self.TABLE_RELATED}" ("Campaña", Cultivo, Variedad, Condicion1, IdConfeccion, Grupo, NombreConfeccion, Marca,
-                        CosteMaterialEurKg, CosteManoObraEurKg, CosteTotalEurKg,
+                        CosteMaterialEurKg, CosteRecoleccionTransporteEurKg, CosteGastosGeneralesEurKg, CosteManoObraEurKg, CosteTotalEurKg,
                         Estado, OrigenArchivo, HojaOrigen, FechaImportacion)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT("Campaña", Cultivo, IdConfeccion) DO UPDATE SET
                         Grupo=excluded.Grupo,
-                        NombreConfeccion=excluded.NombreConfeccion,
-                        Marca=excluded.Marca,
                         CosteMaterialEurKg=excluded.CosteMaterialEurKg,
+                        CosteRecoleccionTransporteEurKg=excluded.CosteRecoleccionTransporteEurKg,
+                        CosteGastosGeneralesEurKg=excluded.CosteGastosGeneralesEurKg,
                         CosteManoObraEurKg=excluded.CosteManoObraEurKg,
                         CosteTotalEurKg=excluded.CosteTotalEurKg,
                         Estado=excluded.Estado,
@@ -291,7 +296,7 @@ class ForfaitRepository:
                         HojaOrigen=excluded.HojaOrigen,
                         FechaImportacion=excluded.FechaImportacion
                     """,
-                    [campana, cultivo, variedad or "TODAS", condicion1 or "TODAS", id_conf, grupo, nombre_conf, marca, coste_material, coste_mano_obra, coste_total, estado, str(file_path), sheet_name, now],
+                    [campana, cultivo, variedad or "TODAS", condicion1 or "TODAS", id_conf, grupo, "", "", coste_material, coste_recoleccion, coste_gastos, coste_mano_obra, coste_total, estado, str(file_path), sheet_name, now],
                 )
                 imported_keys.append((campana, cultivo, id_conf))
                 actualizados += 1 if exists else 0
@@ -663,13 +668,24 @@ class ForfaitRepository:
                 "GrupoConfeccion": row.get("GrupoConfeccion", ""),
                 "Marca": row.get("Marca", ""),
                 "CosteMaterialEurKg": record.get("CosteMaterialEurKg") if record else None,
+                "CosteRecoleccionTransporteEurKg": record.get("CosteRecoleccionTransporteEurKg") if record else None,
+                "CosteGastosGeneralesEurKg": record.get("CosteGastosGeneralesEurKg") if record else None,
                 "CosteManoObraEurKg": record.get("CosteManoObraEurKg") if record else None,
                 "CosteTotalEurKg": record.get("CosteTotalEurKg") if record else None,
                 "Estado": record.get("Estado") if record else "SIN_FORFAIT",
                 "OrigenCoste": record.get("OrigenCoste") if record else "SIN_FORFAIT",
             }
+            if record:
+                cost_fields = [
+                    record.get("CosteMaterialEurKg"),
+                    record.get("CosteRecoleccionTransporteEurKg"),
+                    record.get("CosteGastosGeneralesEurKg"),
+                    record.get("CosteManoObraEurKg"),
+                    record.get("CosteTotalEurKg"),
+                ]
+                coverage["Estado"] = "OK" if all(v is not None for v in cost_fields) else "REVISAR"
             if not coverage["Estado"]:
-                coverage["Estado"] = "OK" if coverage["OrigenCoste"] == "EXACTO" else "SIN_FORFAIT"
+                coverage["Estado"] = "SIN_FORFAIT"
             if only_missing and coverage["OrigenCoste"] != "SIN_FORFAIT":
                 continue
             out.append(coverage)
@@ -684,8 +700,14 @@ class ForfaitRepository:
             if rec:
                 row = dict(rec)
                 row["OrigenCoste"] = "EXACTO"
-                if row.get("Estado") in {None, "", "IMPORTADO"}:
-                    row["Estado"] = "OK"
+                cost_fields = [
+                    row.get("CosteMaterialEurKg"),
+                    row.get("CosteRecoleccionTransporteEurKg"),
+                    row.get("CosteGastosGeneralesEurKg"),
+                    row.get("CosteManoObraEurKg"),
+                    row.get("CosteTotalEurKg"),
+                ]
+                row["Estado"] = "OK" if all(v is not None for v in cost_fields) else "REVISAR"
                 return row
         return None
     def reset_mapping_rows(self, cultivo: str, campana: str) -> int:

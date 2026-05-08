@@ -15,12 +15,12 @@ class MapForfaitScreen(ttk.Frame):
         "Campaña",
         "Cultivo",
         "IdConfeccion",
-        "NombreConfeccion",
-        "GrupoConfeccion",
-        "Marca",
-        "CosteMaterialEurKg",
-        "CosteManoObraEurKg",
-        "CosteTotalEurKg",
+        "GRUPO",
+        "Eur/kg Material",
+        "Eur/kg Recoleción y Transporte",
+        "Eur/kg Gastos Generales",
+        "Eur/kg Mano obra",
+        "Eur/kg total",
     ]
     TABLE_COLUMNS = [
         "Campaña", "Cultivo", "IdConfeccion", "NombreConfeccion",
@@ -147,9 +147,9 @@ class MapForfaitScreen(ttk.Frame):
                     row.get("Campaña", ""),
                     row.get("Cultivo", ""),
                     row.get("IdConfeccion", ""),
-                    row.get("NombreConfeccion", ""),
                     row.get("GrupoConfeccion", ""),
-                    row.get("Marca", ""),
+                    "",
+                    "",
                     "",
                     "",
                     "",
@@ -161,7 +161,7 @@ class MapForfaitScreen(ttk.Frame):
 
         for column_index, _column_name in enumerate(self.PENDING_EXPORT_COLUMNS, start=1):
             letter = get_column_letter(column_index)
-            if column_index >= 7:
+            if column_index >= 5:
                 for row_index in range(2, worksheet.max_row + 1):
                     worksheet.cell(row=row_index, column=column_index).number_format = "#,##0.000000"
             max_length = 0

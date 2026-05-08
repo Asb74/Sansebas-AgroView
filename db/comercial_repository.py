@@ -261,7 +261,7 @@ class ComercialRepository:
     def _forfait_join_sql(self, has_calc: bool, cols: set[str]) -> str:
         if not has_calc:
             return ""
-        required = {"Cultivo", "Campaña", "Confeccion", "Variedad", "Confeccion", "Condicion1"}
+        required = {"Cultivo", "Campaña", "Confeccion"}
         if not required.issubset(cols):
             return ""
         if self._has_related_forfait:
@@ -271,11 +271,6 @@ class ComercialRepository:
                 'WHERE fr."Campaña" = CAST(p."Campaña" AS TEXT) '
                 'AND fr."Cultivo" = CAST(p."Cultivo" AS TEXT) '
                 'AND fr."IdConfeccion" = CAST(p."Confeccion" AS TEXT) '
-                'AND fr."Variedad" IN (CAST(p."Variedad" AS TEXT), \'TODAS\') '
-                'AND fr."Condicion1" IN (CAST(p."Condicion1" AS TEXT), \'TODAS\') '
-                'ORDER BY '
-                'CASE WHEN fr."Variedad" = CAST(p."Variedad" AS TEXT) THEN 0 ELSE 1 END, '
-                'CASE WHEN fr."Condicion1" = CAST(p."Condicion1" AS TEXT) THEN 0 ELSE 1 END '
                 'LIMIT 1)'
             )
         if not self._has_forfait_equiv:
