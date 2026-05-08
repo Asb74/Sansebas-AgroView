@@ -35,12 +35,9 @@ class BOAPreciosScreen(ttk.Frame):
         "N pedidos",
     ]
     TABLE_DESV_CLIENTE_COLUMNS = [
-        "Ranking", "Cliente", "Pais", "Kg cliente", "N pedidos", "Precio medio real", "Precio referencia ajustado",
-        "Desviación €/kg", "Impacto €", "Coste material €/kg", "Coste mano obra €/kg",
-        "Coste total forfait €/kg", "Coste forfait total €", "Margen industrial €/kg", "Margen industrial total €",
-        "Impacto ajustado €", "Ranking ajustado", "Estado forfait", "Kg con forfait", "Kg sin forfait", "% cobertura forfait",
-        "Kg total (debug)", "Kg con EurosKG válido (debug)", "Suma ponderada EurosKG (debug)",
-        "Precio real calculado (debug)", "Precio referencia (debug)",
+        "Ranking", "Cliente", "Pais", "Kg", "Precio real €/kg", "Precio orientativo €/kg",
+        "Dif. precio €/kg", "Coste forfait €/kg", "Margen €/kg", "Margen total €",
+        "Cumplimiento %", "Cobertura forfait %", "Estado",
     ]
 
     class _SimpleTableView(ttk.Frame):
@@ -131,12 +128,18 @@ class BOAPreciosScreen(ttk.Frame):
             "cov": tk.StringVar(value="% cobertura precio orientativo: 0.00%"),
         }
         self.desv_kpi_vars = {
+            "kg_analizados": tk.StringVar(value="Kg analizados: 0.00"),
             "kg_con_forfait": tk.StringVar(value="Kg con forfait: 0.00"),
             "kg_sin_forfait": tk.StringVar(value="Kg sin forfait: 0.00"),
-            "cov_forfait": tk.StringVar(value="% cobertura forfait: 0.00%"),
-            "coste_conf": tk.StringVar(value="Coste confección estimado total: 0.00 EUR"),
-            "impacto_aj": tk.StringVar(value="Impacto ajustado total: 0.00 EUR"),
+            "cov_forfait": tk.StringVar(value="Cobertura forfait %: 0.00%"),
+            "margen_total": tk.StringVar(value="Margen total €: 0.00"),
+            "margen_medio": tk.StringVar(value="Margen medio €/kg: 0.0000"),
+            "precio_real": tk.StringVar(value="Precio real medio €/kg: 0.0000"),
+            "precio_ori": tk.StringVar(value="Precio orientativo medio €/kg: 0.0000"),
+            "dif_media": tk.StringVar(value="Diferencia media €/kg: 0.0000"),
+            "coste_forfait": tk.StringVar(value="Coste forfait medio €/kg: 0.0000"),
         }
+        self.desv_sort_var = tk.StringVar(value="margen_total_eur")
         self.figure = None
         self.ax = None
         self.chart = None
@@ -218,7 +221,19 @@ class BOAPreciosScreen(ttk.Frame):
                 padx=(0, 18),
                 pady=(0, 4),
             )
-        AnalysisHelpButton(desv_top, "precios_desviacion_cliente").grid(row=0, column=1, sticky="e")
+        sort_frame = ttk.Frame(desv_top)
+        sort_frame.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        ttk.Label(sort_frame, text="Ordenar por:").grid(row=0, column=0, padx=(0, 4))
+        sort_combo = ttk.Combobox(
+            sort_frame,
+            state="readonly",
+            width=20,
+            textvariable=self.desv_sort_var,
+            values=["margen_total_eur", "margen_eurkg", "cumplimiento_pct", "kg", "dif_precio_eurkg"],
+        )
+        sort_combo.grid(row=0, column=1)
+        sort_combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh())
+        AnalysisHelpButton(desv_top, "precios_desviacion_cliente").grid(row=0, column=2, sticky="e")
         self.desv_toggle = TableChartToggleFrame(
             desv_tab,
             table_builder=lambda parent: self._SimpleTableView(parent, self.TABLE_DESV_CLIENTE_COLUMNS),
@@ -232,6 +247,7 @@ class BOAPreciosScreen(ttk.Frame):
 
     def refresh(self) -> None:
         filters = self.get_filters()
+        filters["desv_sort_by"] = self.desv_sort_var.get()
         data = self.service.get_analisis_precios(filters)
         self.latest_data = data
 
@@ -384,59 +400,48 @@ class BOAPreciosScreen(ttk.Frame):
                     "Ranking": int(r.get("ranking_posicion", 0) or 0),
                     "Cliente": r.get("cliente", ""),
                     "Pais": r.get("pais", ""),
-                    "Kg cliente": f'{float(r.get("kg_cliente", 0) or 0):,.2f}',
-                    "N pedidos": int(r.get("pedidos_count", 0) or 0),
-                    "Precio medio real": f'{float(r.get("precio_medio_real", 0) or 0):,.4f}',
-                    "Precio referencia ajustado": f'{float(r.get("precio_referencia_ajustado", 0) or 0):,.4f}',
-                    "Desviación €/kg": f'{float(r.get("desviacion_eurkg", 0) or 0):,.4f}',
-                    "Impacto €": f'{float(r.get("impacto_eur", 0) or 0):,.2f}',
-                    "Coste material €/kg": self._fmt_optional(r.get("coste_confeccion_eurkg"), 4),
-                    "Coste mano obra €/kg": self._fmt_optional(r.get("coste_mano_obra_eurkg"), 4),
-                    "Coste total forfait €/kg": self._fmt_optional(r.get("coste_total_forfait_eurkg"), 4),
-                    "Coste forfait total €": self._fmt_optional(r.get("coste_total_forfait_total_eur"), 2),
-                    "Margen industrial €/kg": self._fmt_optional(r.get("margen_industrial_eurkg"), 4),
-                    "Margen industrial total €": self._fmt_optional(r.get("margen_industrial_total_eur"), 2),
-                    "Impacto ajustado €": self._fmt_optional(r.get("impacto_ajustado_eur"), 2),
-                    "Ranking ajustado": int(r.get("ranking_ajustado", 0) or 0) if r.get("ranking_ajustado") else "",
-                    "Estado forfait": r.get("estado_forfait", "SIN_FORFAIT"),
-                    "Kg con forfait": f'{float(r.get("kg_forfait_validado", 0) or 0):,.2f}',
-                    "Kg sin forfait": f'{float(r.get("kg_sin_forfait", 0) or 0):,.2f}',
-                    "% cobertura forfait": f'{float(r.get("pct_cobertura_forfait", 0) or 0):,.2f}%',
-                    "Kg total (debug)": f'{float(r.get("debug_kg_total", 0) or 0):,.2f}',
-                    "Kg con EurosKG válido (debug)": f'{float(r.get("debug_kg_euroskg_valido", 0) or 0):,.2f}',
-                    "Suma ponderada EurosKG (debug)": f'{float(r.get("debug_suma_ponderada_euroskg", 0) or 0):,.2f}',
-                    "Precio real calculado (debug)": f'{float(r.get("debug_precio_real_calculado", 0) or 0):,.4f}',
-                    "Precio referencia (debug)": f'{float(r.get("debug_precio_referencia", 0) or 0):,.4f}',
+                    "Kg": f'{float(r.get("kg_cliente", 0) or 0):,.2f}',
+                    "Precio real €/kg": f'{float(r.get("precio_medio_real", 0) or 0):,.4f}',
+                    "Precio orientativo €/kg": f'{float(r.get("precio_referencia_ajustado", 0) or 0):,.4f}',
+                    "Dif. precio €/kg": f'{float(r.get("dif_precio_eurkg", 0) or 0):,.4f}',
+                    "Coste forfait €/kg": self._fmt_optional(r.get("coste_forfait_eurkg"), 4),
+                    "Margen €/kg": self._fmt_optional(r.get("margen_eurkg"), 4),
+                    "Margen total €": f'{float(r.get("margen_total_eur", 0) or 0):,.2f}',
+                    "Cumplimiento %": f'{float(r.get("cumplimiento_pct", 0) or 0):,.2f}%',
+                    "Cobertura forfait %": f'{float(r.get("cobertura_forfait_pct", 0) or 0):,.2f}%',
+                    "Estado": r.get("estado", "REVISAR"),
                     "cliente": r.get("cliente", ""),
                     "impacto_eur": float(r.get("impacto_eur", 0) or 0),
                     "desviacion_eurkg": float(r.get("desviacion_eurkg", 0) or 0),
                     "kg_cliente": float(r.get("kg_cliente", 0) or 0),
                     "pedidos_count": int(r.get("pedidos_count", 0) or 0),
-                    "__tags__": self._semaforo_tag(
-                        float(r.get("desviacion_eurkg", 0) or 0),
-                        float(r.get("impacto_eur", 0) or 0),
-                    ),
+                    "__tags__": self._estado_tag(str(r.get("estado", "REVISAR"))),
                 }
             )
         self.desv_toggle.set_data(mapped)
         self.logger.info("Desviacion por cliente: tabla actualizada (%s filas)", len(mapped))
 
     def _fill_desv_kpis(self, kpis: dict[str, Any]) -> None:
+        self.desv_kpi_vars["kg_analizados"].set(
+            f'Kg analizados: {float(kpis.get("kg_analizados", 0) or 0):,.2f}'
+        )
         self.desv_kpi_vars["kg_con_forfait"].set(
-            f'Kg con forfait: {float(kpis.get("kg_con_forfait_validado", 0) or 0):,.2f}'
+            f'Kg con forfait: {float(kpis.get("kg_con_forfait", 0) or 0):,.2f}'
         )
         self.desv_kpi_vars["kg_sin_forfait"].set(
             f'Kg sin forfait: {float(kpis.get("kg_sin_forfait", 0) or 0):,.2f}'
         )
         self.desv_kpi_vars["cov_forfait"].set(
-            f'% cobertura forfait: {float(kpis.get("pct_cobertura_forfait", 0) or 0):,.2f}%'
+            f'Cobertura forfait %: {float(kpis.get("cobertura_forfait_pct", 0) or 0):,.2f}%'
         )
-        self.desv_kpi_vars["coste_conf"].set(
-            f'Coste confección estimado total: {float(kpis.get("coste_confeccion_estimado_total", 0) or 0):,.2f} EUR'
+        self.desv_kpi_vars["margen_total"].set(
+            f'Margen total €: {float(kpis.get("margen_total_eur", 0) or 0):,.2f}'
         )
-        self.desv_kpi_vars["impacto_aj"].set(
-            f'Impacto ajustado total: {float(kpis.get("impacto_ajustado_total", 0) or 0):,.2f} EUR'
-        )
+        self.desv_kpi_vars["margen_medio"].set(f'Margen medio €/kg: {float(kpis.get("margen_medio_eurkg", 0) or 0):,.4f}')
+        self.desv_kpi_vars["precio_real"].set(f'Precio real medio €/kg: {float(kpis.get("precio_real_medio_eurkg", 0) or 0):,.4f}')
+        self.desv_kpi_vars["precio_ori"].set(f'Precio orientativo medio €/kg: {float(kpis.get("precio_orientativo_medio_eurkg", 0) or 0):,.4f}')
+        self.desv_kpi_vars["dif_media"].set(f'Diferencia media €/kg: {float(kpis.get("dif_media_eurkg", 0) or 0):,.4f}')
+        self.desv_kpi_vars["coste_forfait"].set(f'Coste forfait medio €/kg: {float(kpis.get("coste_forfait_medio_eurkg", 0) or 0):,.4f}')
 
     @staticmethod
     def _fmt_optional(value: Any, decimals: int) -> str:
@@ -452,10 +457,14 @@ class BOAPreciosScreen(ttk.Frame):
         return
 
     @staticmethod
-    def _semaforo_tag(desviacion: float, impacto: float) -> str:
-        if desviacion > 0.02 or impacto > 0:
+    def _estado_tag(estado: str) -> str:
+        if estado == "BUENO":
             return "tag_green"
-        if desviacion < -0.02 or impacto < 0:
+        if estado == "ACEPTABLE":
+            return "tag_green_soft"
+        if estado in {"REVISAR", "PARCIAL"}:
+            return "tag_yellow"
+        if estado in {"MALO", "SIN_FORFAIT"}:
             return "tag_red"
         return "tag_yellow"
 
