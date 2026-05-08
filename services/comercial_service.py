@@ -137,16 +137,23 @@ class ComercialService:
         # Importante: no pasar por _enrich_metrics aquí para no sobrescribir
         # precio_medio_real/precio_referencia específicos de la desviación.
         rows = [dict(r) for r in payload.get("rows", [])]
-        rows_sorted = sorted(rows, key=lambda r: float(r.get("impacto_eur", 0) or 0), reverse=True)
+        sort_key = str(filters.get("desv_sort_by") or "margen_total_eur")
+        for row in rows:
+            row["cumplimiento_pct"] = (
+                (float(row.get("precio_medio_real") or 0) / float(row.get("precio_referencia_ajustado") or 0) * 100.0)
+                if float(row.get("precio_referencia_ajustado") or 0) > 0
+                else 0.0
+            )
+            row["dif_precio_eurkg"] = float(row.get("desviacion_eurkg") or 0)
+            row["coste_forfait_eurkg"] = float(row.get("coste_total_forfait_eurkg") or 0) if row.get("coste_total_forfait_eurkg") is not None else None
+            row["margen_eurkg"] = float(row.get("margen_industrial_eurkg") or 0) if row.get("coste_total_forfait_eurkg") is not None else None
+            row["margen_total_eur"] = float(row.get("margen_industrial_eurkg") or 0) * float(row.get("kg_forfait_validado") or 0) if row.get("coste_total_forfait_eurkg") is not None else 0.0
+            row["cobertura_forfait_pct"] = float(row.get("pct_cobertura_forfait") or 0)
+            row["estado"] = self._resolve_estado(row)
+        rows_sorted = sorted(rows, key=lambda r: self._ranking_value(r, sort_key), reverse=True)
         for idx, row in enumerate(rows_sorted, start=1):
             row["ranking_posicion"] = idx
-            impacto = float(row.get("impacto_eur", 0) or 0)
-            if impacto > 0:
-                row["ranking_tipo"] = "BUENO"
-            elif impacto < 0:
-                row["ranking_tipo"] = "MALO"
-            else:
-                row["ranking_tipo"] = "NEUTRO"
+            row["ranking_tipo"] = row.get("estado", "REVISAR")
         ajustables = [
             row for row in rows_sorted
             if row.get("impacto_ajustado_eur") is not None and str(row.get("estado_forfait") or "") != "SIN_FORFAIT"
@@ -163,8 +170,8 @@ class ComercialService:
         out = {
             "rows": rows_sorted,
             "grafica": [dict(r) for r in rows_sorted[:15]],
-            "top_buenos": [dict(r) for r in rows_sorted if float(r.get("impacto_eur", 0) or 0) > 0][:15],
-            "top_malos": [dict(r) for r in sorted(rows_sorted, key=lambda r: float(r.get("impacto_eur", 0) or 0)) if float(r.get("impacto_eur", 0) or 0) < 0][:15],
+            "top_buenos": [dict(r) for r in rows_sorted if float(r.get("margen_total_eur", 0) or 0) > 0][:15],
+            "top_malos": [dict(r) for r in sorted(rows_sorted, key=lambda r: float(r.get("margen_total_eur", 0) or 0)) if float(r.get("margen_total_eur", 0) or 0) < 0][:15],
             "kpis_forfait": kpis_forfait,
             "warnings": warnings,
         }
@@ -174,22 +181,56 @@ class ComercialService:
 
     @staticmethod
     def _build_forfait_kpis(rows: list[dict[str, Any]]) -> dict[str, float]:
-        kg_total = sum(float(r.get("debug_kg_euroskg_valido") or 0) for r in rows)
+        kg_total = sum(float(r.get("kg_cliente") or 0) for r in rows)
         kg_forfait = sum(float(r.get("kg_forfait_validado") or 0) for r in rows)
         kg_sin = max(kg_total - kg_forfait, 0.0)
-        coste_total = sum(float(r.get("coste_total_forfait_total_eur") or 0) for r in rows)
-        impacto_ajustado = sum(
-            float(r.get("impacto_ajustado_eur") or 0)
-            for r in rows
-            if r.get("impacto_ajustado_eur") is not None
-        )
+        coste_total = sum(float(r.get("coste_total_forfait_total_eur") or 0) for r in rows if r.get("coste_total_forfait_total_eur") is not None)
+        importe_real_total = sum(float(r.get("importe_real") or 0) for r in rows)
+        importe_orient_total = sum(float(r.get("precio_referencia_ajustado") or 0) * float(r.get("kg_cliente") or 0) for r in rows)
+        margen_total = sum(float(r.get("margen_total_eur") or 0) for r in rows)
         return {
-            "kg_con_forfait_validado": kg_forfait,
+            "kg_analizados": kg_total,
+            "kg_con_forfait": kg_forfait,
             "kg_sin_forfait": kg_sin,
-            "pct_cobertura_forfait": (kg_forfait / kg_total * 100.0) if kg_total else 0.0,
-            "coste_confeccion_estimado_total": coste_total,
-            "impacto_ajustado_total": impacto_ajustado,
+            "cobertura_forfait_pct": (kg_forfait / kg_total * 100.0) if kg_total else 0.0,
+            "precio_real_medio_eurkg": (importe_real_total / kg_total) if kg_total else 0.0,
+            "precio_orientativo_medio_eurkg": (importe_orient_total / kg_total) if kg_total else 0.0,
+            "dif_media_eurkg": ((importe_real_total - importe_orient_total) / kg_total) if kg_total else 0.0,
+            "coste_forfait_medio_eurkg": (coste_total / kg_forfait) if kg_forfait else 0.0,
+            "margen_medio_eurkg": (margen_total / kg_forfait) if kg_forfait else 0.0,
+            "margen_total_eur": margen_total,
         }
+
+    @staticmethod
+    def _ranking_value(row: dict[str, Any], sort_key: str) -> float:
+        mapping = {
+            "margen_total_eur": "margen_total_eur",
+            "margen_eurkg": "margen_eurkg",
+            "cumplimiento_pct": "cumplimiento_pct",
+            "kg": "kg_cliente",
+            "dif_precio_eurkg": "dif_precio_eurkg",
+        }
+        return float(row.get(mapping.get(sort_key, "margen_total_eur")) or 0)
+
+    @staticmethod
+    def _resolve_estado(row: dict[str, Any]) -> str:
+        kg_forfait = float(row.get("kg_forfait_validado") or 0)
+        kg_sin = float(row.get("kg_sin_forfait") or 0)
+        cobertura = float(row.get("pct_cobertura_forfait") or 0)
+        margen = float(row.get("margen_industrial_eurkg") or 0) if row.get("coste_total_forfait_eurkg") is not None else 0
+        cumplimiento = float(row.get("cumplimiento_pct") or 0)
+        precio_ref = float(row.get("precio_referencia_ajustado") or 0)
+        if kg_forfait <= 0:
+            return "SIN_FORFAIT"
+        if kg_forfait > 0 and kg_sin > 0:
+            return "PARCIAL"
+        if cobertura < 100 or precio_ref <= 0:
+            return "REVISAR"
+        if margen < 0 or cumplimiento < 95:
+            return "MALO"
+        if margen >= 0 and cumplimiento < 100:
+            return "ACEPTABLE"
+        return "BUENO"
 
     @staticmethod
     def _as_list(value: Any) -> list[str]:
