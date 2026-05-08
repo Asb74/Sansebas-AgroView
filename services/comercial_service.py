@@ -134,6 +134,7 @@ class ComercialService:
             return self._desv_clientes_cache_value
 
         payload = self.repository.get_desviacion_clientes(filters)
+        settings = self.get_ranking_cliente_settings()
         # Importante: no pasar por _enrich_metrics aquí para no sobrescribir
         # precio_medio_real/precio_referencia específicos de la desviación.
         rows = [dict(r) for r in payload.get("rows", [])]
@@ -162,6 +163,7 @@ class ComercialService:
             row["margen_ajustado_eurkg"] = (float(row.get("margen_eurkg") or 0) - row["penalizacion_reclamaciones_eurkg"]) if row.get("margen_eurkg") is not None else -row["penalizacion_reclamaciones_eurkg"]
             row["margen_ajustado_total_eur"] = row["margen_ajustado_eurkg"] * kg_cliente
             row["estado"] = "REVISAR"
+            row["estado_cobertura"] = "COMPLETA" if row["cobertura_forfait_pct"] >= 100 else ("PARCIAL" if row["cobertura_forfait_pct"] > 0 else "SIN_FORFAIT")
         max_kg = max((float(r.get("kg_cliente") or 0) for r in rows), default=0.0)
         penalizaciones = [float(r.get("penalizacion_reclamaciones_eurkg") or 0) for r in rows]
         max_pen = max(penalizaciones) if penalizaciones else 0.0
@@ -179,7 +181,15 @@ class ComercialService:
             indice_cumplimiento = min(max(cumplimiento, 0.0), 120.0) / 120.0 * 100.0
             indice_volumen = (kg_cliente / max_kg * 100.0) if max_kg > 0 else 0.0
             indice_reclamaciones = 100.0 - (((penalizacion - min_pen) / pen_span * 100.0) if pen_span > 0 else 0.0)
-            indice = (indice_margen * 0.50) + (indice_cumplimiento * 0.20) + (indice_volumen * 0.15) + (indice_reclamaciones * 0.15)
+            wr = float(settings.get("PesoRentabilidad", 50) or 50)
+            wc = float(settings.get("PesoCumplimiento", 20) or 20)
+            wv = float(settings.get("PesoVolumen", 15) or 15)
+            wq = float(settings.get("PesoReclamaciones", 15) or 15)
+            row["pts_rentabilidad"] = indice_margen * (wr / 100.0)
+            row["pts_precio"] = indice_cumplimiento * (wc / 100.0)
+            row["pts_volumen"] = indice_volumen * (wv / 100.0)
+            row["penalizacion_reclam"] = (100.0 - indice_reclamaciones) * (wq / 100.0)
+            indice = row["pts_rentabilidad"] + row["pts_precio"] + row["pts_volumen"] - row["penalizacion_reclam"]
             row["indice_cliente"] = max(0.0, min(100.0, indice))
             row["estado"] = self._resolve_estado(row)
 
@@ -268,20 +278,25 @@ class ComercialService:
         precio_ref = float(row.get("precio_referencia_ajustado") or 0)
         recl_rate = float(row.get("reclamaciones_por_100k_kg") or 0)
         if kg_forfait <= 0:
-            return "SIN_FORFAIT"
+            return "SIN_DATOS"
         if precio_ref <= 0:
             return "REVISAR"
-        if cobertura < 100:
-            return "PARCIAL"
         if margen_ajustado < 0 or cumplimiento < 95 or recl_rate >= 12:
             return "MALO"
         if margen_ajustado > 0 and cumplimiento >= 100 and cobertura >= 95 and recl_rate < 4:
             return "BUENO"
         if margen_ajustado > 0 and cumplimiento >= 95 and recl_rate < 12:
             return "ACEPTABLE"
-        if kg_sin > 0:
-            return "PARCIAL"
         return "REVISAR"
+
+    def get_ranking_cliente_settings(self) -> dict[str, Any]:
+        return self.repository.get_ranking_cliente_settings()
+
+    def update_ranking_cliente_settings(self, data: dict[str, Any]) -> dict[str, Any]:
+        return self.repository.update_ranking_cliente_settings(data)
+
+    def reset_ranking_cliente_settings(self) -> dict[str, Any]:
+        return self.repository.reset_ranking_cliente_settings()
 
     @staticmethod
     def _as_list(value: Any) -> list[str]:

@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 class ComercialRepository:
     TABLE_PEDIDOS = "Pedidos"
     TABLE_RECLAMACIONES = "DReclamacion"
+    TABLE_RANKING_SETTINGS = "RankingClienteSettings"
 
     def __init__(self, db_pedidos: str | None = None, db_fruta: str | None = None) -> None:
         self.db_pedidos = Path(db_pedidos or (Path(DB_DIR) / DB_PEDIDOS))
@@ -21,6 +22,68 @@ class ComercialRepository:
         self._calc_price_col: str | None = None
         self._calc_cols: set[str] = set()
         self._has_forfait_equiv = False
+
+    def _ensure_ranking_settings_table(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            f'''
+            CREATE TABLE IF NOT EXISTS "{self.TABLE_RANKING_SETTINGS}" (
+                Id INTEGER PRIMARY KEY CHECK (Id = 1),
+                PesoRentabilidad REAL DEFAULT 50,
+                PesoCumplimiento REAL DEFAULT 20,
+                PesoVolumen REAL DEFAULT 15,
+                PesoReclamaciones REAL DEFAULT 15,
+                PesoCobertura REAL DEFAULT 0,
+                MargenBuenoEurKg REAL DEFAULT 0.40,
+                MargenAceptableEurKg REAL DEFAULT 0.20,
+                MargenMinimoEurKg REAL DEFAULT 0.00,
+                CumplimientoBuenoPct REAL DEFAULT 100,
+                CumplimientoAceptablePct REAL DEFAULT 95,
+                CoberturaForfaitMinPct REAL DEFAULT 100,
+                CoberturaForfaitAvisoPct REAL DEFAULT 95,
+                ReclamacionesAltasPor100kKg REAL DEFAULT 5,
+                ReclamacionesMediasPor100kKg REAL DEFAULT 3,
+                ReclamadoAltoEurKg REAL DEFAULT 0.05,
+                ReclamadoMedioEurKg REAL DEFAULT 0.03,
+                PenalizacionReclamacionesMax REAL DEFAULT 15,
+                PenalizarCoberturaParcial INTEGER DEFAULT 0,
+                FechaActualizacion TEXT
+            )
+            '''
+        )
+        conn.execute(
+            f'INSERT OR IGNORE INTO "{self.TABLE_RANKING_SETTINGS}" (Id, FechaActualizacion) VALUES (1, datetime("now"))'
+        )
+
+    def get_ranking_cliente_settings(self) -> dict[str, Any]:
+        with self._connect_pedidos() as conn:
+            self._ensure_ranking_settings_table(conn)
+            row = conn.execute(f'SELECT * FROM "{self.TABLE_RANKING_SETTINGS}" WHERE Id = 1').fetchone()
+            return dict(row) if row else {}
+
+    def update_ranking_cliente_settings(self, data: dict[str, Any]) -> dict[str, Any]:
+        allowed = [
+            "PesoRentabilidad", "PesoCumplimiento", "PesoVolumen", "PesoReclamaciones", "PesoCobertura",
+            "MargenBuenoEurKg", "MargenAceptableEurKg", "MargenMinimoEurKg", "CumplimientoBuenoPct", "CumplimientoAceptablePct",
+            "CoberturaForfaitMinPct", "CoberturaForfaitAvisoPct", "ReclamacionesAltasPor100kKg", "ReclamacionesMediasPor100kKg",
+            "ReclamadoAltoEurKg", "ReclamadoMedioEurKg", "PenalizacionReclamacionesMax", "PenalizarCoberturaParcial",
+        ]
+        updates = [k for k in allowed if k in data]
+        with self._connect_pedidos() as conn:
+            self._ensure_ranking_settings_table(conn)
+            if updates:
+                set_sql = ", ".join([f'"{k}" = ?' for k in updates] + ['"FechaActualizacion" = datetime("now")'])
+                params = [data[k] for k in updates]
+                params.append(1)
+                conn.execute(f'UPDATE "{self.TABLE_RANKING_SETTINGS}" SET {set_sql} WHERE Id = ?', params)
+            row = conn.execute(f'SELECT * FROM "{self.TABLE_RANKING_SETTINGS}" WHERE Id = 1').fetchone()
+            return dict(row) if row else {}
+
+    def reset_ranking_cliente_settings(self) -> dict[str, Any]:
+        with self._connect_pedidos() as conn:
+            conn.execute(f'DROP TABLE IF EXISTS "{self.TABLE_RANKING_SETTINGS}"')
+            self._ensure_ranking_settings_table(conn)
+            row = conn.execute(f'SELECT * FROM "{self.TABLE_RANKING_SETTINGS}" WHERE Id = 1').fetchone()
+            return dict(row) if row else {}
 
     def load_empresas_dict(self) -> tuple[dict[str, str], str | None]:
         if not self.db_fruta.exists():

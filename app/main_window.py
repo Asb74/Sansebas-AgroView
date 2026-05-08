@@ -7,6 +7,8 @@ from screens.import_forfait_screen import ImportForfaitScreen
 from screens.map_forfait_screen import MapForfaitScreen
 from screens.pedidos_screen import PedidosScreen
 from screens.precios_orientativos_screen import PreciosOrientativosScreen
+from screens.ranking_cliente_settings_screen import RankingClienteSettingsScreen
+from services.comercial_service import ComercialService
 from utils.ui_assets import get_logo
 
 
@@ -30,6 +32,7 @@ class MainWindow(tk.Tk):
         self.container.grid_columnconfigure(0, weight=1)
 
         self.current_screen = None
+        self.comercial_service = ComercialService()
         self.show_home()
 
     def _setup_menu(self) -> None:
@@ -37,6 +40,7 @@ class MainWindow(tk.Tk):
         herramientas = tk.Menu(menubar, tearoff=False)
         herramientas.add_command(label="Importar forfait confección", command=self.show_import_forfait)
         herramientas.add_command(label="Mapear forfait/confecciones", command=self.show_map_forfait)
+        herramientas.add_command(label="Configuración ranking clientes", command=self.show_ranking_settings)
         menubar.add_cascade(label="Herramientas", menu=herramientas)
         self.config(menu=menubar)
 
@@ -84,6 +88,9 @@ class MainWindow(tk.Tk):
 
     def show_map_forfait(self) -> None:
         self._show_screen(MapForfaitScreen(self.container, on_back=self.show_home))
+
+    def show_ranking_settings(self) -> None:
+        self._show_screen(RankingClienteSettingsScreen(self.container, service=self.comercial_service, on_back=self.show_home))
 
     def _show_screen(self, screen: ttk.Frame) -> None:
         if self.current_screen is not None:
