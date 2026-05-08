@@ -30,7 +30,7 @@ class MapForfaitScreen(ttk.Frame):
         header = ttk.Frame(self)
         header.grid(row=0, column=0, sticky="ew")
         header.grid_columnconfigure(0, weight=1)
-        ttk.Label(header, text="Control cobertura industrial", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text="Control cobertura confecciones", style="Section.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Button(header, text="Volver", command=self.on_back).grid(row=0, column=1, sticky="e")
 
         controls = ttk.LabelFrame(self, text="Filtro obligatorio", padding=12)
@@ -41,7 +41,8 @@ class MapForfaitScreen(ttk.Frame):
         ttk.Entry(controls, textvariable=self.campana_var, width=18).grid(row=0, column=3, sticky="w", padx=(0, 12))
         ttk.Button(controls, text="Cargar cobertura", command=self.load_rows).grid(row=0, column=4, padx=(0, 8))
         ttk.Checkbutton(controls, text="Mostrar solo sin forfait", variable=self.only_missing_var, command=self.load_rows).grid(row=0, column=5, padx=(0, 8))
-        ttk.Button(controls, text="Exportar pendientes", command=self.export_pending).grid(row=0, column=6)
+        ttk.Button(controls, text="Exportar pendientes", command=self.export_pending).grid(row=0, column=6, padx=(0, 8))
+        ttk.Button(controls, text="Reiniciar forfait", command=self.reset_forfait).grid(row=0, column=7)
 
         self.table = DataTable(self, columns=self.TABLE_COLUMNS)
         self.table.grid(row=2, column=0, sticky="nsew")
@@ -56,10 +57,34 @@ class MapForfaitScreen(ttk.Frame):
         try:
             self.rows = self.service.fetch_coverage_rows(cultivo, campana, self.only_missing_var.get())
         except Exception as exc:
-            messagebox.showerror("Cobertura industrial", str(exc), parent=self)
+            messagebox.showerror("Cobertura confecciones", str(exc), parent=self)
             return
         self.table.set_rows(self._map_rows(self.rows))
         self._set_counter_status()
+
+    def reset_forfait(self) -> None:
+        cultivo = self.cultivo_var.get().strip()
+        campana = self.campana_var.get().strip()
+        if not cultivo or not campana:
+            messagebox.showwarning("Filtro obligatorio", "Indica cultivo y campaña.", parent=self)
+            return
+        confirm = (
+            "Vas a eliminar el forfait importado para:\n"
+            f"Cultivo: {cultivo}\n"
+            f"Campaña: {campana}\n\n"
+            "Esto pondrá a cero los costes cargados para esta campaña/cultivo.\n"
+            "No se eliminarán pedidos ni MConfecciones.\n\n"
+            "¿Quieres continuar?"
+        )
+        if not messagebox.askyesno("Reiniciar forfait", confirm, parent=self):
+            return
+        try:
+            self.service.reset_related_forfait(cultivo, campana)
+        except Exception as exc:
+            messagebox.showerror("Cobertura confecciones", str(exc), parent=self)
+            return
+        self.load_rows()
+        messagebox.showinfo("Reiniciar forfait", f"Forfait reiniciado correctamente para {cultivo} {campana}.", parent=self)
 
     def export_pending(self) -> None:
         pending = [r for r in self.rows if str(r.get("OrigenCoste") or "") == "SIN_FORFAIT"]
