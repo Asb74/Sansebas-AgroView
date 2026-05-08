@@ -630,6 +630,72 @@ class ForfaitRepository:
             )
         return out
 
+
+    def fetch_coverage_rows(self, cultivo: str, campana: str, only_missing: bool = False) -> list[dict[str, Any]]:
+        cultivo_norm = self._norm_key(cultivo)
+        campana_norm = str(campana or "").strip()
+        if not cultivo_norm or not campana_norm:
+            return []
+        base_rows = self._fetch_pedido_confecciones(cultivo_norm, campana_norm)
+        out: list[dict[str, Any]] = []
+        for row in base_rows:
+            record = self._resolve_related_forfait(campana_norm, cultivo_norm, str(row.get("ConfeccionPedido") or ""))
+            coverage = {
+                "Campaña": campana_norm,
+                "Cultivo": cultivo_norm,
+                "Variedad": record.get("Variedad", "") if record else "",
+                "Condicion1": record.get("Condicion1", "") if record else "",
+                "IdConfeccion": str(row.get("ConfeccionPedido") or ""),
+                "NombreConfeccion": row.get("NombreConfeccion", ""),
+                "GrupoConfeccion": row.get("GrupoConfeccion", ""),
+                "Marca": row.get("Marca", ""),
+                "CosteMaterialEurKg": record.get("CosteMaterialEurKg") if record else None,
+                "CosteManoObraEurKg": record.get("CosteManoObraEurKg") if record else None,
+                "CosteTotalEurKg": record.get("CosteTotalEurKg") if record else None,
+                "Estado": record.get("Estado") if record else "SIN_FORFAIT",
+                "OrigenCoste": record.get("OrigenCoste") if record else "SIN_FORFAIT",
+            }
+            if not coverage["Estado"]:
+                coverage["Estado"] = "OK" if coverage["OrigenCoste"] == "EXACTO" else ("APROXIMADO" if coverage["OrigenCoste"] != "SIN_FORFAIT" else "SIN_FORFAIT")
+            if only_missing and coverage["OrigenCoste"] != "SIN_FORFAIT":
+                continue
+            out.append(coverage)
+        return out
+
+    def _resolve_related_forfait(self, campana: str, cultivo: str, id_confeccion: str) -> dict[str, Any] | None:
+        with self._connect_calc() as conn:
+            variants = [
+                ("EXACTO", None, None),
+                ("VARIEDAD_TODAS", "TODAS", None),
+                ("CONDICION_TODAS", None, "TODAS"),
+                ("TODAS", "TODAS", "TODAS"),
+            ]
+            for origen, var_filter, cond_filter in variants:
+                where = ['"Campaña" = ?', 'Cultivo = ?', 'IdConfeccion = ?']
+                params: list[Any] = [campana, cultivo, id_confeccion]
+                if var_filter is None:
+                    where.append('(Variedad <> "TODAS" AND TRIM(Variedad) <> "")')
+                else:
+                    where.append('Variedad = ?')
+                    params.append(var_filter)
+                if cond_filter is None:
+                    where.append('(Condicion1 <> "TODAS" AND TRIM(Condicion1) <> "")')
+                else:
+                    where.append('Condicion1 = ?')
+                    params.append(cond_filter)
+                rec = conn.execute(
+                    f'SELECT * FROM "{self.TABLE_RELATED}" WHERE {' AND '.join(where)} ORDER BY Id DESC LIMIT 1',
+                    params,
+                ).fetchone()
+                if rec:
+                    row = dict(rec)
+                    row["OrigenCoste"] = origen
+                    if origen == "EXACTO" and row.get("Estado") in {None, "", "IMPORTADO"}:
+                        row["Estado"] = "OK"
+                    elif origen != "EXACTO" and row.get("Estado") in {None, "", "IMPORTADO"}:
+                        row["Estado"] = "APROXIMADO"
+                    return row
+        return None
     def reset_mapping_rows(self, cultivo: str, campana: str) -> int:
         cultivo_norm = self._norm_key(cultivo)
         campana_norm = str(campana or "").strip()

@@ -43,6 +43,9 @@ class ForfaitService:
     def reset_mapping_rows(self, cultivo: str, campana: str) -> int:
         return self.repository.reset_mapping_rows(cultivo, campana)
 
+    def fetch_coverage_rows(self, cultivo: str, campana: str, only_missing: bool = False) -> list[dict[str, Any]]:
+        return self.repository.fetch_coverage_rows(cultivo, campana, only_missing)
+
     def update_forfait_field(self, id_forfait: int, field_name: str, value: Any) -> dict[str, Any]:
         return self.repository.update_forfait_field(id_forfait, field_name, value)
 
