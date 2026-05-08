@@ -137,7 +137,7 @@ class ComercialService:
         # Importante: no pasar por _enrich_metrics aquí para no sobrescribir
         # precio_medio_real/precio_referencia específicos de la desviación.
         rows = [dict(r) for r in payload.get("rows", [])]
-        sort_key = str(filters.get("desv_sort_by") or "margen_total_eur")
+        sort_key = str(filters.get("desv_sort_by") or "indice_cliente")
         for row in rows:
             row["cumplimiento_pct"] = (
                 (float(row.get("precio_medio_real") or 0) / float(row.get("precio_referencia_ajustado") or 0) * 100.0)
@@ -149,7 +149,40 @@ class ComercialService:
             row["margen_eurkg"] = float(row.get("margen_industrial_eurkg") or 0) if row.get("coste_total_forfait_eurkg") is not None else None
             row["margen_total_eur"] = float(row.get("margen_industrial_eurkg") or 0) * float(row.get("kg_forfait_validado") or 0) if row.get("coste_total_forfait_eurkg") is not None else 0.0
             row["cobertura_forfait_pct"] = float(row.get("pct_cobertura_forfait") or 0)
+            row["n_reclamaciones"] = int(row.get("pedidos_reclamados") or 0)
+            row["importe_reclamado_eur"] = float(row.get("importe_reclamado") or 0)
+            kg_cliente = float(row.get("kg_cliente") or 0)
+            pedidos_count = float(row.get("pedidos_count") or 0)
+            importe_real = float(row.get("importe_real") or 0)
+            row["reclamaciones_por_pedido"] = (row["n_reclamaciones"] / pedidos_count) if pedidos_count else 0.0
+            row["reclamaciones_por_100k_kg"] = (row["n_reclamaciones"] / kg_cliente * 100000.0) if kg_cliente else 0.0
+            row["reclamado_eurkg"] = (row["importe_reclamado_eur"] / kg_cliente) if kg_cliente else 0.0
+            row["pct_reclamado_ventas"] = (row["importe_reclamado_eur"] / importe_real * 100.0) if importe_real else 0.0
+            row["penalizacion_reclamaciones_eurkg"] = row["reclamado_eurkg"]
+            row["margen_ajustado_eurkg"] = (float(row.get("margen_eurkg") or 0) - row["penalizacion_reclamaciones_eurkg"]) if row.get("margen_eurkg") is not None else -row["penalizacion_reclamaciones_eurkg"]
+            row["margen_ajustado_total_eur"] = row["margen_ajustado_eurkg"] * kg_cliente
+            row["estado"] = "REVISAR"
+        max_kg = max((float(r.get("kg_cliente") or 0) for r in rows), default=0.0)
+        penalizaciones = [float(r.get("penalizacion_reclamaciones_eurkg") or 0) for r in rows]
+        max_pen = max(penalizaciones) if penalizaciones else 0.0
+        min_pen = min(penalizaciones) if penalizaciones else 0.0
+        max_margen_adj = max((float(r.get("margen_ajustado_eurkg") or 0) for r in rows), default=0.0)
+        min_margen_adj = min((float(r.get("margen_ajustado_eurkg") or 0) for r in rows), default=0.0)
+        margen_span = max(max_margen_adj - min_margen_adj, 0.0)
+        pen_span = max(max_pen - min_pen, 0.0)
+        for row in rows:
+            margen_adj = float(row.get("margen_ajustado_eurkg") or 0)
+            cumplimiento = float(row.get("cumplimiento_pct") or 0)
+            kg_cliente = float(row.get("kg_cliente") or 0)
+            penalizacion = float(row.get("penalizacion_reclamaciones_eurkg") or 0)
+            indice_margen = ((margen_adj - min_margen_adj) / margen_span * 100.0) if margen_span > 0 else 100.0
+            indice_cumplimiento = min(max(cumplimiento, 0.0), 120.0) / 120.0 * 100.0
+            indice_volumen = (kg_cliente / max_kg * 100.0) if max_kg > 0 else 0.0
+            indice_reclamaciones = 100.0 - (((penalizacion - min_pen) / pen_span * 100.0) if pen_span > 0 else 0.0)
+            indice = (indice_margen * 0.50) + (indice_cumplimiento * 0.20) + (indice_volumen * 0.15) + (indice_reclamaciones * 0.15)
+            row["indice_cliente"] = max(0.0, min(100.0, indice))
             row["estado"] = self._resolve_estado(row)
+
         rows_sorted = sorted(rows, key=lambda r: self._ranking_value(r, sort_key), reverse=True)
         for idx, row in enumerate(rows_sorted, start=1):
             row["ranking_posicion"] = idx
@@ -188,6 +221,9 @@ class ComercialService:
         importe_real_total = sum(float(r.get("importe_real") or 0) for r in rows)
         importe_orient_total = sum(float(r.get("precio_referencia_ajustado") or 0) * float(r.get("kg_cliente") or 0) for r in rows)
         margen_total = sum(float(r.get("margen_total_eur") or 0) for r in rows)
+        n_reclamaciones = sum(int(r.get("n_reclamaciones") or 0) for r in rows)
+        importe_reclamado_total = sum(float(r.get("importe_reclamado_eur") or 0) for r in rows)
+        margen_ajustado_total = sum(float(r.get("margen_ajustado_total_eur") or 0) for r in rows)
         return {
             "kg_analizados": kg_total,
             "kg_con_forfait": kg_forfait,
@@ -199,6 +235,11 @@ class ComercialService:
             "coste_forfait_medio_eurkg": (coste_total / kg_forfait) if kg_forfait else 0.0,
             "margen_medio_eurkg": (margen_total / kg_forfait) if kg_forfait else 0.0,
             "margen_total_eur": margen_total,
+            "n_reclamaciones": n_reclamaciones,
+            "importe_reclamado_total_eur": importe_reclamado_total,
+            "reclamaciones_por_100k_kg": (n_reclamaciones / kg_total * 100000.0) if kg_total else 0.0,
+            "reclamado_medio_eurkg": (importe_reclamado_total / kg_total) if kg_total else 0.0,
+            "margen_ajustado_total_eur": margen_ajustado_total,
         }
 
     @staticmethod
@@ -209,6 +250,11 @@ class ComercialService:
             "cumplimiento_pct": "cumplimiento_pct",
             "kg": "kg_cliente",
             "dif_precio_eurkg": "dif_precio_eurkg",
+            "indice_cliente": "indice_cliente",
+            "margen_ajustado_total": "margen_ajustado_total_eur",
+            "margen_ajustado_eurkg": "margen_ajustado_eurkg",
+            "reclamado_eurkg": "reclamado_eurkg",
+            "n_reclamaciones": "n_reclamaciones",
         }
         return float(row.get(mapping.get(sort_key, "margen_total_eur")) or 0)
 
@@ -217,20 +263,25 @@ class ComercialService:
         kg_forfait = float(row.get("kg_forfait_validado") or 0)
         kg_sin = float(row.get("kg_sin_forfait") or 0)
         cobertura = float(row.get("pct_cobertura_forfait") or 0)
-        margen = float(row.get("margen_industrial_eurkg") or 0) if row.get("coste_total_forfait_eurkg") is not None else 0
+        margen_ajustado = float(row.get("margen_ajustado_eurkg") or 0)
         cumplimiento = float(row.get("cumplimiento_pct") or 0)
         precio_ref = float(row.get("precio_referencia_ajustado") or 0)
+        recl_rate = float(row.get("reclamaciones_por_100k_kg") or 0)
         if kg_forfait <= 0:
             return "SIN_FORFAIT"
-        if kg_forfait > 0 and kg_sin > 0:
-            return "PARCIAL"
-        if cobertura < 100 or precio_ref <= 0:
+        if precio_ref <= 0:
             return "REVISAR"
-        if margen < 0 or cumplimiento < 95:
+        if cobertura < 100:
+            return "PARCIAL"
+        if margen_ajustado < 0 or cumplimiento < 95 or recl_rate >= 12:
             return "MALO"
-        if margen >= 0 and cumplimiento < 100:
+        if margen_ajustado > 0 and cumplimiento >= 100 and cobertura >= 95 and recl_rate < 4:
+            return "BUENO"
+        if margen_ajustado > 0 and cumplimiento >= 95 and recl_rate < 12:
             return "ACEPTABLE"
-        return "BUENO"
+        if kg_sin > 0:
+            return "PARCIAL"
+        return "REVISAR"
 
     @staticmethod
     def _as_list(value: Any) -> list[str]:

@@ -37,7 +37,8 @@ class BOAPreciosScreen(ttk.Frame):
     TABLE_DESV_CLIENTE_COLUMNS = [
         "Ranking", "Cliente", "Pais", "Kg", "Precio real €/kg", "Precio orientativo €/kg",
         "Dif. precio €/kg", "Coste forfait €/kg", "Margen €/kg", "Margen total €",
-        "Cumplimiento %", "Cobertura forfait %", "Estado",
+        "N reclam.", "Reclam. €/kg", "% reclamado", "Margen ajustado €/kg", "Margen ajustado total €",
+        "Cumplimiento %", "Cobertura forfait %", "Índice cliente", "Estado",
     ]
 
     class _SimpleTableView(ttk.Frame):
@@ -139,7 +140,7 @@ class BOAPreciosScreen(ttk.Frame):
             "dif_media": tk.StringVar(value="Diferencia media €/kg: 0.0000"),
             "coste_forfait": tk.StringVar(value="Coste forfait medio €/kg: 0.0000"),
         }
-        self.desv_sort_var = tk.StringVar(value="margen_total_eur")
+        self.desv_sort_var = tk.StringVar(value="indice_cliente")
         self.figure = None
         self.ax = None
         self.chart = None
@@ -229,7 +230,7 @@ class BOAPreciosScreen(ttk.Frame):
             state="readonly",
             width=20,
             textvariable=self.desv_sort_var,
-            values=["margen_total_eur", "margen_eurkg", "cumplimiento_pct", "kg", "dif_precio_eurkg"],
+            values=["indice_cliente", "margen_ajustado_total", "margen_ajustado_eurkg", "margen_total_eur", "margen_eurkg", "cumplimiento_pct", "kg", "reclamado_eurkg", "n_reclamaciones", "dif_precio_eurkg"],
         )
         sort_combo.grid(row=0, column=1)
         sort_combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh())
@@ -407,8 +408,14 @@ class BOAPreciosScreen(ttk.Frame):
                     "Coste forfait €/kg": self._fmt_optional(r.get("coste_forfait_eurkg"), 4),
                     "Margen €/kg": self._fmt_optional(r.get("margen_eurkg"), 4),
                     "Margen total €": f'{float(r.get("margen_total_eur", 0) or 0):,.2f}',
+                    "N reclam.": int(r.get("n_reclamaciones", 0) or 0),
+                    "Reclam. €/kg": f'{float(r.get("reclamado_eurkg", 0) or 0):,.4f}',
+                    "% reclamado": f'{float(r.get("pct_reclamado_ventas", 0) or 0):,.2f}%',
+                    "Margen ajustado €/kg": f'{float(r.get("margen_ajustado_eurkg", 0) or 0):,.4f}',
+                    "Margen ajustado total €": f'{float(r.get("margen_ajustado_total_eur", 0) or 0):,.2f}',
                     "Cumplimiento %": f'{float(r.get("cumplimiento_pct", 0) or 0):,.2f}%',
                     "Cobertura forfait %": f'{float(r.get("cobertura_forfait_pct", 0) or 0):,.2f}%',
+                    "Índice cliente": f'{float(r.get("indice_cliente", 0) or 0):,.2f}',
                     "Estado": r.get("estado", "REVISAR"),
                     "cliente": r.get("cliente", ""),
                     "impacto_eur": float(r.get("impacto_eur", 0) or 0),
@@ -426,7 +433,7 @@ class BOAPreciosScreen(ttk.Frame):
             f'Kg analizados: {float(kpis.get("kg_analizados", 0) or 0):,.2f}'
         )
         self.desv_kpi_vars["kg_con_forfait"].set(
-            f'Kg con forfait: {float(kpis.get("kg_con_forfait", 0) or 0):,.2f}'
+            f'Margen ajustado total €: {float(kpis.get("margen_ajustado_total_eur", 0) or 0):,.2f}'
         )
         self.desv_kpi_vars["kg_sin_forfait"].set(
             f'Kg sin forfait: {float(kpis.get("kg_sin_forfait", 0) or 0):,.2f}'
@@ -438,10 +445,10 @@ class BOAPreciosScreen(ttk.Frame):
             f'Margen total €: {float(kpis.get("margen_total_eur", 0) or 0):,.2f}'
         )
         self.desv_kpi_vars["margen_medio"].set(f'Margen medio €/kg: {float(kpis.get("margen_medio_eurkg", 0) or 0):,.4f}')
-        self.desv_kpi_vars["precio_real"].set(f'Precio real medio €/kg: {float(kpis.get("precio_real_medio_eurkg", 0) or 0):,.4f}')
-        self.desv_kpi_vars["precio_ori"].set(f'Precio orientativo medio €/kg: {float(kpis.get("precio_orientativo_medio_eurkg", 0) or 0):,.4f}')
-        self.desv_kpi_vars["dif_media"].set(f'Diferencia media €/kg: {float(kpis.get("dif_media_eurkg", 0) or 0):,.4f}')
-        self.desv_kpi_vars["coste_forfait"].set(f'Coste forfait medio €/kg: {float(kpis.get("coste_forfait_medio_eurkg", 0) or 0):,.4f}')
+        self.desv_kpi_vars["precio_real"].set(f'N reclamaciones: {int(kpis.get("n_reclamaciones", 0) or 0)}')
+        self.desv_kpi_vars["precio_ori"].set(f'Importe reclamado total €: {float(kpis.get("importe_reclamado_total_eur", 0) or 0):,.2f}')
+        self.desv_kpi_vars["dif_media"].set(f'Reclamaciones / 100.000 kg: {float(kpis.get("reclamaciones_por_100k_kg", 0) or 0):,.2f}')
+        self.desv_kpi_vars["coste_forfait"].set(f'Reclamado €/kg medio: {float(kpis.get("reclamado_medio_eurkg", 0) or 0):,.4f}')
 
     @staticmethod
     def _fmt_optional(value: Any, decimals: int) -> str:

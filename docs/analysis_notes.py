@@ -211,39 +211,38 @@ ANALYSIS_NOTES = {
     "precios_desviacion_cliente": {
         "title": "Desviacion por cliente",
         "que_mide": (
-            "Compara el precio real de cada cliente contra una referencia ajustada por mezcla de semana, variedad, categoria "
-            "y calibre."
+            "Este ranking compara clientes teniendo en cuenta precio real, precio orientativo, coste total de forfait, volumen de kg y reclamaciones."
         ),
         "como_se_calcula": [
-            "Precio medio real = SUM(NetoCliente * EurosKG) / SUM(NetoCliente) usando solo EurosKG > 0 y NetoCliente > 0.",
-            "Precio referencia ajustado = media ponderada del precio orientativo final segun semana, variedad, categoria y calibre.",
-            "Desviacion EUR/kg = precio real - precio referencia ajustado.",
-            "Impacto EUR = desviacion EUR/kg * kg cliente con EurosKG valido.",
-            "El coste de forfait se obtiene de ForfaitConfeccionRelacionada por Campaña + Cultivo + IdConfeccion (con LEFT JOIN).",
-            "Impacto ajustado EUR = Impacto EUR - Coste forfait total EUR.",
-            "Ranking = ordenado por impacto EUR de mayor a menor.",
-            "Ranking ajustado = ordenado por impacto ajustado EUR.",
-            "Verde = impacto/desviacion positiva; rojo = impacto/desviacion negativa; amarillo = zona neutra.",
+            "Precio real €/kg = importe real vendido / kg vendidos.",
+            "Precio orientativo €/kg = media ponderada del precio orientativo según los kg del cliente.",
+            "Diferencia precio €/kg = precio real €/kg - precio orientativo €/kg.",
+            "Coste forfait €/kg = media ponderada del CosteTotalEurKg importado por confección.",
+            "Margen €/kg = precio real €/kg - coste forfait €/kg.",
+            "Margen total € = margen €/kg * kg con forfait.",
+            "Reclamaciones = número de reclamaciones asociadas al cliente en los filtros actuales.",
+            "Importe reclamado € = suma del importe reclamado por el cliente.",
+            "Reclamado €/kg = importe reclamado € / kg cliente.",
+            "% reclamado = importe reclamado € / importe real vendido * 100.",
+            "Margen ajustado €/kg = margen €/kg - reclamado €/kg.",
+            "Margen ajustado total € = margen ajustado €/kg * kg cliente.",
+            "Índice cliente (0 a 100) = 50% margen ajustado + 20% cumplimiento + 15% volumen + 15% reclamaciones.",
+            "Reclamaciones penalizan por frecuencia y por importe reclamado.",
         ],
         "datos_usados": (
-            "Pedidos.Cliente, Pais, NetoCliente, EurosKG, Semana, VarCoop, Categoria, Calibre, Reclamado y precios "
-            "orientativos originales o calculados. Para forfait se usa ForfaitConfeccionRelacionada enlazada por "
-            "Campaña, Cultivo e IdConfeccion."
+            "Pedidos.Cliente, Pais, NetoCliente, EurosKG, Semana, VarCoop, Categoria, Calibre, Reclamado, precios orientativos y DReclamacion."
         ),
         "limitaciones": (
-            "Si un cliente tiene mezcla de producto muy distinta, la referencia depende de que existan suficientes datos "
-            "comparables. Lineas sin EurosKG valido no entran en el precio real ni en el impacto. Si no hay coste de forfait "
-            "importado para una confeccion, el cliente queda como PARCIAL o SIN_FORFAIT."
+            "Si faltan costes de forfait o no hay cruce fino por pedido/semana para reclamaciones, se usa cruce mínimo Campaña + Cultivo + Cliente."
         ),
         "interpretacion": (
-            "Impacto positivo indica que el cliente vende por encima de su referencia ajustada. Impacto negativo senala "
-            "posible margen perdido o condiciones comerciales por debajo de referencia."
+            "Un buen cliente no es solo el que paga más: también debe dejar margen, cumplir precios, mover volumen y reclamar poco."
         ),
         "uso_practico": (
-            "Prioriza clientes para revisar tarifas, acuerdos, reclamaciones o patrones de venta con impacto economico."
+            "Sirve para priorizar revisiones comerciales y detectar clientes con rentabilidad real degradada por reclamaciones."
         ),
     },
-    "reclamaciones": {
+        "reclamaciones": {
         "title": "Reclamaciones",
         "que_mide": (
             "Resume pedidos y lineas reclamadas, importes reclamados, kilos reclamados, principales clientes y causas."
