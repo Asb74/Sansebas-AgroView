@@ -1,13 +1,29 @@
-import csv
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Any
+
+from openpyxl import Workbook
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 
 from services.forfait_service import ForfaitService
 from widgets.data_table import DataTable
 
 
 class MapForfaitScreen(ttk.Frame):
+    PENDING_EXPORT_COLUMNS = [
+        "Campaña",
+        "Cultivo",
+        "Variedad",
+        "Condicion1",
+        "IdConfeccion",
+        "GRUPO",
+        "Eur/kg Material",
+        "Eur/kg Recoleción y Transporte",
+        "Eur/kg Gastos Generales",
+        "Eur/kg Mano obra",
+        "Eur/kg total",
+    ]
     TABLE_COLUMNS = [
         "Campaña", "Cultivo", "Variedad", "Condicion1", "IdConfeccion", "NombreConfeccion",
         "GrupoConfeccion", "Marca", "CosteMaterialEurKg", "CosteManoObraEurKg", "CosteTotalEurKg", "Estado", "OrigenCoste",
@@ -87,19 +103,93 @@ class MapForfaitScreen(ttk.Frame):
         messagebox.showinfo("Reiniciar forfait", f"Forfait reiniciado correctamente para {cultivo} {campana}.", parent=self)
 
     def export_pending(self) -> None:
-        pending = [r for r in self.rows if str(r.get("OrigenCoste") or "") == "SIN_FORFAIT"]
+        pending = [
+            r for r in self.rows
+            if self._is_pending_for_export(r)
+        ]
         if not pending:
-            self.status_var.set("No hay pendientes SIN_FORFAIT para exportar.")
+            messagebox.showinfo("Exportar pendientes", "No hay confecciones pendientes para exportar.", parent=self)
             return
-        out_path = filedialog.asksaveasfilename(parent=self, defaultextension=".csv", filetypes=[("CSV", "*.csv")], title="Exportar pendientes")
+        cultivo = (self.cultivo_var.get().strip() or "cultivo").replace(" ", "_")
+        campana = (self.campana_var.get().strip() or "campana").replace(" ", "_")
+        suggested_name = f"forfait_pendientes_{cultivo}_{campana}.xlsx"
+        out_path = filedialog.asksaveasfilename(
+            parent=self,
+            defaultextension=".xlsx",
+            initialfile=suggested_name,
+            filetypes=[("Excel", "*.xlsx")],
+            title="Exportar pendientes",
+        )
         if not out_path:
             return
-        with open(out_path, "w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=self.TABLE_COLUMNS)
-            writer.writeheader()
-            for r in self._map_rows(pending):
-                writer.writerow({k: r.get(k, "") for k in self.TABLE_COLUMNS})
+        try:
+            self._export_pending_excel(out_path, pending)
+        except Exception as exc:
+            messagebox.showerror("Exportar pendientes", str(exc), parent=self)
+            return
         self.status_var.set(f"Pendientes exportados: {len(pending)}")
+        messagebox.showinfo(
+            "Exportar pendientes",
+            "Exportación generada correctamente. Rellena los costes y vuelve a importar el Excel.",
+            parent=self,
+        )
+
+    def _export_pending_excel(self, out_path: str, pending_rows: list[dict[str, Any]]) -> None:
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "ForfaitPendientes"
+
+        worksheet.append(self.PENDING_EXPORT_COLUMNS)
+        for cell in worksheet[1]:
+            cell.font = Font(bold=True)
+
+        for row in pending_rows:
+            worksheet.append(
+                [
+                    row.get("Campaña", ""),
+                    row.get("Cultivo", ""),
+                    row.get("Variedad", ""),
+                    row.get("Condicion1", ""),
+                    row.get("IdConfeccion", ""),
+                    row.get("GrupoConfeccion", ""),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                ]
+            )
+
+        worksheet.auto_filter.ref = worksheet.dimensions
+        worksheet.freeze_panes = "A2"
+
+        for column_index, _column_name in enumerate(self.PENDING_EXPORT_COLUMNS, start=1):
+            letter = get_column_letter(column_index)
+            if column_index >= 7:
+                for row_index in range(2, worksheet.max_row + 1):
+                    worksheet.cell(row=row_index, column=column_index).number_format = "#,##0.000000"
+            max_length = 0
+            for cell in worksheet[letter]:
+                value_len = len(str(cell.value or ""))
+                if value_len > max_length:
+                    max_length = value_len
+            worksheet.column_dimensions[letter].width = min(max(max_length + 2, 12), 45)
+
+        workbook.save(out_path)
+
+    @staticmethod
+    def _is_pending_for_export(row: dict[str, Any]) -> bool:
+        estado = str(row.get("Estado") or "").upper()
+        origen_coste = str(row.get("OrigenCoste") or "").upper()
+        if estado in {"SIN_FORFAIT", "REVISAR"} or origen_coste == "SIN_FORFAIT":
+            return True
+        total = row.get("CosteTotalEurKg")
+        if total in (None, ""):
+            return True
+        try:
+            return float(total) == 0.0
+        except (TypeError, ValueError):
+            return True
 
     def _set_counter_status(self) -> None:
         exactos = sum(1 for r in self.rows if r.get("OrigenCoste") == "EXACTO")
