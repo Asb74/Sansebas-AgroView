@@ -1,6 +1,5 @@
-﻿import tkinter as tk
+import tkinter as tk
 from tkinter import ttk
-from tempfile import NamedTemporaryFile
 from typing import Any
 import logging
 
@@ -371,24 +370,25 @@ class BOAPreciosScreen(ttk.Frame):
 
     def _build_report_payload(self) -> dict[str, Any]:
         report = default_report_dict("BOA Comercial - Precios", self.get_filters())
-        report["kpis"] = [(k, str(v)) for k, v in self.latest_data.get("kpis_precios", {}).items()]
-        report["tables"] = [
-            {"title": "Analisis por semana", "columns": self.TABLE_WEEK_COLUMNS, "rows": self.week_table.rows},
-            {"title": "Variedad / calibre", "columns": self.TABLE_VAR_CAL_COLUMNS, "rows": self.var_cal_table.rows},
-            {"title": "Desviación por cliente", "columns": self.TABLE_DESV_CLIENTE_COLUMNS, "rows": self.desv_toggle.rows},
+        report["title"] = "RANKING DE CLIENTES"
+        report["subtitle"] = "Análisis comercial y rentabilidad"
+        report["report_variant"] = "desviacion_cliente_executive"
+        report["kpis"] = [
+            ("Kg analizados", self.kpi_vars["kg_cliente"].get().replace("Kg cliente: ", "")),
+            ("Margen total €", self.kpi_vars["margen_total"].get().replace("Margen total EUR: ", "")),
+            ("Margen medio €/kg", self.kpi_vars["margen_kg"].get().replace("Margen EUR/kg: ", "")),
+            ("Cobertura forfait %", self.kpi_vars["cobertura"].get().replace("Cobertura forfait: ", "")),
+            ("N reclamaciones", self.kpi_vars["n_reclam"].get().replace("N reclamaciones: ", "")),
+            ("Importe reclamado €", self.kpi_vars["reclamado_eur"].get().replace("Reclamado EUR: ", "")),
+            ("Nº clientes analizados", self.kpi_vars["clientes"].get().replace("N clientes: ", "")),
         ]
-        if self.figure is not None:
-            tmp = NamedTemporaryFile(delete=False, suffix=".png")
-            tmp.close()
-            self.figure.savefig(tmp.name, dpi=150, bbox_inches="tight")
-            imgs = [tmp.name]
-            chart_view = self.desv_toggle.chart_view if hasattr(self.desv_toggle, "chart_view") else None
-            if chart_view is not None and hasattr(chart_view, "figure") and chart_view.figure is not None:
-                tmp2 = NamedTemporaryFile(delete=False, suffix=".png")
-                tmp2.close()
-                chart_view.figure.savefig(tmp2.name, dpi=150, bbox_inches="tight")
-                imgs.append(tmp2.name)
-            report["chart_images"] = imgs
+        report["tables"] = [
+            {
+                "title": "Ranking comercial",
+                "columns": ["Ranking", "Cliente", "Pais", "Prioridad", "Estado", "Margen total €"],
+                "rows": self.desv_toggle.rows,
+            },
+        ]
         return report
 
     def _fill_desv_cliente_table(self, rows: list[dict[str, Any]]) -> None:
