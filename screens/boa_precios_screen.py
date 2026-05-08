@@ -38,7 +38,7 @@ class BOAPreciosScreen(ttk.Frame):
         "Ranking", "Cliente", "Pais", "Kg", "Precio real €/kg", "Precio orientativo €/kg",
         "Dif. precio €/kg", "Coste forfait €/kg", "Margen €/kg", "Margen total €",
         "N reclam.", "Reclam. €/kg", "% reclamado", "Margen ajustado €/kg", "Margen ajustado total €",
-        "Cumplimiento %", "Cobertura forfait %", "Estado cobertura", "Pts rentabilidad", "Pts precio", "Pts volumen", "Penalización reclam.", "Índice cliente", "Estado",
+        "Cumplimiento %", "Cobertura forfait %", "Estado cobertura", "Pts rentabilidad", "Pts precio", "Pts volumen", "Penalización reclam.", "Prioridad", "Estado", "PrioridadScore",
     ]
 
     class _SimpleTableView(ttk.Frame):
@@ -140,7 +140,7 @@ class BOAPreciosScreen(ttk.Frame):
             "dif_media": tk.StringVar(value="Diferencia media €/kg: 0.0000"),
             "coste_forfait": tk.StringVar(value="Coste forfait medio €/kg: 0.0000"),
         }
-        self.desv_sort_var = tk.StringVar(value="indice_cliente")
+        self.desv_sort_var = tk.StringVar(value="prioridad_score")
         self.figure = None
         self.ax = None
         self.chart = None
@@ -230,7 +230,7 @@ class BOAPreciosScreen(ttk.Frame):
             state="readonly",
             width=20,
             textvariable=self.desv_sort_var,
-            values=["indice_cliente", "margen_ajustado_total", "margen_ajustado_eurkg", "margen_total_eur", "margen_eurkg", "cumplimiento_pct", "kg", "reclamado_eurkg", "n_reclamaciones", "dif_precio_eurkg"],
+            values=["prioridad_score", "margen_ajustado_total", "margen_ajustado_eurkg", "margen_total_eur", "margen_eurkg", "cumplimiento_pct", "kg", "reclamado_eurkg", "n_reclamaciones", "dif_precio_eurkg"],
         )
         sort_combo.grid(row=0, column=1)
         sort_combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh())
@@ -420,8 +420,9 @@ class BOAPreciosScreen(ttk.Frame):
                     "Pts precio": f'{float(r.get("pts_precio", 0) or 0):,.2f}',
                     "Pts volumen": f'{float(r.get("pts_volumen", 0) or 0):,.2f}',
                     "Penalización reclam.": f'{float(r.get("penalizacion_reclam", 0) or 0):,.2f}',
-                    "Índice cliente": f'{float(r.get("indice_cliente", 0) or 0):,.2f}',
+                    "Prioridad": r.get("prioridad", "MEDIA"),
                     "Estado": r.get("estado", "REVISAR"),
+                    "PrioridadScore": f'{float(r.get("score_prioridad", 0) or 0):,.2f}',
                     "cliente": r.get("cliente", ""),
                     "impacto_eur": float(r.get("impacto_eur", 0) or 0),
                     "desviacion_eurkg": float(r.get("desviacion_eurkg", 0) or 0),

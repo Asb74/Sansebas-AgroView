@@ -138,7 +138,7 @@ class ComercialService:
         # Importante: no pasar por _enrich_metrics aquí para no sobrescribir
         # precio_medio_real/precio_referencia específicos de la desviación.
         rows = [dict(r) for r in payload.get("rows", [])]
-        sort_key = str(filters.get("desv_sort_by") or "indice_cliente")
+        sort_key = str(filters.get("desv_sort_by") or "prioridad_score")
         for row in rows:
             row["cumplimiento_pct"] = (
                 (float(row.get("precio_medio_real") or 0) / float(row.get("precio_referencia_ajustado") or 0) * 100.0)
@@ -165,6 +165,8 @@ class ComercialService:
             row["estado"] = "REVISAR"
             row["estado_cobertura"] = "COMPLETA" if row["cobertura_forfait_pct"] >= 100 else ("PARCIAL" if row["cobertura_forfait_pct"] > 0 else "SIN_FORFAIT")
         max_kg = max((float(r.get("kg_cliente") or 0) for r in rows), default=0.0)
+        max_margen_total = max((float(r.get("margen_total_eur") or 0) for r in rows), default=0.0)
+        max_facturacion = max((float(r.get("importe_real") or 0) for r in rows), default=0.0)
         penalizaciones = [float(r.get("penalizacion_reclamaciones_eurkg") or 0) for r in rows]
         max_pen = max(penalizaciones) if penalizaciones else 0.0
         min_pen = min(penalizaciones) if penalizaciones else 0.0
@@ -189,14 +191,20 @@ class ComercialService:
             row["pts_precio"] = indice_cumplimiento * (wc / 100.0)
             row["pts_volumen"] = indice_volumen * (wv / 100.0)
             row["penalizacion_reclam"] = (100.0 - indice_reclamaciones) * (wq / 100.0)
-            indice = row["pts_rentabilidad"] + row["pts_precio"] + row["pts_volumen"] - row["penalizacion_reclam"]
-            row["indice_cliente"] = max(0.0, min(100.0, indice))
+            wkg = float(settings.get("PesoPrioridadKg", 40) or 40)
+            wm = float(settings.get("PesoPrioridadMargenTotal", 40) or 40)
+            wf = float(settings.get("PesoPrioridadFacturacion", 20) or 20)
+            indice_kg = (kg_cliente / max_kg * 100.0) if max_kg > 0 else 0.0
+            indice_margen_total = (max(float(row.get("margen_total_eur") or 0), 0.0) / max_margen_total * 100.0) if max_margen_total > 0 else 0.0
+            indice_facturacion = (max(float(row.get("importe_real") or 0), 0.0) / max_facturacion * 100.0) if max_facturacion > 0 else 0.0
+            row["score_prioridad"] = max(0.0, min(100.0, (indice_kg * wkg + indice_margen_total * wm + indice_facturacion * wf) / 100.0))
+            row["prioridad"] = self._resolve_prioridad(row["score_prioridad"], settings)
             row["estado"] = self._resolve_estado(row)
 
         rows_sorted = sorted(rows, key=lambda r: self._ranking_value(r, sort_key), reverse=True)
         for idx, row in enumerate(rows_sorted, start=1):
             row["ranking_posicion"] = idx
-            row["ranking_tipo"] = row.get("estado", "REVISAR")
+            row["ranking_tipo"] = row.get("prioridad", "MEDIA")
         ajustables = [
             row for row in rows_sorted
             if row.get("impacto_ajustado_eur") is not None and str(row.get("estado_forfait") or "") != "SIN_FORFAIT"
@@ -260,13 +268,31 @@ class ComercialService:
             "cumplimiento_pct": "cumplimiento_pct",
             "kg": "kg_cliente",
             "dif_precio_eurkg": "dif_precio_eurkg",
-            "indice_cliente": "indice_cliente",
+            "indice_cliente": "score_prioridad",
+            "prioridad_score": "score_prioridad",
             "margen_ajustado_total": "margen_ajustado_total_eur",
             "margen_ajustado_eurkg": "margen_ajustado_eurkg",
             "reclamado_eurkg": "reclamado_eurkg",
             "n_reclamaciones": "n_reclamaciones",
         }
         return float(row.get(mapping.get(sort_key, "margen_total_eur")) or 0)
+
+
+    @staticmethod
+    def _resolve_prioridad(score: float, settings: dict[str, Any]) -> str:
+        umbral_critica = float(settings.get("UmbralCritica", 85) or 85)
+        umbral_muy_alta = float(settings.get("UmbralMuyAlta", 70) or 70)
+        umbral_alta = float(settings.get("UmbralAlta", 50) or 50)
+        umbral_media = float(settings.get("UmbralMedia", 30) or 30)
+        if score >= umbral_critica:
+            return "CRÍTICA"
+        if score >= umbral_muy_alta:
+            return "MUY ALTA"
+        if score >= umbral_alta:
+            return "ALTA"
+        if score >= umbral_media:
+            return "MEDIA"
+        return "BAJA"
 
     @staticmethod
     def _resolve_estado(row: dict[str, Any]) -> str:

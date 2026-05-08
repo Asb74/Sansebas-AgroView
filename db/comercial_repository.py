@@ -33,6 +33,13 @@ class ComercialRepository:
                 PesoVolumen REAL DEFAULT 15,
                 PesoReclamaciones REAL DEFAULT 15,
                 PesoCobertura REAL DEFAULT 0,
+                PesoPrioridadKg REAL DEFAULT 40,
+                PesoPrioridadMargenTotal REAL DEFAULT 40,
+                PesoPrioridadFacturacion REAL DEFAULT 20,
+                UmbralCritica REAL DEFAULT 85,
+                UmbralMuyAlta REAL DEFAULT 70,
+                UmbralAlta REAL DEFAULT 50,
+                UmbralMedia REAL DEFAULT 30,
                 MargenBuenoEurKg REAL DEFAULT 0.40,
                 MargenAceptableEurKg REAL DEFAULT 0.20,
                 MargenMinimoEurKg REAL DEFAULT 0.00,
@@ -53,6 +60,19 @@ class ComercialRepository:
         conn.execute(
             f'INSERT OR IGNORE INTO "{self.TABLE_RANKING_SETTINGS}" (Id, FechaActualizacion) VALUES (1, datetime("now"))'
         )
+        existing_cols = {row[1] for row in conn.execute(f'PRAGMA table_info("{self.TABLE_RANKING_SETTINGS}")').fetchall()}
+        alter_defaults = {
+            "PesoPrioridadKg": "REAL DEFAULT 40",
+            "PesoPrioridadMargenTotal": "REAL DEFAULT 40",
+            "PesoPrioridadFacturacion": "REAL DEFAULT 20",
+            "UmbralCritica": "REAL DEFAULT 85",
+            "UmbralMuyAlta": "REAL DEFAULT 70",
+            "UmbralAlta": "REAL DEFAULT 50",
+            "UmbralMedia": "REAL DEFAULT 30",
+        }
+        for col, decl in alter_defaults.items():
+            if col not in existing_cols:
+                conn.execute(f'ALTER TABLE "{self.TABLE_RANKING_SETTINGS}" ADD COLUMN "{col}" {decl}')
 
     def get_ranking_cliente_settings(self) -> dict[str, Any]:
         with self._connect_pedidos() as conn:
@@ -66,6 +86,8 @@ class ComercialRepository:
             "MargenBuenoEurKg", "MargenAceptableEurKg", "MargenMinimoEurKg", "CumplimientoBuenoPct", "CumplimientoAceptablePct",
             "CoberturaForfaitMinPct", "CoberturaForfaitAvisoPct", "ReclamacionesAltasPor100kKg", "ReclamacionesMediasPor100kKg",
             "ReclamadoAltoEurKg", "ReclamadoMedioEurKg", "PenalizacionReclamacionesMax", "PenalizarCoberturaParcial",
+            "PesoPrioridadKg", "PesoPrioridadMargenTotal", "PesoPrioridadFacturacion",
+            "UmbralCritica", "UmbralMuyAlta", "UmbralAlta", "UmbralMedia",
         ]
         updates = [k for k in allowed if k in data]
         with self._connect_pedidos() as conn:
