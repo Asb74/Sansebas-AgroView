@@ -14,18 +14,16 @@ class MapForfaitScreen(ttk.Frame):
     PENDING_EXPORT_COLUMNS = [
         "Campaña",
         "Cultivo",
-        "Variedad",
-        "Condicion1",
         "IdConfeccion",
-        "GRUPO",
-        "Eur/kg Material",
-        "Eur/kg Recoleción y Transporte",
-        "Eur/kg Gastos Generales",
-        "Eur/kg Mano obra",
-        "Eur/kg total",
+        "NombreConfeccion",
+        "GrupoConfeccion",
+        "Marca",
+        "CosteMaterialEurKg",
+        "CosteManoObraEurKg",
+        "CosteTotalEurKg",
     ]
     TABLE_COLUMNS = [
-        "Campaña", "Cultivo", "Variedad", "Condicion1", "IdConfeccion", "NombreConfeccion",
+        "Campaña", "Cultivo", "IdConfeccion", "NombreConfeccion",
         "GrupoConfeccion", "Marca", "CosteMaterialEurKg", "CosteManoObraEurKg", "CosteTotalEurKg", "Estado", "OrigenCoste",
     ]
 
@@ -148,12 +146,10 @@ class MapForfaitScreen(ttk.Frame):
                 [
                     row.get("Campaña", ""),
                     row.get("Cultivo", ""),
-                    row.get("Variedad", ""),
-                    row.get("Condicion1", ""),
                     row.get("IdConfeccion", ""),
+                    row.get("NombreConfeccion", ""),
                     row.get("GrupoConfeccion", ""),
-                    "",
-                    "",
+                    row.get("Marca", ""),
                     "",
                     "",
                     "",
@@ -193,9 +189,8 @@ class MapForfaitScreen(ttk.Frame):
 
     def _set_counter_status(self) -> None:
         exactos = sum(1 for r in self.rows if r.get("OrigenCoste") == "EXACTO")
-        aprox = sum(1 for r in self.rows if r.get("OrigenCoste") in {"VARIEDAD_TODAS", "CONDICION_TODAS", "TODAS", "MANUAL"})
         sinf = sum(1 for r in self.rows if r.get("OrigenCoste") == "SIN_FORFAIT")
-        self.status_var.set(f"Confecciones usadas: {len(self.rows)} | Con coste exacto: {exactos} | Aproximadas: {aprox} | Sin forfait: {sinf}")
+        self.status_var.set(f"Confecciones usadas: {len(self.rows)} | Con coste exacto: {exactos} | Sin forfait: {sinf}")
 
     def _map_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out = []
@@ -207,8 +202,6 @@ class MapForfaitScreen(ttk.Frame):
             out.append({
                 "Campaña": row.get("Campaña", ""),
                 "Cultivo": row.get("Cultivo", ""),
-                "Variedad": row.get("Variedad", ""),
-                "Condicion1": row.get("Condicion1", ""),
                 "IdConfeccion": row.get("IdConfeccion", ""),
                 "NombreConfeccion": row.get("NombreConfeccion", ""),
                 "GrupoConfeccion": row.get("GrupoConfeccion", ""),
