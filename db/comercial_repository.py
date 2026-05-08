@@ -242,7 +242,7 @@ class ComercialRepository:
                 "SELECT name FROM calcdb.sqlite_master WHERE type='table' AND name='ForfaitConfeccionRelacionada'"
             ).fetchone()
             self._has_related_forfait = bool(related_row)
-            logger.info("Tabla equivalencias forfait encontrada: %s", "sí" if self._has_forfait_equiv else "no")
+            logger.info("Tabla forfait relacionado encontrada: %s", "sí" if self._has_related_forfait else "no")
             return True
         except Exception as exc:
             logger.warning("No se pudo ATTACH de DB auxiliar: %s", exc)
@@ -266,12 +266,10 @@ class ComercialRepository:
             return ""
         if self._has_related_forfait:
             return (
-                'LEFT JOIN calcdb."ForfaitConfeccionRelacionada" ef ON ef.Id = ('
-                'SELECT fr.Id FROM calcdb."ForfaitConfeccionRelacionada" fr '
-                'WHERE fr."Campaña" = CAST(p."Campaña" AS TEXT) '
-                'AND fr."Cultivo" = CAST(p."Cultivo" AS TEXT) '
-                'AND fr."IdConfeccion" = CAST(p."Confeccion" AS TEXT) '
-                'LIMIT 1)'
+                'LEFT JOIN calcdb."ForfaitConfeccionRelacionada" f '
+                'ON CAST(f."Campaña" AS TEXT) = CAST(p."Campaña" AS TEXT) '
+                'AND CAST(f."Cultivo" AS TEXT) = CAST(p."Cultivo" AS TEXT) '
+                'AND CAST(f."IdConfeccion" AS TEXT) = CAST(p."Confeccion" AS TEXT)'
             )
         # Legacy: mantenemos tabla de equivalencias disponible, pero NO la usamos
         # en el cálculo de desviación por cliente del nuevo sistema de forfait.
@@ -963,43 +961,41 @@ class ComercialRepository:
         desviacion = f"(({precio_real}) - ({precio_ref}))"
         forfait_join = self._forfait_join_sql(has_calc, cols)
         if forfait_join:
-            coste_conf_line = 'ef."CosteConfeccionEurKg"'
-            coste_total_line = 'ef."CosteTotalEurKg"'
-            estado_forfait_line = 'ef."Estado"'
+            coste_material_line = 'f."CosteMaterialEurKg"'
+            coste_mano_obra_line = 'f."CosteManoObraEurKg"'
+            coste_total_line = 'f."CosteTotalEurKg"'
         else:
-            coste_conf_line = "NULL"
+            coste_material_line = "NULL"
+            coste_mano_obra_line = "NULL"
             coste_total_line = "NULL"
-            estado_forfait_line = "'SIN_COSTE_FORFAIT'"
         kg_forfait_line = (
             "CASE WHEN cc.coste_total_forfait_eurkg IS NOT NULL AND cc.kg_euroskg_valido > 0 "
             "THEN cc.kg_euroskg_valido ELSE 0 END"
         )
-        kg_revisar_line = (
-            "CASE WHEN cc.coste_total_forfait_eurkg IS NULL "
-            "AND (cc.coste_confeccion_eurkg IS NOT NULL OR cc.estado_forfait_line IS NOT NULL) "
-            "AND cc.kg_euroskg_valido > 0 THEN cc.kg_euroskg_valido ELSE 0 END"
-        )
+        kg_revisar_line = "CASE WHEN cc.coste_total_forfait_eurkg IS NULL AND cc.kg_euroskg_valido > 0 THEN cc.kg_euroskg_valido ELSE 0 END"
         kg_forfait = f"SUM({kg_forfait_line})"
         kg_revisar = f"SUM({kg_revisar_line})"
-        coste_conf_total = f"SUM(({kg_forfait_line}) * COALESCE(cc.coste_confeccion_eurkg, 0))"
-        coste_mano_obra_total = f"SUM(({kg_forfait_line}) * COALESCE(cc.coste_mano_obra_eurkg, 0))"
+        coste_material_total = f"SUM(CASE WHEN cc.coste_material_eurkg IS NOT NULL AND cc.kg_euroskg_valido > 0 THEN cc.kg_euroskg_valido * cc.coste_material_eurkg ELSE 0 END)"
+        coste_mano_obra_total = f"SUM(CASE WHEN cc.coste_mano_obra_eurkg IS NOT NULL AND cc.kg_euroskg_valido > 0 THEN cc.kg_euroskg_valido * cc.coste_mano_obra_eurkg ELSE 0 END)"
         coste_total_forfait = f"SUM(({kg_forfait_line}) * COALESCE(cc.coste_total_forfait_eurkg, 0))"
         precio_real_forfait = self._safe_div(
-            "SUM(CASE WHEN cc.coste_confeccion_eurkg IS NOT NULL THEN cc.suma_ponderada_euroskg ELSE 0 END)",
+            "SUM(CASE WHEN cc.coste_total_forfait_eurkg IS NOT NULL THEN cc.suma_ponderada_euroskg ELSE 0 END)",
             kg_forfait,
         )
         precio_ref_forfait = self._safe_div(
-            "SUM(CASE WHEN cc.coste_confeccion_eurkg IS NOT NULL THEN cc.kg_euroskg_valido * cc.precio_ref ELSE 0 END)",
+            "SUM(CASE WHEN cc.coste_total_forfait_eurkg IS NOT NULL THEN cc.kg_euroskg_valido * cc.precio_ref ELSE 0 END)",
             kg_forfait,
         )
-        coste_conf_avg = self._safe_div(coste_conf_total, kg_forfait)
-        coste_mano_obra_avg = self._safe_div(coste_mano_obra_total, kg_forfait)
+        coste_material_kg = "SUM(CASE WHEN cc.coste_material_eurkg IS NOT NULL AND cc.kg_euroskg_valido > 0 THEN cc.kg_euroskg_valido ELSE 0 END)"
+        coste_material_avg = self._safe_div(coste_material_total, coste_material_kg)
+        coste_mano_obra_kg = "SUM(CASE WHEN cc.coste_mano_obra_eurkg IS NOT NULL AND cc.kg_euroskg_valido > 0 THEN cc.kg_euroskg_valido ELSE 0 END)"
+        coste_mano_obra_avg = self._safe_div(coste_mano_obra_total, coste_mano_obra_kg)
         coste_total_avg = self._safe_div(coste_total_forfait, kg_forfait)
         margen_industrial = f"(({precio_real}) - ({coste_total_avg}))"
         margen_industrial_total = f"(({margen_industrial}) * COALESCE(SUM(cc.kg_cliente), 0))"
         impacto_ajustado = f"(({desviacion} * COALESCE(SUM(cc.kg_cliente), 0)) - ({coste_total_forfait}))"
         estado_forfait = (
-            f"CASE WHEN ({kg_revisar}) > 0 THEN 'REVISAR' "
+            "CASE "
             f"WHEN ({kg_forfait}) <= 0 THEN 'SIN_FORFAIT' "
             f"WHEN ({kg_forfait}) < COALESCE(SUM(cc.kg_cliente), 0) THEN 'PARCIAL' "
             "ELSE 'OK' END"
@@ -1010,9 +1006,9 @@ class ComercialRepository:
                 SELECT
                     p.*,
                     ({orient_final}) AS precio_orientativo_final,
-                    {coste_conf_line} AS coste_confeccion_eurkg,
-                    {coste_total_line} AS coste_total_forfait_eurkg,
-                    {estado_forfait_line} AS estado_forfait_line
+                    {coste_material_line} AS coste_material_eurkg,
+                    {coste_mano_obra_line} AS coste_mano_obra_eurkg,
+                    {coste_total_line} AS coste_total_forfait_eurkg
                 FROM "{self.TABLE_PEDIDOS}" p
                 {self._calc_join_sql(has_calc, line_field)}
                 {forfait_join}
@@ -1034,11 +1030,10 @@ class ComercialRepository:
                     {kg_valid_line} AS kg_euroskg_valido,
                     {weighted_line} AS suma_ponderada_euroskg,
                     p."precio_orientativo_final" AS precio_orientativo_final,
-                    p."coste_confeccion_eurkg" AS coste_confeccion_eurkg,
-                    COALESCE(ef.\"CosteManoObraEurKg\", NULL) AS coste_mano_obra_eurkg,
+                    p."coste_material_eurkg" AS coste_material_eurkg,
+                    p."coste_mano_obra_eurkg" AS coste_mano_obra_eurkg,
                     p."coste_total_forfait_eurkg" AS coste_total_forfait_eurkg,
-                    p."estado_forfait_line" AS estado_forfait_line,
-                    {reclamado_col} AS pedido_reclamado
+                                        {reclamado_col} AS pedido_reclamado
                 FROM filtered p
                 WHERE {neto_cliente} > 0
             ),
@@ -1067,11 +1062,10 @@ class ComercialRepository:
                     c.kg_total_line,
                     c.kg_euroskg_valido,
                     c.suma_ponderada_euroskg,
-                    c.coste_confeccion_eurkg,
+                    c.coste_material_eurkg,
                     c.coste_mano_obra_eurkg,
                     c.coste_total_forfait_eurkg,
-                    c.estado_forfait_line,
-                    c.pedido_reclamado,
+                                        c.pedido_reclamado,
                     COALESCE(r.precio_ref, 0) AS precio_ref
                 FROM comparable c
                 LEFT JOIN refs r
@@ -1091,7 +1085,8 @@ class ComercialRepository:
                 {precio_ref} AS precio_referencia_ajustado,
                 {desviacion} AS desviacion_eurkg,
                 ({desviacion} * COALESCE({real_kg}, 0)) AS impacto_eur,
-                {coste_conf_avg} AS coste_confeccion_eurkg,
+                {coste_material_avg} AS coste_confeccion_eurkg,
+                {coste_material_avg} AS coste_material_eurkg,
                 {coste_mano_obra_avg} AS coste_mano_obra_eurkg,
                 {coste_total_avg} AS coste_total_forfait_eurkg,
                 {coste_total_forfait} AS coste_total_forfait_total_eur,
