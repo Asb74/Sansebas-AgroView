@@ -395,15 +395,25 @@ class PlanningRepository:
         ymd_dmy = f"substr({raw},7,4)||'-'||substr({raw},4,2)||'-'||substr({raw},1,2)"
         return f"CASE WHEN length({raw}) >= 10 AND substr({raw},5,1)='-' THEN {ymd_iso} WHEN length({raw}) >= 10 AND substr({raw},3,1)='/' THEN {ymd_dmy} ELSE {raw} END"
 
-    def get_pedidos_pendientes(self, filters: dict, modo: str = "10_dias") -> tuple[list[dict], dict[str, float]]:
+    def get_pedidos_pendientes(self, filters: dict, modo_pedidos: str = "10_dias") -> tuple[list[dict], dict[str, float]]:
+        logger.info("Cargando pedidos pendientes. Modo=%s Filters=%s", modo_pedidos, filters)
         pedidos_path = self._db_path("DBPedidos.sqlite")
-        if not pedidos_path.exists() or not self.db_loteado.exists():
+        logger.info("Ruta DBPedidos.sqlite usada: %s", pedidos_path)
+        logger.info("DBPedidos.sqlite existe: %s", pedidos_path.exists())
+        if not pedidos_path.exists():
+            logger.warning("No existe DBPedidos.sqlite en la ruta esperada")
+            return [], {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Nº pedidos": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0}
+        if not self.db_loteado.exists():
+            logger.warning("No existe la base de loteado: %s", self.db_loteado)
             return [], {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Nº pedidos": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0}
         with sqlite3.connect(pedidos_path) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute(f"ATTACH DATABASE '{self.db_loteado.as_posix()}' AS loteado_db")
+            tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+            logger.info("Tablas encontradas en DBPedidos.sqlite: %s", tables)
             pedidos_cols = [r["name"] for r in conn.execute('PRAGMA table_info("Pedidos")').fetchall()]
             if not pedidos_cols:
+                logger.warning("No existe la tabla Pedidos en DBPedidos.sqlite")
                 return [], {}
             cancelado_col = self._find_column(pedidos_cols, ["Cancelado"])
             fecha_col = self._find_column(pedidos_cols, ["FechaSalida", "Fecha"])
@@ -419,20 +429,20 @@ class PlanningRepository:
             if cancelado_col:
                 where.append(f'UPPER(TRIM(COALESCE(p."{cancelado_col}",""))) NOT IN (\'1\',\'S\',\'SI\',\'SÍ\',\'TRUE\',\'T\',\'X\')')
             where.append('UPPER(REPLACE(REPLACE(TRIM(COALESCE(p."IdPedidoLora","")), "/", ""), " ", "")) NOT IN (\'SP\',\'PRECALIBRADO\',\'ESTANDAR\',\'ESTÁNDAR\')')
-            if fecha_filtrada and modo == "10_dias":
+            if fecha_filtrada and modo_pedidos == "10_dias":
                 where.append(f'DATE({fecha_expr}) BETWEEN DATE("now","localtime") AND DATE("now","localtime","+10 day")')
-            elif fecha_filtrada and modo == "semana_actual":
+            elif fecha_filtrada and modo_pedidos == "semana_actual":
                 where.append('CAST(COALESCE(p."Semana","") AS TEXT) = strftime("%W","now","localtime")')
-            elif fecha_filtrada and modo == "todos_futuros":
+            elif fecha_filtrada and modo_pedidos == "todos_futuros":
                 where.append(f'DATE({fecha_expr}) >= DATE("now","localtime")')
-            elif fecha_filtrada and modo == "rango":
+            elif fecha_filtrada and modo_pedidos == "rango":
                 if str(filters.get("fecha_desde", "")).strip():
                     where.append(f'DATE({fecha_expr}) >= DATE(?)')
                     params.append(str(filters["fecha_desde"]).strip())
                 if str(filters.get("fecha_hasta", "")).strip():
                     where.append(f'DATE({fecha_expr}) <= DATE(?)')
                     params.append(str(filters["fecha_hasta"]).strip())
-            elif fecha_filtrada and modo in ("semana", "proximas_semanas"):
+            elif fecha_filtrada and modo_pedidos in ("semana", "proximas_semanas"):
                 semanas = self._normalize_filter_values(filters.get("semana"))
                 if semanas:
                     where.append('CAST(COALESCE(p."Semana","") AS TEXT) IN (' + ",".join(["?"] * len(semanas)) + ")")
@@ -470,26 +480,45 @@ class PlanningRepository:
             """
             total_pedidos = conn.execute('SELECT COUNT(*) FROM "Pedidos"').fetchone()[0]
             min_max = conn.execute(f'SELECT MIN({fecha_expr}), MAX({fecha_expr}) FROM "Pedidos" p').fetchone()
-            dist_cult = [r[0] for r in conn.execute('SELECT DISTINCT "Cultivo" FROM "Pedidos" WHERE "Cultivo" IS NOT NULL ORDER BY 1').fetchall()] if "Cultivo" in pedidos_cols else []
-            dist_emp = [r[0] for r in conn.execute('SELECT DISTINCT "EMPRESA" FROM "Pedidos" WHERE "EMPRESA" IS NOT NULL ORDER BY 1').fetchall()] if "EMPRESA" in pedidos_cols else []
-            count_fecha = conn.execute(f'SELECT COUNT(*) FROM "Pedidos" p WHERE DATE({fecha_expr}) IS NOT NULL').fetchone()[0]
-            logger.warning('[DEBUG pedidos] SQL final: %s', query)
-            logger.warning('[DEBUG pedidos] params: %s', params)
-            logger.warning('[DEBUG pedidos] COUNT(*) Pedidos=%s', total_pedidos)
-            logger.warning('[DEBUG pedidos] MIN/MAX FechaSalida=%s/%s', min_max[0], min_max[1])
-            logger.warning('[DEBUG pedidos] DISTINCT Cultivo=%s', dist_cult)
-            logger.warning('[DEBUG pedidos] DISTINCT EMPRESA=%s', dist_emp)
-            logger.warning('[DEBUG pedidos] COUNT FechaSalida NOT NULL=%s', count_fecha)
-            fecha_count = conn.execute(f'SELECT COUNT(*) FROM "Pedidos" p WHERE 1=1 AND {where[2] if len(where) > 2 else "1=1"}', params[:1] if len(params) else []).fetchone()[0]
-            cc_count = conn.execute(
-                f'SELECT COUNT(*) FROM "Pedidos" p WHERE 1=1 AND {where[2] if len(where) > 2 else "1=1"}'
-                + ''.join([f' AND {w}' for w in where if '"Campaña"' in w or '"Cultivo"' in w or '"EMPRESA"' in w]),
-                params,
-            ).fetchone()[0]
+            query_cc = 'SELECT COUNT(*) FROM "Pedidos" p WHERE 1=1'
+            params_cc: list[Any] = []
+            for field, column in (("campana", "Campaña"), ("cultivo", "Cultivo")):
+                if column not in pedidos_cols:
+                    continue
+                vals = self._normalize_filter_values(filters.get(field))
+                if vals:
+                    query_cc += f' AND UPPER(TRIM(COALESCE(p."{column}",""))) IN ({",".join(["UPPER(TRIM(?))"] * len(vals))})'
+                    params_cc.extend(vals)
+            cc_count = conn.execute(query_cc, params_cc).fetchone()[0]
+
+            query_fecha = 'SELECT COUNT(*) FROM "Pedidos" p WHERE 1=1'
+            params_fecha: list[Any] = []
+            if fecha_filtrada and modo_pedidos == "10_dias":
+                query_fecha += f' AND DATE({fecha_expr}) BETWEEN DATE("now","localtime") AND DATE("now","localtime","+10 day")'
+            elif fecha_filtrada and modo_pedidos == "semana_actual":
+                query_fecha += ' AND CAST(COALESCE(p."Semana","") AS TEXT) = strftime("%W","now","localtime")'
+            elif fecha_filtrada and modo_pedidos == "todos_futuros":
+                query_fecha += f' AND DATE({fecha_expr}) >= DATE("now","localtime")'
+            elif fecha_filtrada and modo_pedidos == "rango":
+                if str(filters.get("fecha_desde", "")).strip():
+                    query_fecha += f' AND DATE({fecha_expr}) >= DATE(?)'
+                    params_fecha.append(str(filters["fecha_desde"]).strip())
+                if str(filters.get("fecha_hasta", "")).strip():
+                    query_fecha += f' AND DATE({fecha_expr}) <= DATE(?)'
+                    params_fecha.append(str(filters["fecha_hasta"]).strip())
+            elif fecha_filtrada and modo_pedidos in ("semana", "proximas_semanas"):
+                semanas = self._normalize_filter_values(filters.get("semana"))
+                if semanas:
+                    query_fecha += ' AND CAST(COALESCE(p."Semana","") AS TEXT) IN (' + ",".join(["?"] * len(semanas)) + ")"
+                    params_fecha.extend(semanas)
+            fecha_count = conn.execute(query_fecha, params_fecha).fetchone()[0]
+            logger.info("COUNT(*) FROM Pedidos: %s", total_pedidos)
+            logger.info("MIN(FechaSalida), MAX(FechaSalida): %s, %s", min_max[0], min_max[1])
+            logger.info("COUNT tras filtro campaña/cultivo: %s", cc_count)
+            logger.info("COUNT tras filtro modo fecha: %s", fecha_count)
+            logger.info("SQL final: %s", query)
+            logger.info("Parámetros SQL: %s", params)
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
-            logger.warning('[DEBUG pedidos] filas tras fecha=%s | tras campaña/cultivo/empresa=%s | filas finales=%s', fecha_count, cc_count, len(rows))
-            if not rows:
-                logger.warning('[DEBUG pedidos] 0 líneas -> total antes filtros=%s | tras fecha=%s | tras campaña/cultivo=%s | MIN/MAX FechaSalida=%s/%s', total_pedidos, fecha_count, cc_count, min_max[0], min_max[1])
         out: list[dict] = []
         kpi = {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Nº pedidos": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0}
         pedidos_unicos: set[str] = set()

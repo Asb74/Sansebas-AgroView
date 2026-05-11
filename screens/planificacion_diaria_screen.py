@@ -157,12 +157,13 @@ class PlanificacionDiariaScreen(ttk.Frame):
             logging.getLogger(__name__).warning("No se pudo cargar stock almacén: %s", exc)
             messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock almacén: {exc}")
         pedidos_kpi = {}
+        modo_pedidos = self.pedidos_modo_var.get()
         try:
-            self.pedidos_pendientes_rows, pedidos_kpi = self.service.get_pedidos_pendientes(payload, modo=self.pedidos_modo_var.get())
+            self.pedidos_pendientes_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, modo_pedidos)
         except Exception as exc:
             self.pedidos_pendientes_rows = []
-            logging.getLogger(__name__).warning("No se pudieron cargar pedidos pendientes: %s", exc)
-            messagebox.showwarning("Planificación diaria", f"No se pudieron cargar pedidos pendientes: {exc}")
+            logging.getLogger(__name__).warning("No se pudo cargar pedidos pendientes: %s", exc)
+            messagebox.showwarning("Pedidos pendientes", f"No se pudo cargar pedidos pendientes: {exc}")
         self.campo_table.set_rows(self.stock_campo_rows)
         self.almacen_table.set_rows(self.stock_almacen_rows)
         self.pedidos_table.set_rows(self.pedidos_pendientes_rows)
