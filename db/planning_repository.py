@@ -42,6 +42,17 @@ class PlanningRepository:
         return None
 
     @staticmethod
+    def _find_campana_column(table_columns: list[str]) -> str | None:
+        exact = PlanningRepository._find_column(table_columns, ["CAMPAÑA", "Campaña"])
+        if exact:
+            return exact
+        for col in table_columns:
+            col_norm = col.upper().replace("Ñ", "N").replace(" ", "").replace("_", "")
+            if col_norm.startswith("CAMPA"):
+                return col
+        return None
+
+    @staticmethod
     def _parse_date(value: Any) -> datetime | None:
         if value is None:
             return None
@@ -124,7 +135,7 @@ class PlanningRepository:
             if not ldo_table:
                 return []
             ldo_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
-            camp_col = self._find_column(ldo_cols, ["CAMPAÑA", "Campaña"])
+            camp_col = self._find_campana_column(ldo_cols)
             fecha_col = self._find_column(ldo_cols, ["FechaAlmacen", "FechaCreacion"])
             var_col = self._find_column(ldo_cols, ["Variedad"])
             if not camp_col or not fecha_col:
@@ -226,6 +237,8 @@ class PlanningRepository:
             return [], None
         with sqlite3.connect(path) as conn:
             conn.row_factory = sqlite3.Row
+            db_pedidos = self._db_path("DBPedidos.sqlite")
+            conn.execute(f"ATTACH DATABASE '{db_pedidos.as_posix()}' AS dbpedidos")
             tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
             logger.info("Tablas encontradas: %s", tables)
             ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
@@ -241,7 +254,7 @@ class PlanningRepository:
             if not lote_cols:
                 logger.warning("No existe la tabla %s", lote_table)
                 return [], None
-            camp_col = self._find_column(ldo_cols, ["CAMPAÑA", "Campaña"])
+            camp_col = self._find_campana_column(ldo_cols)
             if not camp_col:
                 logger.warning("No se encontró la columna de campaña en %s", ldo_table)
                 return [], None
@@ -253,18 +266,19 @@ class PlanningRepository:
 
             query = f"""
                 SELECT ldo.CULTIVO as Cultivo, ldo."{camp_col}" as Campana, l.Variedad, l.Calibre,
-                       l.Categoria, l.Marca, l.IdConfeccion, l.Confeccion,
+                       l.Lote as Categoria, mc.MARCA as Marca, l.IdConfeccion, l.Confeccion,
                        COUNT(DISTINCT ldo.IdPalet) AS Palets,
                        SUM(COALESCE(l.Cajas,0)) AS Cajas,
                        SUM(COALESCE(l.Neto,0)) AS KgStock
                 FROM "{ldo_table}" ldo
                 INNER JOIN "{lote_table}" l ON l.IdPalet = ldo.IdPalet
+                LEFT JOIN dbpedidos.MConfecciones mc ON CAST(mc.CODIGO AS TEXT) = CAST(l.IdConfeccion AS TEXT)
                 WHERE UPPER(TRIM(ldo.Estado)) = 'STOCK'
                   AND UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
                   AND UPPER(REPLACE(REPLACE(TRIM(ldo.Pedido), '/', ''), ' ', '')) IN ('SP','PRECALIBRADO','ESTANDAR','ESTÁNDAR')
             """
             params: list[Any] = []
-            for field, col in (("cultivo", "ldo.CULTIVO"), ("empresa", "ldo.EMPRESA"), ("var_coop", "l.Variedad"), ("marca", "l.Marca")):
+            for field, col in (("cultivo", "ldo.CULTIVO"), ("empresa", "ldo.EMPRESA"), ("var_coop", "l.Variedad"), ("marca", "mc.MARCA")):
                 values = self._normalize_filter_values(filters.get(field))
                 if values:
                     placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
@@ -277,7 +291,7 @@ class PlanningRepository:
                 params.extend(campana_values)
             query += """
                 GROUP BY ldo.CULTIVO, ldo.""" + f'"{camp_col}"' + """, l.Variedad, l.Calibre,
-                         l.Categoria, l.Marca, l.IdConfeccion, l.Confeccion
+                         l.Lote, mc.MARCA, l.IdConfeccion, l.Confeccion
             """
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
 
@@ -300,27 +314,30 @@ class PlanningRepository:
             return []
         with sqlite3.connect(path) as conn:
             conn.row_factory = sqlite3.Row
+            db_pedidos = self._db_path("DBPedidos.sqlite")
+            conn.execute(f"ATTACH DATABASE '{db_pedidos.as_posix()}' AS dbpedidos")
             ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
             lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
             if not ldo_table or not lote_table:
                 return []
             ldo_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
-            camp_col = self._find_column(ldo_cols, ["CAMPAÑA", "Campaña"])
+            camp_col = self._find_campana_column(ldo_cols)
             fecha_col = self._find_column(ldo_cols, ["FechaAlmacen", "FechaCreacion"])
             if not camp_col or not fecha_col:
                 return []
             query = f"""
                 SELECT ldo.IdPalet, ldo.Pedido, COALESCE(ldo.{fecha_col}, '') as FechaAlmacen,
-                       ldo.Estado, ldo.Terminado, l.Variedad, l.Calibre, l.Categoria, l.Marca,
+                       ldo.Estado, ldo.Terminado, l.Variedad, l.Calibre, l.Lote as Categoria, mc.MARCA as Marca,
                        l.IdConfeccion, l.Confeccion, SUM(COALESCE(l.Cajas,0)) AS Cajas, SUM(COALESCE(l.Neto,0)) AS Neto
                 FROM "{ldo_table}" ldo
                 INNER JOIN "{lote_table}" l ON l.IdPalet = ldo.IdPalet
+                LEFT JOIN dbpedidos.MConfecciones mc ON CAST(mc.CODIGO AS TEXT) = CAST(l.IdConfeccion AS TEXT)
                 WHERE UPPER(TRIM(ldo.Estado)) = 'STOCK'
                   AND UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
                   AND UPPER(REPLACE(REPLACE(TRIM(ldo.Pedido), '/', ''), ' ', '')) IN ('SP','PRECALIBRADO','ESTANDAR','ESTÁNDAR')
             """
             params: list[Any] = []
-            for field, col in (("cultivo", "ldo.CULTIVO"), ("empresa", "ldo.EMPRESA"), ("var_coop", "l.Variedad"), ("marca", "l.Marca")):
+            for field, col in (("cultivo", "ldo.CULTIVO"), ("empresa", "ldo.EMPRESA"), ("var_coop", "l.Variedad"), ("marca", "mc.MARCA")):
                 values = self._normalize_filter_values(filters.get(field))
                 if values:
                     placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
@@ -333,7 +350,7 @@ class PlanningRepository:
                 params.extend(campana_values)
             query += """
                 GROUP BY ldo.IdPalet, ldo.Pedido, FechaAlmacen, ldo.Estado, ldo.Terminado,
-                         l.Variedad, l.Calibre, l.Categoria, l.Marca, l.IdConfeccion, l.Confeccion
+                         l.Variedad, l.Calibre, l.Lote, mc.MARCA, l.IdConfeccion, l.Confeccion
             """
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
         return rows

@@ -123,8 +123,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 messagebox.showwarning("Planificación diaria", almacen_warning)
         except Exception as exc:
             self.stock_almacen_rows = []
+            self.stock_almacen_detalle_rows = []
             logging.getLogger(__name__).warning("No se pudo cargar stock almacén: %s", exc)
-            messagebox.showwarning("Planificación diaria", "No se pudo cargar stock almacén. Se continuará con stock campo.")
+            messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock almacén: {exc}")
         self.campo_table.set_rows(self.stock_campo_rows)
         self.almacen_table.set_rows(self.stock_almacen_rows)
         self.kpi_campo.set(
