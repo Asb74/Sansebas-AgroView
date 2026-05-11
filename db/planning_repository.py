@@ -167,13 +167,19 @@ class PlanningRepository:
         with sqlite3.connect(fruta_path) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute(f"ATTACH DATABASE '{calidad_path.as_posix()}' AS bdcalidad")
+            db_eepl = self._db_path("DBEEPPL.sqlite")
+            conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepp")
             query = """
                 SELECT p.CULTIVO as Cultivo, p."CAMPAÑA" as Campana, p.Fcarga as FechaCarga,
                        p.Socio, p.Variedad, p.Boleta, p.Plataforma, p.EMPRESA as Empresa,
-                       p.Restricciones, m.Valor as Color, p.Neto, p.NetoPartida
+                       p.Restricciones, m.Valor as Color, p.Neto, p.NetoPartida,
+                       TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')) AS GrupoVarietal
                 FROM PesosFres p
                 LEFT JOIN MRestricciones m ON m.IdRestricciones = p.Restricciones AND m.CULTIVO = p.CULTIVO
                 LEFT JOIN bdcalidad.PartidasIndex pi ON p.AlbaranDef = pi.IdPartida
+                LEFT JOIN dbeepp.MVariedad mv
+                  ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(p.Variedad))
+                 AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(p.CULTIVO))
                 WHERE p.AlbaranDef IS NOT NULL AND p.AlbaranDef <> '' AND pi.IdPartida IS NULL
                   AND p.Plataforma = 'SCA San Sebastian'
                   AND p.CULTIVO NOT IN ('DIRECTO','DIRECTOCHF','INDUSTRIA','VENTA','VENTACHF')
@@ -185,6 +191,11 @@ class PlanningRepository:
                     placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
                     query += f" AND UPPER(TRIM({col})) IN ({placeholders})"
                     params.extend(values)
+            grupo_varietal_values = self._normalize_filter_values(filters.get("grupo_varietal"))
+            if grupo_varietal_values:
+                placeholders = ",".join(["UPPER(TRIM(?))"] * len(grupo_varietal_values))
+                query += f" AND UPPER(TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,''))) IN ({placeholders})"
+                params.extend(grupo_varietal_values)
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
 
         data: list[dict] = []
@@ -209,6 +220,7 @@ class PlanningRepository:
                     "Semana": semana,
                     "Socio": r.get("Socio", ""),
                     "Variedad": r.get("Variedad", ""),
+                    "Grupo varietal": r.get("GrupoVarietal", ""),
                     "Boleta": r.get("Boleta", ""),
                     "Plataforma": r.get("Plataforma", ""),
                     "Empresa": r.get("Empresa", ""),

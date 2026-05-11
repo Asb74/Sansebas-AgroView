@@ -83,7 +83,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
         ttk.Label(self.campo_tab, textvariable=self.kpi_campo, style="KPI.TLabel").pack(anchor="w", pady=(0, 2))
         ttk.Label(self.campo_tab, textvariable=self.last_update).pack(anchor="w", pady=(0, 6))
-        self.campo_table = DataTable(self.campo_tab, ["Cultivo", "Campaña", "Fecha carga", "Semana", "Socio", "Variedad", "Boleta", "Plataforma", "Empresa", "Restricciones", "Color", "Kg campo"])
+        self.campo_table = DataTable(self.campo_tab, ["Cultivo", "Campaña", "Fecha carga", "Semana", "Socio", "Variedad", "Grupo varietal", "Boleta", "Plataforma", "Empresa", "Restricciones", "Color", "Kg campo"])
         self.campo_table.pack(fill="both", expand=True)
 
         header_almacen = ttk.Frame(self.almacen_tab)
