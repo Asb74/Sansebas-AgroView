@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
+import re
 from tkinter import filedialog
 
 from openpyxl import Workbook
@@ -49,11 +51,16 @@ class PlanningService:
             agg[key] += float(r.get("Kg stock", 0) or 0)
         return [{"Cultivo": k[0], "Variedad": k[1], "Calibre": k[2], "Categoría": k[3], "IdConfeccion": k[4], "Kg stock": round(v, 2)} for k, v in agg.items()]
 
-    def export_rows_to_excel(self, rows: list[dict], tab_name: str, cultivo: str, campana: str) -> str | None:
+    def export_rows_to_excel(self, rows: list[dict], tab_name: str, cultivos: list[str], campanas: list[str]) -> str | None:
         if not rows:
             return None
-        suffix = "stock_campo" if tab_name == "Stock campo" else "stock_almacen"
-        default_name = f"{suffix}_{(cultivo or 'todos')}_{(campana or 'todas')}.xlsx".replace(" ", "_")
+        suffix = "Stock_campo" if tab_name == "Stock campo" else "Stock_almacen"
+        fecha = datetime.now().strftime("%Y%m%d")
+        cultivo_txt = "_".join(cultivos) if cultivos else "TODOS"
+        campana_txt = "_".join(campanas) if campanas else "TODOS"
+        base = f"{fecha} {suffix}_{cultivo_txt}_{campana_txt} hechos disponibles"
+        safe_base = re.sub(r'[\\/:*?"<>|]', "_", base)
+        default_name = f"{safe_base}.xlsx"
         target = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile=default_name, filetypes=[("Excel", "*.xlsx")])
         if not target:
             return None

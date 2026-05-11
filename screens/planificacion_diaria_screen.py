@@ -1,6 +1,8 @@
+import json
+import logging
+from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox
-import logging
 
 from services.planning_service import PlanningService
 from widgets.data_table import DataTable
@@ -10,6 +12,9 @@ from widgets.multi_select_filter import MultiSelectFilter
 
 
 class PlanificacionDiariaScreen(ttk.Frame):
+    FILTERS_FILE = Path("config") / "planificacion_diaria_filters.json"
+    FILTER_KEYS = ["campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "marca"]
+
     def __init__(self, master: tk.Misc, on_back) -> None:
         super().__init__(master, padding=16)
         self.on_back = on_back
@@ -23,6 +28,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.stock_almacen_detalle_rows: list[dict] = []
         self._build_ui()
         self._load_filter_options()
+        self._load_filters()
+        self.load_data(save_filters=False)
 
     def _load_filter_options(self) -> None:
         diag = self.service.diagnose_loteado_tables()
@@ -56,9 +63,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
             filters_frame.grid_columnconfigure(i, weight=1)
         btns = ttk.Frame(filters_frame)
         btns.grid(row=2, column=0, columnspan=9, sticky="w", pady=(8, 0))
-        ttk.Button(btns, text="Aplicar filtros", command=self.load_data).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Aplicar filtros", command=lambda: self.load_data(save_filters=True)).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Limpiar filtros", command=self.reset_filters).pack(side="left", padx=(0, 8))
-        ttk.Button(btns, text="Reaplicar filtros", command=self.load_data).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Reaplicar filtros", command=lambda: self.load_data(save_filters=True)).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Exportar Excel", command=self.export_excel).pack(side="left")
         ttk.Label(filters_frame, textvariable=self.filters_status_var).grid(row=3, column=0, columnspan=9, sticky="w", padx=4, pady=(6, 0))
 
@@ -108,7 +115,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             "fecha_hasta": self.fecha_hasta_var.get().strip(),
         }
 
-    def load_data(self) -> None:
+    def load_data(self, save_filters: bool = True) -> None:
         payload = self._filters_payload()
         updated = None
         update_warning = False
@@ -142,23 +149,76 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.last_update.set(f"Última actualización: {updated}" if updated else "Última actualización: No disponible")
         if update_warning:
             messagebox.showwarning("Planificación diaria", "No se pudo leer un archivo auxiliar de actualización. Se continuará sin ese dato.")
-        self.filters_status_var.set(f"Filtros activos: {payload}")
+        if save_filters:
+            self._save_filters(payload)
+        self.filters_status_var.set(self._format_filters_status(payload))
 
     def reset_filters(self) -> None:
         for widget in self.filter_widgets.values():
             widget.clear()
         self.fecha_desde_var.set("")
         self.fecha_hasta_var.set("")
+        self._clear_saved_filters()
         self.filters_status_var.set("Sin filtros activos")
 
     def export_excel(self) -> None:
         tab = self.tabs.tab(self.tabs.select(), "text")
         rows = self.stock_campo_rows if tab == "Stock campo" else self.stock_almacen_rows
-        cultivo = ",".join(self.filter_widgets["cultivo"].get_selected())
-        campana = ",".join(self.filter_widgets["campana"].get_selected())
-        path = self.service.export_rows_to_excel(rows, tab, cultivo, campana)
+        cultivos = self.filter_widgets["cultivo"].get_selected()
+        campanas = self.filter_widgets["campana"].get_selected()
+        path = self.service.export_rows_to_excel(rows, tab, cultivos, campanas)
         if path:
             messagebox.showinfo("Exportación", f"Archivo guardado en:\n{path}")
+
+
+    def _format_filters_status(self, payload: dict) -> str:
+        labels = {
+            "campana": "Campaña",
+            "cultivo": "Cultivo",
+            "empresa": "Empresa",
+            "semana": "Semana",
+            "var_coop": "Variedad Coop",
+            "grupo_varietal": "Grupo varietal",
+            "marca": "Marca",
+            "fecha_desde": "Fecha desde",
+            "fecha_hasta": "Fecha hasta",
+        }
+        has_values = any(payload.get(k) for k in labels)
+        if not has_values:
+            return "Sin filtros activos"
+        parts: list[str] = []
+        for key in ("campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "marca", "fecha_desde", "fecha_hasta"):
+            value = payload.get(key, []) if key in self.FILTER_KEYS else payload.get(key, "")
+            if isinstance(value, list):
+                display = ",".join(value) if value else "Todos"
+            else:
+                display = str(value).strip() or "Todos"
+            parts.append(f"{labels[key]}={display}")
+        return "Filtros activos: " + " | ".join(parts)
+
+    def _save_filters(self, payload: dict) -> None:
+        self.FILTERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self.FILTERS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _load_filters(self) -> None:
+        if not self.FILTERS_FILE.exists():
+            self.filters_status_var.set("Sin filtros activos")
+            return
+        try:
+            payload = json.loads(self.FILTERS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        for key in self.FILTER_KEYS:
+            raw = payload.get(key, [])
+            values = raw if isinstance(raw, list) else ([str(raw)] if str(raw or "").strip() else [])
+            self.filter_widgets[key].set_selected([str(v).strip() for v in values if str(v or "").strip()])
+        self.fecha_desde_var.set(str(payload.get("fecha_desde", "") or "").strip())
+        self.fecha_hasta_var.set(str(payload.get("fecha_hasta", "") or "").strip())
+        self.filters_status_var.set(self._format_filters_status(self._filters_payload()))
+
+    def _clear_saved_filters(self) -> None:
+        if self.FILTERS_FILE.exists():
+            self.FILTERS_FILE.unlink()
 
     def show_detalle_palets(self) -> None:
         if not self.stock_almacen_detalle_rows:
