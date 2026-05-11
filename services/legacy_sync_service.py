@@ -168,13 +168,26 @@ class LegacySyncService:
             )
         return True, "Exportación OK", csv_path, exported
 
+
+    @staticmethod
+    def get_cscript_path() -> str:
+        candidates = [
+            r"C:\Windows\SysWOW64\cscript.exe",
+            r"C:\Windows\System32\cscript.exe",
+            "cscript.exe",
+        ]
+        for candidate in candidates:
+            if candidate == "cscript.exe" or Path(candidate).exists():
+                return candidate
+        return "cscript.exe"
+
     @staticmethod
     def _to_windows_path(path: Path) -> str:
         return str(path).replace("/", "\\")
 
     def _build_vbs_command(self, vbs_path: Path, mdb_path: Path, table: str, csv_path: Path, log_path: Path) -> list[str]:
         return [
-            "cscript",
+            self.get_cscript_path(),
             "//nologo",
             self._to_windows_path(vbs_path),
             self._to_windows_path(mdb_path),

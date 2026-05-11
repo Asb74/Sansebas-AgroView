@@ -11,9 +11,12 @@ tableName = WScript.Arguments(1)
 outputCsvPath = WScript.Arguments(2)
 outputLogPath = WScript.Arguments(3)
 
-Dim conn, rs, fso, csvFile, logFile, connStr
+Dim conn, rs, fso, csvFile, logFile
 Dim rowCount, i
+Dim providerUsed, openErr
 rowCount = 0
+providerUsed = ""
+openErr = ""
 
 On Error Resume Next
 Set fso = CreateObject("Scripting.FileSystemObject")
@@ -25,21 +28,31 @@ If outDir <> "" And Not fso.FolderExists(outDir) Then fso.CreateFolder(outDir)
 On Error Goto 0
 
 Set logFile = fso.OpenTextFile(outputLogPath, 2, True)
-
-On Error Resume Next
 Set conn = CreateObject("ADODB.Connection")
-connStr = "Provider=Microsoft.Jet.OLEDB.4.0;Data Source=" & accessPath & ";"
-conn.Open connStr
-If Err.Number <> 0 Then
-    logFile.WriteLine "ERROR"
-    logFile.WriteLine "Tabla=" & tableName
-    logFile.WriteLine "RegistrosExportados=0"
-    logFile.WriteLine "Mensaje=No se pudo abrir Access: " & Err.Description
-    logFile.Close
-    WScript.Quit 2
+
+If Not TryOpenWithProvider(conn, "Microsoft.Jet.OLEDB.4.0", accessPath, logFile, openErr) Then
+    If Not TryOpenWithProvider(conn, "Microsoft.ACE.OLEDB.12.0", accessPath, logFile, openErr) Then
+        If Not TryOpenWithProvider(conn, "Microsoft.ACE.OLEDB.16.0", accessPath, logFile, openErr) Then
+            logFile.WriteLine "ERROR"
+            logFile.WriteLine "Tabla=" & tableName
+            logFile.WriteLine "RegistrosExportados=0"
+            logFile.WriteLine "Mensaje=No se pudo abrir Access. Falta proveedor Jet/ACE compatible. Prueba ejecutar con cscript 32 bits o instalar Access Database Engine 32 bits."
+            logFile.Close
+            WScript.Quit 2
+        Else
+            providerUsed = "Microsoft.ACE.OLEDB.16.0"
+        End If
+    Else
+        providerUsed = "Microsoft.ACE.OLEDB.12.0"
+    End If
+Else
+    providerUsed = "Microsoft.Jet.OLEDB.4.0"
 End If
 
+logFile.WriteLine "ProveedorUsado=" & providerUsed
+
 Set rs = CreateObject("ADODB.Recordset")
+On Error Resume Next
 rs.Open "SELECT * FROM [" & tableName & "]", conn, 3, 1
 If Err.Number <> 0 Then
     logFile.WriteLine "ERROR"
@@ -50,6 +63,7 @@ If Err.Number <> 0 Then
     conn.Close
     WScript.Quit 3
 End If
+On Error Goto 0
 
 Set csvFile = fso.OpenTextFile(outputCsvPath, 2, True)
 
@@ -79,6 +93,24 @@ logFile.WriteLine "RegistrosExportados=" & rowCount
 logFile.WriteLine "Mensaje=Exportación completada"
 logFile.Close
 WScript.Quit 0
+
+Function TryOpenWithProvider(ByRef dbConn, providerName, dbPath, ByRef lf, ByRef errMsg)
+    Dim connStr
+    connStr = "Provider=" & providerName & ";Data Source=" & dbPath & ";"
+    lf.WriteLine "ProveedorProbado=" & providerName
+
+    On Error Resume Next
+    dbConn.Open connStr
+    If Err.Number <> 0 Then
+        lf.WriteLine "ErrorProveedor(" & providerName & ")=" & Err.Description
+        errMsg = Err.Description
+        Err.Clear
+        TryOpenWithProvider = False
+    Else
+        TryOpenWithProvider = True
+    End If
+    On Error Goto 0
+End Function
 
 Function FieldToText(value)
     If IsNull(value) Then
