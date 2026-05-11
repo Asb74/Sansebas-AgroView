@@ -527,7 +527,6 @@ class PlanningRepository:
                   ON CAST(mc.CODIGO AS TEXT) = CAST(p."Confeccion" AS TEXT)
                 WHERE COALESCE(p."Cancelado", 0) = 0
                   AND UPPER(TRIM(COALESCE(p."IdPedidoLora", ""))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')
-                  AND UPPER(TRIM(COALESCE(p."Pedido", ""))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')
             """
             params: list[Any] = []
 
