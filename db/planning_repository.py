@@ -396,7 +396,7 @@ class PlanningRepository:
         return f"CASE WHEN length({raw}) >= 10 AND substr({raw},5,1)='-' THEN {ymd_iso} WHEN length({raw}) >= 10 AND substr({raw},3,1)='/' THEN {ymd_dmy} ELSE {raw} END"
 
     def get_pedidos_pendientes(self, filters: dict, modo_pedidos: str = "10_dias") -> tuple[list[dict], dict[str, float]]:
-        logger.info("Cargando pedidos pendientes (prueba mínima). Modo=%s Filters=%s", modo_pedidos, filters)
+        logger.info("Cargando pedidos pendientes. Modo=%s Filters=%s", modo_pedidos, filters)
         pedidos_path = self._db_path("DBPedidos.sqlite")
         logger.info("Ruta DBPedidos.sqlite usada: %s", pedidos_path)
         logger.info("DBPedidos.sqlite existe: %s", pedidos_path.exists())
@@ -412,37 +412,75 @@ class PlanningRepository:
                 logger.warning("No existe la tabla Pedidos en DBPedidos.sqlite")
                 return [], kpi_vacio
 
-            total = conn.execute('SELECT COUNT(*) AS TotalPedidos FROM "Pedidos"').fetchone()[0]
-            logger.info("Total pedidos en BD: %s", total)
-
-            muestras = [dict(r) for r in conn.execute('SELECT * FROM "Pedidos" LIMIT 5').fetchall()]
-            for row in muestras:
-                logger.info("Ejemplo pedido: %s", row)
-
-            min_max = conn.execute('SELECT MIN("FechaSalida") AS MinFechaSalida, MAX("FechaSalida") AS MaxFechaSalida FROM "Pedidos"').fetchone()
-            logger.info("MIN(FechaSalida), MAX(FechaSalida): %s, %s", min_max[0], min_max[1])
-
-            if modo_pedidos == "todos":
-                logger.info('Modo pedidos "todos": sin filtro de fecha aplicado (temporal prueba mínima)')
-
-            # PRUEBA MÍNIMA TEMPORAL: sin filtros de campaña/cultivo/empresa/semana/grupo varietal/marca
-            query_minima = """
+            query = """
                 SELECT
                     "IdPedidoLora",
+                    "Pedido",
                     "Linea",
                     "Cliente",
                     "FechaSalida",
                     "Cultivo",
                     "Campaña",
-                    "VariedadCoop",
+                    "VarCoop",
+                    "EMPRESA",
+                    "Semana",
+                    "Marca",
                     "Cajas"
                 FROM "Pedidos"
-                LIMIT 100
+                WHERE COALESCE("Cancelado", 0) = 0
+                  AND UPPER(TRIM(COALESCE("IdPedidoLora", ""))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')
+                  AND UPPER(TRIM(COALESCE("Pedido", ""))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')
             """
-            rows = [dict(r) for r in conn.execute(query_minima).fetchall()]
-            logger.info("Pedidos devueltos prueba mínima: %s", len(rows))
+            params: list[Any] = []
+
+            for field, col in (
+                ("campana", '"Campaña"'),
+                ("cultivo", '"Cultivo"'),
+                ("empresa", '"EMPRESA"'),
+                ("semana", '"Semana"'),
+                ("var_coop", '"VarCoop"'),
+                ("marca", '"Marca"'),
+            ):
+                values = self._normalize_filter_values(filters.get(field))
+                if values:
+                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
+                    query += f" AND UPPER(TRIM(COALESCE({col}, ''))) IN ({placeholders})"
+                    params.extend(values)
+
+            if modo_pedidos == "10_dias":
+                query += " AND date(\"FechaSalida\") BETWEEN date('now') AND date('now', '+10 days')"
+            elif modo_pedidos == "todos_futuros":
+                query += " AND date(\"FechaSalida\") >= date('now')"
+            elif modo_pedidos == "rango":
+                fecha_desde = str(filters.get("fecha_desde") or "").strip()
+                fecha_hasta = str(filters.get("fecha_hasta") or "").strip()
+                if fecha_desde:
+                    query += " AND date(\"FechaSalida\") >= date(?)"
+                    params.append(fecha_desde)
+                if fecha_hasta:
+                    query += " AND date(\"FechaSalida\") <= date(?)"
+                    params.append(fecha_hasta)
+            elif modo_pedidos == "semana_actual":
+                semana_actual = str(datetime.now().isocalendar()[1])
+                query += " AND CAST(COALESCE(\"Semana\", '') AS TEXT) = ?"
+                params.append(semana_actual)
+            elif modo_pedidos == "proximas_semanas":
+                # Se aplica a través del filtro global "semana" cuando venga informado.
+                pass
+            elif modo_pedidos == "todos":
+                # Sin filtro de fecha.
+                pass
+
+            query += """
+                ORDER BY date("FechaSalida") ASC,
+                         "Cliente" ASC,
+                         "IdPedidoLora" ASC,
+                         "Linea" ASC
+            """
+            rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+            logger.info("Pedidos pendientes finales: %s", len(rows))
             if not rows:
-                logger.warning("Prueba mínima de pedidos devolvió 0 filas.")
+                logger.warning("No se encontraron pedidos pendientes con los filtros aplicados.")
                 return [], kpi_vacio
 
         pedidos_unicos = {str(r.get("IdPedidoLora") or "").strip() for r in rows if str(r.get("IdPedidoLora") or "").strip()}
