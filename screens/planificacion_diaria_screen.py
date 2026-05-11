@@ -20,6 +20,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.filters_status_var = tk.StringVar(value="Sin filtros activos")
         self.stock_campo_rows: list[dict] = []
         self.stock_almacen_rows: list[dict] = []
+        self.stock_almacen_detalle_rows: list[dict] = []
         self._build_ui()
         self._load_filter_options()
 
@@ -70,7 +71,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.tabs.add(self.almacen_tab, text="Stock almacén")
 
         self.kpi_campo = tk.StringVar(value="Kg campo total: 0 | Nº partidas: 0 | Nº variedades: 0")
-        self.kpi_almacen = tk.StringVar(value="Kg stock almacén: 0 | Nº palets: 0 | Nº variedades: 0 | Nº calibres: 0")
+        self.kpi_almacen = tk.StringVar(value="Kg stock almacén: 0 | Nº grupos: 0 | Nº variedades: 0 | Nº calibres: 0")
         self.last_update = tk.StringVar(value="")
 
         ttk.Label(self.campo_tab, textvariable=self.kpi_campo, style="KPI.TLabel").pack(anchor="w", pady=(0, 2))
@@ -78,8 +79,11 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.campo_table = DataTable(self.campo_tab, ["Cultivo", "Campaña", "Fecha carga", "Semana", "Socio", "Variedad", "Boleta", "Plataforma", "Empresa", "Restricciones", "Color", "Kg campo"])
         self.campo_table.pack(fill="both", expand=True)
 
-        ttk.Label(self.almacen_tab, textvariable=self.kpi_almacen, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
-        self.almacen_table = DataTable(self.almacen_tab, ["Campaña", "Cultivo", "IdPalet", "Pedido", "Fecha almacén", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Cajas", "Kg stock", "Estado"])
+        header_almacen = ttk.Frame(self.almacen_tab)
+        header_almacen.pack(fill="x", pady=(0, 6))
+        ttk.Label(header_almacen, textvariable=self.kpi_almacen, style="KPI.TLabel").pack(side="left")
+        ttk.Button(header_almacen, text="Ver detalle palets", command=self.show_detalle_palets).pack(side="right")
+        self.almacen_table = DataTable(self.almacen_tab, ["Cultivo", "Campaña", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Palets", "Cajas", "Kg stock", "Agrupado"])
         self.almacen_table.pack(fill="both", expand=True)
 
     def _build_date_field(self, parent: ttk.Frame, row: int, col: int, var: tk.StringVar) -> None:
@@ -114,6 +118,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock campo: {exc}")
         try:
             self.stock_almacen_rows, almacen_warning = self.service.load_stock_almacen(payload)
+            self.stock_almacen_detalle_rows = self.service.load_stock_almacen_detalle_palets(payload)
             if almacen_warning:
                 messagebox.showwarning("Planificación diaria", almacen_warning)
         except Exception as exc:
@@ -128,7 +133,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         )
         self.kpi_almacen.set(
             f"Kg stock almacén: {sum(float(r.get('Kg stock', 0) or 0) for r in self.stock_almacen_rows):,.2f} | "
-            f"Nº palets: {len({r.get('IdPalet') for r in self.stock_almacen_rows})} | "
+            f"Nº grupos: {len(self.stock_almacen_rows)} | "
             f"Nº variedades: {len({r.get('Variedad') for r in self.stock_almacen_rows})} | "
             f"Nº calibres: {len({r.get('Calibre') for r in self.stock_almacen_rows})}"
         )
@@ -152,3 +157,38 @@ class PlanificacionDiariaScreen(ttk.Frame):
         path = self.service.export_rows_to_excel(rows, tab, cultivo, campana)
         if path:
             messagebox.showinfo("Exportación", f"Archivo guardado en:\n{path}")
+
+    def show_detalle_palets(self) -> None:
+        if not self.stock_almacen_detalle_rows:
+            messagebox.showinfo("Planificación diaria", "No hay detalle de palets para los filtros actuales.")
+            return
+        modal = tk.Toplevel(self)
+        modal.title("Detalle palets - Stock almacén")
+        modal.geometry("1320x620")
+        modal.transient(self.winfo_toplevel())
+        modal.grab_set()
+        table = DataTable(
+            modal,
+            ["IdPalet", "Pedido", "FechaAlmacen", "Estado", "Terminado", "Variedad", "Calibre", "Categoria", "Marca", "IdConfeccion", "Confeccion", "Cajas", "Neto"],
+        )
+        table.pack(fill="both", expand=True, padx=10, pady=10)
+        rows = []
+        for row in self.stock_almacen_detalle_rows:
+            rows.append(
+                {
+                    "IdPalet": row.get("IdPalet", ""),
+                    "Pedido": row.get("Pedido", ""),
+                    "FechaAlmacen": row.get("FechaAlmacen", ""),
+                    "Estado": row.get("Estado", ""),
+                    "Terminado": row.get("Terminado", ""),
+                    "Variedad": row.get("Variedad", ""),
+                    "Calibre": row.get("Calibre", ""),
+                    "Categoria": row.get("Categoria", ""),
+                    "Marca": row.get("Marca", ""),
+                    "IdConfeccion": row.get("IdConfeccion", ""),
+                    "Confeccion": row.get("Confeccion", ""),
+                    "Cajas": round(float(row.get("Cajas") or 0), 2),
+                    "Neto": round(float(row.get("Neto") or 0), 2),
+                }
+            )
+        table.set_rows(rows)

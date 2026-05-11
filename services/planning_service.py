@@ -20,6 +20,12 @@ class PlanningService:
     def load_stock_almacen(self, filters: dict) -> tuple[list[dict], str | None]:
         return self.repo.get_stock_almacen(filters)
 
+    def load_stock_almacen_detalle_palets(self, filters: dict) -> list[dict]:
+        return self.repo.get_stock_almacen_detalle_palets(filters)
+
+    def get_aprovechamientos_reales(self, filters: dict) -> list[dict]:
+        return self.repo.get_aprovechamientos_reales(filters)
+
     def diagnose_loteado_tables(self) -> dict:
         return self.repo.diagnose_loteado_tables()
 

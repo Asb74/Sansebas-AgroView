@@ -66,6 +66,16 @@ class PlanningRepository:
         return [str(v).strip() for v in raw if str(v or "").strip()]
 
     @staticmethod
+    def _is_calibre_agrupado(calibre: Any) -> bool:
+        text = str(calibre or "").strip()
+        if not text:
+            return False
+        if "/" in text or "-" in text:
+            return True
+        tokens = [t.strip() for t in text.replace(",", " ").split() if t.strip()]
+        return len(tokens) > 1
+
+    @staticmethod
     def _find_table(conn: sqlite3.Connection, candidates: list[str]) -> str | None:
         tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         normalized = {t.upper(): t for t in tables}
@@ -242,10 +252,9 @@ class PlanningRepository:
             fecha_expr = f"COALESCE(ldo.{fecha_col}, '')"
 
             query = f"""
-                SELECT ldo.IdPalet, ldo."{camp_col}" as Campana, ldo.CULTIVO as Cultivo, ldo.Pedido,
-                       ldo.Estado, ldo.Terminado, {fecha_expr} as FechaAlmacen, ldo.Categoria,
-                       ldo.Marca, ldo.EMPRESA as Empresa, l.IdConfeccion, l.Confeccion,
-                       l.Calibre, l.Variedad,
+                SELECT ldo.CULTIVO as Cultivo, ldo."{camp_col}" as Campana, l.Variedad, l.Calibre,
+                       l.Categoria, l.Marca, l.IdConfeccion, l.Confeccion,
+                       COUNT(DISTINCT ldo.IdPalet) AS Palets,
                        SUM(COALESCE(l.Cajas,0)) AS Cajas,
                        SUM(COALESCE(l.Neto,0)) AS KgStock
                 FROM "{ldo_table}" ldo
@@ -253,10 +262,9 @@ class PlanningRepository:
                 WHERE UPPER(TRIM(ldo.Estado)) = 'STOCK'
                   AND UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
                   AND UPPER(REPLACE(REPLACE(TRIM(ldo.Pedido), '/', ''), ' ', '')) IN ('SP','PRECALIBRADO','ESTANDAR','ESTÁNDAR')
-                  AND UPPER(TRIM(ldo.Estado)) NOT IN ('BAJA','VOLCADO','EXPEDICION','EXPEDICIÓN')
             """
             params: list[Any] = []
-            for field, col in (("cultivo", "ldo.CULTIVO"), ("empresa", "ldo.EMPRESA"), ("var_coop", "l.Variedad"), ("marca", "ldo.Marca")):
+            for field, col in (("cultivo", "ldo.CULTIVO"), ("empresa", "ldo.EMPRESA"), ("var_coop", "l.Variedad"), ("marca", "l.Marca")):
                 values = self._normalize_filter_values(filters.get(field))
                 if values:
                     placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
@@ -268,37 +276,97 @@ class PlanningRepository:
                 query += f' AND CAST(ldo."{camp_col}" AS TEXT) IN ({placeholders})'
                 params.extend(campana_values)
             query += """
-                GROUP BY ldo.IdPalet, ldo.""" + f'"{camp_col}"' + """, ldo.CULTIVO, ldo.Pedido, ldo.Estado,
-                         ldo.Terminado, FechaAlmacen, ldo.Categoria, ldo.Marca, ldo.EMPRESA,
-                         l.IdConfeccion, l.Confeccion, l.Calibre, l.Variedad
+                GROUP BY ldo.CULTIVO, ldo.""" + f'"{camp_col}"' + """, l.Variedad, l.Calibre,
+                         l.Categoria, l.Marca, l.IdConfeccion, l.Confeccion
             """
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
 
         data: list[dict] = []
-        f_desde = self._parse_date(filters.get("fecha_desde"))
-        f_hasta = self._parse_date(filters.get("fecha_hasta"))
-        semana_filter = set(self._normalize_filter_values(filters.get("semana")))
         for r in rows:
-            dt = self._parse_date(r.get("FechaAlmacen"))
-            semana = dt.isocalendar().week if dt else ""
-            if f_desde and (dt is None or dt.date() < f_desde.date()):
-                continue
-            if f_hasta and (dt is None or dt.date() > f_hasta.date()):
-                continue
-            if semana_filter and str(semana) not in semana_filter:
-                continue
             data.append(
                 {
-                    "Campaña": r.get("Campana", ""), "Cultivo": r.get("Cultivo", ""), "IdPalet": r.get("IdPalet", ""),
-                    "Pedido": r.get("Pedido", ""), "Fecha almacén": dt.strftime("%Y-%m-%d") if dt else (r.get("FechaAlmacen") or ""),
-                    "Variedad": r.get("Variedad", ""), "Calibre": r.get("Calibre", ""),
-                    "Agrupado": "Sí" if "/" in str(r.get("Calibre", "")) else "No", "Categoría": r.get("Categoria", ""),
-                    "Marca": r.get("Marca", ""), "IdConfeccion": r.get("IdConfeccion", ""), "Confección": r.get("Confeccion", ""),
+                    "Campaña": r.get("Campana", ""), "Cultivo": r.get("Cultivo", ""), "Variedad": r.get("Variedad", ""), "Calibre": r.get("Calibre", ""),
+                    "Categoría": r.get("Categoria", ""), "Marca": r.get("Marca", ""), "IdConfeccion": r.get("IdConfeccion", ""), "Confección": r.get("Confeccion", ""),
+                    "Palets": int(r.get("Palets") or 0),
                     "Cajas": round(float(r.get("Cajas") or 0), 2), "Kg stock": round(float(r.get("KgStock") or 0), 2),
-                    "Estado": r.get("Estado", ""), "Semana": semana,
+                    "Agrupado": "Sí" if self._is_calibre_agrupado(r.get("Calibre", "")) else "No",
                 }
             )
         return data, None
+
+    def get_stock_almacen_detalle_palets(self, filters: dict) -> list[dict]:
+        path = self.db_loteado
+        if not path.exists():
+            return []
+        with sqlite3.connect(path) as conn:
+            conn.row_factory = sqlite3.Row
+            ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
+            lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
+            if not ldo_table or not lote_table:
+                return []
+            ldo_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
+            camp_col = self._find_column(ldo_cols, ["CAMPAÑA", "Campaña"])
+            fecha_col = self._find_column(ldo_cols, ["FechaAlmacen", "FechaCreacion"])
+            if not camp_col or not fecha_col:
+                return []
+            query = f"""
+                SELECT ldo.IdPalet, ldo.Pedido, COALESCE(ldo.{fecha_col}, '') as FechaAlmacen,
+                       ldo.Estado, ldo.Terminado, l.Variedad, l.Calibre, l.Categoria, l.Marca,
+                       l.IdConfeccion, l.Confeccion, SUM(COALESCE(l.Cajas,0)) AS Cajas, SUM(COALESCE(l.Neto,0)) AS Neto
+                FROM "{ldo_table}" ldo
+                INNER JOIN "{lote_table}" l ON l.IdPalet = ldo.IdPalet
+                WHERE UPPER(TRIM(ldo.Estado)) = 'STOCK'
+                  AND UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
+                  AND UPPER(REPLACE(REPLACE(TRIM(ldo.Pedido), '/', ''), ' ', '')) IN ('SP','PRECALIBRADO','ESTANDAR','ESTÁNDAR')
+            """
+            params: list[Any] = []
+            for field, col in (("cultivo", "ldo.CULTIVO"), ("empresa", "ldo.EMPRESA"), ("var_coop", "l.Variedad"), ("marca", "l.Marca")):
+                values = self._normalize_filter_values(filters.get(field))
+                if values:
+                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
+                    query += f" AND UPPER(TRIM({col})) IN ({placeholders})"
+                    params.extend(values)
+            campana_values = self._normalize_filter_values(filters.get("campana"))
+            if campana_values:
+                placeholders = ",".join(["CAST(? AS TEXT)"] * len(campana_values))
+                query += f' AND CAST(ldo."{camp_col}" AS TEXT) IN ({placeholders})'
+                params.extend(campana_values)
+            query += """
+                GROUP BY ldo.IdPalet, ldo.Pedido, FechaAlmacen, ldo.Estado, ldo.Terminado,
+                         l.Variedad, l.Calibre, l.Categoria, l.Marca, l.IdConfeccion, l.Confeccion
+            """
+            rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+        return rows
+
+    def get_aprovechamientos_reales(self, filters: dict) -> list[dict]:
+        fruta_path = self._db_path(DB_FRUTA)
+        if not fruta_path.exists():
+            return []
+        with sqlite3.connect(fruta_path) as conn:
+            conn.row_factory = sqlite3.Row
+            query = """
+                SELECT CULTIVO, "CAMPAÑA" as Campana, EMPRESA, Variedad, Fcarga,
+                       Neto, NetoPartida, Cal0, Cal1, Cal2, Cal3, Cal4, Cal5, Cal6, Cal7, Cal8, Cal9, Cal10, Cal11,
+                       "%Cal0", "%Cal1", "%Cal2", "%Cal3", "%Cal4", "%Cal5", "%Cal6", "%Cal7", "%Cal8", "%Cal9", "%Cal10", "%Cal11"
+                FROM PesosFres
+                WHERE 1=1
+            """
+            params: list[Any] = []
+            for field, col in (("cultivo", "CULTIVO"), ("empresa", "EMPRESA"), ("var_coop", "Variedad")):
+                values = self._normalize_filter_values(filters.get(field))
+                if values:
+                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
+                    query += f" AND UPPER(TRIM({col})) IN ({placeholders})"
+                    params.extend(values)
+            campana_values = self._normalize_filter_values(filters.get("campana"))
+            if campana_values:
+                placeholders = ",".join(["CAST(? AS TEXT)"] * len(campana_values))
+                query += f' AND CAST("CAMPAÑA" AS TEXT) IN ({placeholders})'
+                params.extend(campana_values)
+            rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+        for row in rows:
+            row["NetoCalculado"] = round(self._build_neto_correcto(row.get("NetoPartida"), row.get("Neto")), 2)
+        return rows
 
     def get_correspondencias_calibres(self, cultivo: str) -> list[dict[str, Any]]:
         calidad_path = self._db_path(DB_CALIDAD)
@@ -357,6 +425,7 @@ class PlanningRepository:
             "empresa": "Empresa",
             "semana": "Semana",
             "var_coop": "Variedad",
+            "marca": "Marca",
             "fecha": "Fecha",
         }
         col = mapping.get(key)
