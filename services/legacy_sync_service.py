@@ -152,9 +152,10 @@ class LegacySyncService:
         return self._sync_filtered_table("DBPedidos.sqlite", "Pedidos", f"SELECT * FROM Pedidos WHERE FechaSalida >= #{fecha_corte}#", "date(FechaSalida) >= date('now')")
 
     def _actualizar_loteado_desde_hoy(self, fecha_corte: str) -> tuple[list[str], int]:
+        table_name = "Loteado"
         where = f"FechaCreacion >= #{fecha_corte}# OR FechaAlmacen >= #{fecha_corte}# OR FechaExpedicion >= #{fecha_corte}#"
-        query = f"SELECT * FROM Loteado WHERE {where}"
-        setting = self._find_setting("BDLoteado.sqlite", "Loteado")
+        query = f"SELECT * FROM {table_name} WHERE {where}"
+        setting = self._find_setting("BDLoteado.sqlite", table_name)
         ok, msg, csv_path, _ = self._run_export_custom(setting, query)
         if not ok or not csv_path:
             raise RuntimeError(msg)
@@ -172,9 +173,9 @@ class LegacySyncService:
             conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute("BEGIN")
             deleted = conn.execute("DELETE FROM Loteado WHERE FechaCreacion >= date('now') OR FechaAlmacen >= date('now') OR FechaExpedicion >= date('now')").rowcount
-            imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, "Loteado", conn=conn)
+            imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, table_name, conn=conn)
             conn.commit()
-        logger.info("Fin escritura DB sqlite_path=%s tabla=%s", sqlite_path, "Loteado")
+        logger.info("Fin escritura DB sqlite_path=%s tabla=%s", sqlite_path, table_name)
         logger.info("Loteado fecha_corte=%s query=%s borrados=%s importados=%s", fecha_corte, query, deleted, imported)
         return palets, imported
 
@@ -283,7 +284,7 @@ class LegacySyncService:
         if not ok or not csv_path:
             raise RuntimeError(msg)
         sqlite_path = Path(setting["SqlitePath"])
-        logger.info("Inicio escritura DB sqlite_path=%s tabla=%s", sqlite_path, "Loteado")
+        logger.info("Inicio escritura DB sqlite_path=%s tabla=%s", sqlite_path, table_name)
         with sqlite3.connect(sqlite_path, timeout=30) as conn:
             conn.execute("PRAGMA busy_timeout = 30000")
             conn.execute("PRAGMA journal_mode = WAL")
