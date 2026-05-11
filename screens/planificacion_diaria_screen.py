@@ -70,7 +70,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Button(btns, text="Limpiar filtros", command=self.reset_filters).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Reaplicar filtros", command=lambda: self.load_data(save_filters=True)).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Exportar Excel", command=self.export_excel).pack(side="left", padx=(0, 8))
-        ttk.Button(btns, text="Actualizar planificación", command=self._actualizar_planificacion).pack(side="left")
+        self._btn_actualizar_planificacion = ttk.Button(btns, text="Actualizar planificación", command=self._actualizar_planificacion)
+        self._btn_actualizar_planificacion.pack(side="left")
         ttk.Label(filters_frame, textvariable=self.filters_status_var).grid(row=3, column=0, columnspan=9, sticky="w", padx=4, pady=(6, 0))
 
         self.tabs = ttk.Notebook(self)
@@ -233,13 +234,20 @@ class PlanificacionDiariaScreen(ttk.Frame):
         )
         if not confirm:
             return
-        ok, msg = self.service.actualizar_planificacion_hoy_en_adelante()
-        if not ok:
-            messagebox.showerror("Actualizar planificación", msg, parent=self)
-            return
-        messagebox.showinfo("Actualizar planificación", msg.replace(" | ", "\n").replace("Planificación rápida OK. ", ""), parent=self)
-        self._load_filter_options()
-        self.load_data(save_filters=True)
+        self.stock_campo_rows = []
+        self.stock_almacen_rows = []
+        self.pedidos_pendientes_rows = []
+        self._btn_actualizar_planificacion.configure(state="disabled", text="Actualizando...")
+        try:
+            ok, msg = self.service.actualizar_planificacion_hoy_en_adelante()
+            if not ok:
+                messagebox.showerror("Actualizar planificación", msg, parent=self)
+                return
+            messagebox.showinfo("Actualizar planificación", msg.replace(" | ", "\n").replace("Planificación rápida OK. ", ""), parent=self)
+            self._load_filter_options()
+            self.load_data(save_filters=True)
+        finally:
+            self._btn_actualizar_planificacion.configure(state="normal", text="Actualizar planificación")
 
     def _pedidos_mode_label(self, mode_key: str) -> str:
         for label, key in self.PEDIDOS_MODOS:

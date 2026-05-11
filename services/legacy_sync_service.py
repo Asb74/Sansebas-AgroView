@@ -22,6 +22,7 @@ class LegacySyncService:
         self.repository = LegacySyncRepository()
         self.temp_dir = Path("temp") / "legacy_sync"
         self.vbs_path = Path("legacy_scripts") / "export_access_table.vbs"
+        self._sync_running = False
 
     def get_settings(self) -> list[dict[str, Any]]:
         return self.repository.get_settings()
@@ -106,6 +107,9 @@ class LegacySyncService:
         return results
 
     def sync_planificacion_hoy_en_adelante(self, setting_id: int | None = None) -> tuple[bool, str]:
+        if self._sync_running:
+            return False, "Actualización ya en curso"
+        self._sync_running = True
         start = datetime.utcnow()
         fecha_corte = date.today().isoformat()
         logger.info("Iniciando actualización planificación rápida. Fecha corte=%s", fecha_corte)
@@ -123,12 +127,26 @@ class LegacySyncService:
             if setting_id:
                 self.repository.update_sync_result(setting_id, True, msg, None)
             return True, msg
+        except sqlite3.OperationalError as exc:
+            if "database is locked" in str(exc).lower():
+                msg = "La base de datos está en uso. Cierra pantallas abiertas o espera unos segundos y vuelve a intentar."
+                logger.exception("Bloqueo SQLite en planificación rápida: %s", exc)
+                if setting_id:
+                    self.repository.update_sync_result(setting_id, False, "Error en planificación rápida", msg)
+                return False, msg
+            err = f"Error actualización planificación rápida: {exc}"
+            logger.exception(err)
+            if setting_id:
+                self.repository.update_sync_result(setting_id, False, "Error en planificación rápida", str(exc))
+            return False, err
         except Exception as exc:
             err = f"Error actualización planificación rápida: {exc}"
             logger.exception(err)
             if setting_id:
                 self.repository.update_sync_result(setting_id, False, "Error en planificación rápida", str(exc))
             return False, err
+        finally:
+            self._sync_running = False
 
     def _actualizar_pedidos_desde_hoy(self, fecha_corte: str) -> int:
         return self._sync_filtered_table("DBPedidos.sqlite", "Pedidos", f"SELECT * FROM Pedidos WHERE FechaSalida >= #{fecha_corte}#", "date(FechaSalida) >= date('now')")
@@ -147,11 +165,16 @@ class LegacySyncService:
         idx = next((i for i,c in enumerate(header) if c.lower()=="idpalet"), -1)
         palets = sorted({r[idx] for r in rows[1:] if idx >= 0 and idx < len(r) and str(r[idx]).strip()})
         sqlite_path = Path(setting["SqlitePath"])
-        with sqlite3.connect(sqlite_path) as conn:
+        logger.info("Inicio escritura DB sqlite_path=%s tabla=%s", sqlite_path, table_name)
+        with sqlite3.connect(sqlite_path, timeout=30) as conn:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute("BEGIN")
             deleted = conn.execute("DELETE FROM Loteado WHERE FechaCreacion >= date('now') OR FechaAlmacen >= date('now') OR FechaExpedicion >= date('now')").rowcount
-            imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, "Loteado")
+            imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, "Loteado", conn=conn)
             conn.commit()
+        logger.info("Fin escritura DB sqlite_path=%s tabla=%s", sqlite_path, "Loteado")
         logger.info("Loteado fecha_corte=%s query=%s borrados=%s importados=%s", fecha_corte, query, deleted, imported)
         return palets, imported
 
@@ -165,12 +188,18 @@ class LegacySyncService:
         if not ok or not csv_path:
             raise RuntimeError(msg)
         sqlite_path = Path(setting["SqlitePath"])
-        with sqlite3.connect(sqlite_path) as conn:
+        logger.info("Inicio escritura DB sqlite_path=%s tabla=%s", sqlite_path, "Lote")
+        with sqlite3.connect(sqlite_path, timeout=30) as conn:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute("BEGIN")
             placeholders = ",".join(["?"] * len(id_palets))
             conn.execute(f"DELETE FROM Lote WHERE IdPalet IN ({placeholders})", id_palets)
-            imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, "Lote")
+            imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, "Lote", conn=conn)
             conn.commit()
+        logger.info("Fin escritura DB sqlite_path=%s tabla=%s", sqlite_path, "Lote")
+        logger.info("Lote por palets borrados=%s importados=%s", len(id_palets), imported)
         return imported
 
     def _actualizar_pesosfres_desde_hoy(self, fecha_corte: str) -> int:
@@ -254,11 +283,16 @@ class LegacySyncService:
         if not ok or not csv_path:
             raise RuntimeError(msg)
         sqlite_path = Path(setting["SqlitePath"])
-        with sqlite3.connect(sqlite_path) as conn:
+        logger.info("Inicio escritura DB sqlite_path=%s tabla=%s", sqlite_path, "Loteado")
+        with sqlite3.connect(sqlite_path, timeout=30) as conn:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute("BEGIN")
             deleted = conn.execute(f"DELETE FROM {self.quote_identifier(table_name)} WHERE {sqlite_where}").rowcount
-            imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, table_name)
+            imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, table_name, conn=conn)
             conn.commit()
+        logger.info("Fin escritura DB sqlite_path=%s tabla=%s", sqlite_path, table_name)
         logger.info("Tabla=%s query=%s borrados=%s importados=%s", table_name, access_query, deleted, imported)
         return imported
 
@@ -287,7 +321,7 @@ class LegacySyncService:
             return False, self._build_export_error_message(result, command, vbs_path, mdb_path, csv_path, log_path), None, 0
         return True, "Exportación OK", csv_path, self._read_exported_rows(log_path)
 
-    def _import_csv_to_sqlite_append(self, csv_path: Path, sqlite_path: Path, table_name: str) -> tuple[int, bool, bool]:
+    def _import_csv_to_sqlite_append(self, csv_path: Path, sqlite_path: Path, table_name: str, conn: sqlite3.Connection | None = None) -> tuple[int, bool, bool]:
         rows = self._read_csv_rows(csv_path)
         if not rows:
             return 0, True, False
@@ -296,9 +330,15 @@ class LegacySyncService:
         table = self.quote_identifier(table_name)
         columns = ", ".join(self.quote_identifier(c) for c in header)
         placeholders = ",".join(["?"] * len(header))
-        with sqlite3.connect(sqlite_path) as conn:
+        if conn is None:
+            with sqlite3.connect(sqlite_path, timeout=30) as new_conn:
+                new_conn.execute("PRAGMA busy_timeout = 30000")
+                new_conn.execute("PRAGMA journal_mode = WAL")
+                new_conn.execute("PRAGMA synchronous = NORMAL")
+                new_conn.executemany(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", [tuple(r[:len(header)] + [""]*(len(header)-len(r))) for r in data_rows])
+                new_conn.commit()
+        else:
             conn.executemany(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", [tuple(r[:len(header)] + [""]*(len(header)-len(r))) for r in data_rows])
-            conn.commit()
         return len(data_rows), True, False
 
     @staticmethod
