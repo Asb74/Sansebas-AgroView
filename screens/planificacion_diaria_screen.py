@@ -26,6 +26,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.stock_campo_rows: list[dict] = []
         self.stock_almacen_rows: list[dict] = []
         self.stock_almacen_detalle_rows: list[dict] = []
+        self.pedidos_pendientes_rows: list[dict] = []
         self._build_ui()
         self._load_filter_options()
         self._load_filters()
@@ -76,10 +77,13 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.almacen_tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(self.campo_tab, text="Stock campo")
         self.tabs.add(self.almacen_tab, text="Stock almacén")
+        self.pedidos_tab = ttk.Frame(self.tabs, padding=8)
+        self.tabs.add(self.pedidos_tab, text="Pedidos pendientes")
 
         self.kpi_campo = tk.StringVar(value="Kg campo total: 0 | Nº partidas: 0 | Nº variedades: 0")
         self.kpi_almacen = tk.StringVar(value="Kg stock almacén: 0 | Nº grupos: 0 | Nº variedades: 0 | Nº calibres: 0")
         self.last_update = tk.StringVar(value="")
+        self.kpi_pedidos = tk.StringVar(value="Kg pedido teórico total: 0 | Kg hecho real total: 0 | Kg pendiente total: 0 | Nº pedidos: 0 | Nº líneas: 0 | Nº líneas sin datos: 0 | Nº líneas parciales: 0")
 
         ttk.Label(self.campo_tab, textvariable=self.kpi_campo, style="KPI.TLabel").pack(anchor="w", pady=(0, 2))
         ttk.Label(self.campo_tab, textvariable=self.last_update).pack(anchor="w", pady=(0, 6))
@@ -92,6 +96,13 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Button(header_almacen, text="Ver detalle palets", command=self.show_detalle_palets).pack(side="right")
         self.almacen_table = DataTable(self.almacen_tab, ["Cultivo", "Campaña", "Variedad", "Grupo varietal", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Palets", "Cajas", "Kg stock", "Agrupado"])
         self.almacen_table.pack(fill="both", expand=True)
+
+        ttk.Label(self.pedidos_tab, textvariable=self.kpi_pedidos, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
+        self.pedidos_table = DataTable(
+            self.pedidos_tab,
+            ["Semana", "Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Cultivo", "Campaña", "Variedad Coop", "Grupo varietal", "Calibre", "Categoría", "Marca", "Confección", "Cajas pedido", "Cajas hechas", "Cajas pendientes", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "% hecho", "Estado", "Aviso"],
+        )
+        self.pedidos_table.pack(fill="both", expand=True)
 
     def _build_date_field(self, parent: ttk.Frame, row: int, col: int, var: tk.StringVar) -> None:
         frame = ttk.Frame(parent)
@@ -134,8 +145,16 @@ class PlanificacionDiariaScreen(ttk.Frame):
             self.stock_almacen_detalle_rows = []
             logging.getLogger(__name__).warning("No se pudo cargar stock almacén: %s", exc)
             messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock almacén: {exc}")
+        pedidos_kpi = {}
+        try:
+            self.pedidos_pendientes_rows, pedidos_kpi = self.service.get_pedidos_pendientes(payload, modo="10_dias")
+        except Exception as exc:
+            self.pedidos_pendientes_rows = []
+            logging.getLogger(__name__).warning("No se pudieron cargar pedidos pendientes: %s", exc)
+            messagebox.showwarning("Planificación diaria", f"No se pudieron cargar pedidos pendientes: {exc}")
         self.campo_table.set_rows(self.stock_campo_rows)
         self.almacen_table.set_rows(self.stock_almacen_rows)
+        self.pedidos_table.set_rows(self.pedidos_pendientes_rows)
         self.kpi_campo.set(
             f"Kg campo total: {sum(float(r.get('Kg campo', 0) or 0) for r in self.stock_campo_rows):,.2f} | "
             f"Nº partidas: {len(self.stock_campo_rows)} | Nº variedades: {len({r.get('Variedad') for r in self.stock_campo_rows})}"
@@ -147,6 +166,15 @@ class PlanificacionDiariaScreen(ttk.Frame):
             f"Nº calibres: {len({r.get('Calibre') for r in self.stock_almacen_rows})}"
         )
         self.last_update.set(f"Última actualización: {updated}" if updated else "Última actualización: No disponible")
+        self.kpi_pedidos.set(
+            f"Kg pedido teórico total: {float(pedidos_kpi.get('Kg pedido teórico total', 0) or 0):,.2f} | "
+            f"Kg hecho real total: {float(pedidos_kpi.get('Kg hecho real total', 0) or 0):,.2f} | "
+            f"Kg pendiente total: {float(pedidos_kpi.get('Kg pendiente total', 0) or 0):,.2f} | "
+            f"Nº pedidos: {int(pedidos_kpi.get('Nº pedidos', 0) or 0)} | "
+            f"Nº líneas: {int(pedidos_kpi.get('Nº líneas', 0) or 0)} | "
+            f"Nº líneas sin datos: {int(pedidos_kpi.get('Nº líneas sin datos', 0) or 0)} | "
+            f"Nº líneas parciales: {int(pedidos_kpi.get('Nº líneas parciales', 0) or 0)}"
+        )
         if update_warning:
             messagebox.showwarning("Planificación diaria", "No se pudo leer un archivo auxiliar de actualización. Se continuará sin ese dato.")
         if save_filters:
