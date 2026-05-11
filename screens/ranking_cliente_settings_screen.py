@@ -3,6 +3,7 @@ from tkinter import messagebox, ttk
 from typing import Any
 
 from services.comercial_service import ComercialService
+from widgets.screen_header import ScreenHeader
 
 
 class RankingClienteSettingsScreen(ttk.Frame):
@@ -15,7 +16,8 @@ class RankingClienteSettingsScreen(ttk.Frame):
         self._load()
 
     def _build_ui(self) -> None:
-        ttk.Label(self, text="Configuración ranking clientes", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        header = ScreenHeader(self, title="Clientes", subtitle="Configuración ranking clientes", on_back=self.on_back)
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         fields = [
             ("PesoPrioridadKg", "Peso prioridad kg"), ("PesoPrioridadMargenTotal", "Peso prioridad margen total"),
             ("PesoPrioridadFacturacion", "Peso prioridad facturación"),
@@ -35,7 +37,6 @@ class RankingClienteSettingsScreen(ttk.Frame):
 
         ttk.Button(self, text="Guardar", command=self._save).grid(row=len(fields)+2, column=0, pady=(10, 0), sticky="w")
         ttk.Button(self, text="Restaurar valores por defecto", command=self._reset).grid(row=len(fields)+2, column=1, pady=(10, 0), sticky="w")
-        ttk.Button(self, text="Volver", command=self.on_back).grid(row=len(fields)+3, column=0, pady=(8, 0), sticky="w")
 
     def _load(self) -> None:
         data = self.service.get_ranking_cliente_settings()

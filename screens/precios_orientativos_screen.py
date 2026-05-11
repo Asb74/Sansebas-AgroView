@@ -4,6 +4,7 @@ from tkinter import messagebox, ttk
 from db.connection import db_exists, get_db_path
 from services.precios_orientativos_service import PreciosOrientativosService
 from widgets.data_table import DataTable
+from widgets.screen_header import ScreenHeader
 
 
 class PreciosOrientativosScreen(ttk.Frame):
@@ -71,11 +72,8 @@ class PreciosOrientativosScreen(ttk.Frame):
         self.grid_rowconfigure(3, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        header = ttk.Frame(self)
+        header = ScreenHeader(self, title="Análisis de precios", subtitle="Revisar precios orientativos", on_back=self.on_back)
         header.grid(row=0, column=0, sticky="ew")
-        header.grid_columnconfigure(0, weight=1)
-        ttk.Label(header, text="Revisar precios orientativos", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Button(header, text="Volver", command=self.on_back).grid(row=0, column=1, sticky="e")
 
         filters = ttk.LabelFrame(self, text="Filtros", padding=12)
         filters.grid(row=1, column=0, sticky="ew", pady=(8, 8))

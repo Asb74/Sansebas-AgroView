@@ -4,6 +4,7 @@ from typing import Any
 
 from services.forfait_service import ForfaitService
 from widgets.data_table import DataTable
+from widgets.screen_header import ScreenHeader
 
 
 class ImportForfaitScreen(ttk.Frame):
@@ -48,11 +49,8 @@ class ImportForfaitScreen(ttk.Frame):
         self.grid_rowconfigure(2, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        header = ttk.Frame(self)
+        header = ScreenHeader(self, title="Importar forfait confección", on_back=self.on_back)
         header.grid(row=0, column=0, sticky="ew")
-        header.grid_columnconfigure(0, weight=1)
-        ttk.Label(header, text="Importar forfait confección", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Button(header, text="Volver", command=self.on_back).grid(row=0, column=1, sticky="e")
 
         form = ttk.LabelFrame(self, text="Origen y contexto", padding=12)
         form.grid(row=1, column=0, sticky="ew", pady=(8, 8))

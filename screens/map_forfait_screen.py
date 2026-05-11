@@ -8,6 +8,7 @@ from openpyxl.utils import get_column_letter
 
 from services.forfait_service import ForfaitService
 from widgets.data_table import DataTable
+from widgets.screen_header import ScreenHeader
 
 
 class MapForfaitScreen(ttk.Frame):
@@ -41,11 +42,8 @@ class MapForfaitScreen(ttk.Frame):
     def _build_ui(self) -> None:
         self.grid_rowconfigure(2, weight=1)
         self.grid_columnconfigure(0, weight=1)
-        header = ttk.Frame(self)
+        header = ScreenHeader(self, title="Control cobertura confecciones", on_back=self.on_back)
         header.grid(row=0, column=0, sticky="ew")
-        header.grid_columnconfigure(0, weight=1)
-        ttk.Label(header, text="Control cobertura confecciones", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Button(header, text="Volver", command=self.on_back).grid(row=0, column=1, sticky="e")
 
         controls = ttk.LabelFrame(self, text="Filtro obligatorio", padding=12)
         controls.grid(row=1, column=0, sticky="ew", pady=(8, 8))
