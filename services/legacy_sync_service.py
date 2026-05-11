@@ -182,26 +182,45 @@ class LegacySyncService:
     def _actualizar_lote_por_palets(self, id_palets: list[str]) -> int:
         if not id_palets:
             return 0
+        chunk_size = 200
+        chunks = [id_palets[i:i + chunk_size] for i in range(0, len(id_palets), chunk_size)]
         setting = self._find_setting("BDLoteado.sqlite", "Lote")
-        ids_sql = ",".join(f"'{p.replace("'", "''")}'" for p in id_palets)
-        query = f"SELECT * FROM Lote WHERE IdPalet IN ({ids_sql})"
-        ok, msg, csv_path, _ = self._run_export_custom(setting, query)
-        if not ok or not csv_path:
-            raise RuntimeError(msg)
         sqlite_path = Path(setting["SqlitePath"])
+        total_imported = 0
+        failed_chunks: list[int] = []
+        logger.info("Lote actualización por palets: total_idpalet=%s chunks=%s chunk_size=%s", len(id_palets), len(chunks), chunk_size)
         logger.info("Inicio escritura DB sqlite_path=%s tabla=%s", sqlite_path, "Lote")
         with sqlite3.connect(sqlite_path, timeout=30) as conn:
             conn.execute("PRAGMA busy_timeout = 30000")
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute("BEGIN")
-            placeholders = ",".join(["?"] * len(id_palets))
-            conn.execute(f"DELETE FROM Lote WHERE IdPalet IN ({placeholders})", id_palets)
-            imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, "Lote", conn=conn)
+            for idx, chunk in enumerate(chunks, start=1):
+                logger.info("Lote chunk=%03d/%03d ids_en_chunk=%s", idx, len(chunks), len(chunk))
+                placeholders = ",".join(["?"] * len(chunk))
+                deleted = conn.execute(f"DELETE FROM Lote WHERE IdPalet IN ({placeholders})", chunk).rowcount
+                ids_sql = ",".join(f"'{p.replace("'", "''")}'" for p in chunk)
+                query = f"SELECT * FROM Lote WHERE IdPalet IN ({ids_sql})"
+                ok, msg, csv_path, _ = self._run_export_custom(setting, query, output_tag=f"lote_{idx:03d}")
+                if not ok or not csv_path:
+                    failed_chunks.append(idx)
+                    logger.error("Error exportando chunk lote=%03d ids=%s error=%s", idx, len(chunk), msg)
+                    continue
+                try:
+                    imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, "Lote", conn=conn)
+                    total_imported += imported
+                    logger.info("Lote chunk=%03d borrados=%s importados=%s", idx, deleted, imported)
+                except Exception as exc:
+                    failed_chunks.append(idx)
+                    logger.exception("Error importando chunk lote=%03d ids=%s", idx, len(chunk))
+                    logger.error("Detalle error chunk=%03d: %s", idx, exc)
             conn.commit()
         logger.info("Fin escritura DB sqlite_path=%s tabla=%s", sqlite_path, "Lote")
-        logger.info("Lote por palets borrados=%s importados=%s", len(id_palets), imported)
-        return imported
+        if failed_chunks:
+            logger.warning("Lote por palets finalizado con chunks fallidos=%s total_chunks=%s importados=%s", failed_chunks, len(chunks), total_imported)
+        else:
+            logger.info("Lote por palets borrados=%s importados=%s", len(id_palets), total_imported)
+        return total_imported
 
     def _actualizar_pesosfres_desde_hoy(self, fecha_corte: str) -> int:
         return self._sync_filtered_table("DBfruta.sqlite", "PesosFres", f"SELECT * FROM PesosFres WHERE Fcarga >= #{fecha_corte}#", "date(Fcarga) >= date('now')")
@@ -303,17 +322,20 @@ class LegacySyncService:
                 return s
         raise ValueError(f"No existe configuración legacy para {sqlite_name}:{sqlite_table}")
 
-    def _run_export_custom(self, setting: dict[str, Any], table_or_query: str) -> tuple[bool, str, Path | None, int]:
+    def _run_export_custom(self, setting: dict[str, Any], table_or_query: str, output_tag: str | None = None) -> tuple[bool, str, Path | None, int]:
         tmp = dict(setting)
         tmp["AccessTable"] = table_or_query
+        if output_tag:
+            tmp["ExportTag"] = output_tag
         return self._run_export_from_setting(tmp)
 
     def _run_export_from_setting(self, setting: dict[str, Any]) -> tuple[bool, str, Path | None, int]:
         vbs_path = self.vbs_path.resolve()
         mdb_path = Path(setting["AccessPath"]).resolve()
         temp_dir = self.temp_dir.resolve()
-        csv_path = temp_dir / f"{setting['Nombre']}_{setting.get('Id','adhoc')}.csv"
-        log_path = temp_dir / f"{setting['Nombre']}_{setting.get('Id','adhoc')}.log"
+        export_tag = setting.get('ExportTag') or f"{setting['Nombre']}_{setting.get('Id','adhoc')}"
+        csv_path = temp_dir / f"{export_tag}.csv"
+        log_path = temp_dir / f"{export_tag}.log"
         if not vbs_path.exists() or not mdb_path.exists() or not temp_dir.exists():
             return False, "Rutas inválidas para exportación", None, 0
         command = self._build_vbs_command(vbs_path, mdb_path, setting["AccessTable"], csv_path, log_path)
