@@ -24,6 +24,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self._load_filter_options()
 
     def _load_filter_options(self) -> None:
+        diag = self.service.diagnose_loteado_tables()
+        if diag.get("warning"):
+            logging.getLogger(__name__).warning(diag["warning"])
         for key in ("campana", "cultivo", "empresa", "semana", "var_coop", "marca"):
             try:
                 self.filter_widgets[key].set_options(self.service.get_filter_options(key))
@@ -110,7 +113,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
             self.stock_campo_rows = []
             messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock campo: {exc}")
         try:
-            self.stock_almacen_rows = self.service.load_stock_almacen(payload)
+            self.stock_almacen_rows, almacen_warning = self.service.load_stock_almacen(payload)
+            if almacen_warning:
+                messagebox.showwarning("Planificación diaria", almacen_warning)
         except Exception as exc:
             self.stock_almacen_rows = []
             logging.getLogger(__name__).warning("No se pudo cargar stock almacén: %s", exc)
