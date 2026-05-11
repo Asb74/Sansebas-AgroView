@@ -414,32 +414,114 @@ class PlanningRepository:
 
             query = """
                 SELECT
-                    "IdPedidoLora",
-                    "Pedido",
-                    "Linea",
-                    "Cliente",
-                    "FechaSalida",
-                    "Cultivo",
-                    "Campaña",
-                    "VarCoop",
-                    "EMPRESA",
-                    "Semana",
-                    "Marca",
-                    "Cajas"
-                FROM "Pedidos"
-                WHERE COALESCE("Cancelado", 0) = 0
-                  AND UPPER(TRIM(COALESCE("IdPedidoLora", ""))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')
-                  AND UPPER(TRIM(COALESCE("Pedido", ""))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')
+                    p."Semana" AS "Semana",
+                    p."FechaSalida" AS "Fecha salida",
+                    p."Cliente" AS "Cliente",
+                    p."IdPedidoLora" AS "IdPedidoLora",
+                    p."Linea" AS "Línea",
+                    p."Cultivo" AS "Cultivo",
+                    p."Campaña" AS "Campaña",
+                    p."VarCoop" AS "Variedad Coop",
+                    TRIM(COALESCE(mv.GRUPO, '') || ' ' || COALESCE(mv.SUBGRUPO, '')) AS "Grupo varietal",
+                    p."Calibre" AS "Calibre",
+                    p."Categoria" AS "Categoría",
+                    p."Marca" AS "Marca",
+                    p."Confeccion" AS "Confección",
+                    COALESCE(p."Cajas", 0) AS "Cajas pedido",
+                    SUM(COALESCE(l."Cajas", 0)) AS "Cajas hechas",
+                    COALESCE(p."Cajas", 0) - SUM(COALESCE(l."Cajas", 0)) AS "Cajas pendientes",
+                    CASE
+                      WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
+                      WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                      ELSE 0
+                    END AS "Kg pedido teórico",
+                    SUM(COALESCE(l."Neto", 0)) AS "Kg hecho real",
+                    (
+                      CASE
+                        WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
+                        WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                        ELSE 0
+                      END
+                    ) - SUM(COALESCE(l."Neto", 0)) AS "Kg pendiente",
+                    CASE
+                      WHEN (
+                        CASE
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          ELSE 0
+                        END
+                      ) > 0
+                      THEN ROUND((SUM(COALESCE(l."Neto", 0)) * 100.0) / (
+                        CASE
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          ELSE 0
+                        END
+                      ), 2)
+                      ELSE 0
+                    END AS "% hecho",
+                    CASE
+                      WHEN (
+                        CASE
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          ELSE 0
+                        END
+                      ) = 0 THEN 'Sin datos'
+                      WHEN SUM(COALESCE(l."Neto", 0)) = 0 THEN 'Pendiente'
+                      WHEN SUM(COALESCE(l."Neto", 0)) >= (
+                        CASE
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          ELSE 0
+                        END
+                      ) THEN CASE
+                        WHEN SUM(COALESCE(l."Neto", 0)) > (
+                          CASE
+                            WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
+                            WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                            ELSE 0
+                          END
+                        ) THEN 'Excedido'
+                        ELSE 'Completo'
+                      END
+                      ELSE 'Parcial'
+                    END AS "Estado",
+                    CASE
+                      WHEN (
+                        CASE
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          ELSE 0
+                        END
+                      ) = 0 THEN 'Faltan datos peso caja'
+                      ELSE ''
+                    END AS "Aviso"
+                FROM "Pedidos" p
+                LEFT JOIN dbeepp.MVariedad mv
+                  ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(p."VarCoop"))
+                 AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(p."Cultivo"))
+                LEFT JOIN bdloteado.Loteado ldo
+                  ON TRIM(ldo.Pedido) = TRIM(p."IdPedidoLora")
+                 AND CAST(ldo.Linea AS TEXT) = CAST(p."Linea" AS TEXT)
+                 AND UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
+                LEFT JOIN bdloteado.Lote l
+                  ON l.IdPalet = ldo.IdPalet
+                LEFT JOIN MConfecciones mc
+                  ON CAST(mc.CODIGO AS TEXT) = CAST(p."Confeccion" AS TEXT)
+                WHERE COALESCE(p."Cancelado", 0) = 0
+                  AND UPPER(TRIM(COALESCE(p."IdPedidoLora", ""))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')
+                  AND UPPER(TRIM(COALESCE(p."Pedido", ""))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')
             """
             params: list[Any] = []
 
             for field, col in (
-                ("campana", '"Campaña"'),
-                ("cultivo", '"Cultivo"'),
-                ("empresa", '"EMPRESA"'),
-                ("semana", '"Semana"'),
-                ("var_coop", '"VarCoop"'),
-                ("marca", '"Marca"'),
+                ("campana", 'p."Campaña"'),
+                ("cultivo", 'p."Cultivo"'),
+                ("empresa", 'p."EMPRESA"'),
+                ("semana", 'p."Semana"'),
+                ("var_coop", 'p."VarCoop"'),
+                ("marca", 'p."Marca"'),
             ):
                 values = self._normalize_filter_values(filters.get(field))
                 if values:
@@ -448,21 +530,21 @@ class PlanningRepository:
                     params.extend(values)
 
             if modo_pedidos == "10_dias":
-                query += " AND date(\"FechaSalida\") BETWEEN date('now') AND date('now', '+10 days')"
+                query += " AND date(p.\"FechaSalida\") BETWEEN date('now') AND date('now', '+10 days')"
             elif modo_pedidos == "todos_futuros":
-                query += " AND date(\"FechaSalida\") >= date('now')"
+                query += " AND date(p.\"FechaSalida\") >= date('now')"
             elif modo_pedidos == "rango":
                 fecha_desde = str(filters.get("fecha_desde") or "").strip()
                 fecha_hasta = str(filters.get("fecha_hasta") or "").strip()
                 if fecha_desde:
-                    query += " AND date(\"FechaSalida\") >= date(?)"
+                    query += " AND date(p.\"FechaSalida\") >= date(?)"
                     params.append(fecha_desde)
                 if fecha_hasta:
-                    query += " AND date(\"FechaSalida\") <= date(?)"
+                    query += " AND date(p.\"FechaSalida\") <= date(?)"
                     params.append(fecha_hasta)
             elif modo_pedidos == "semana_actual":
                 semana_actual = str(datetime.now().isocalendar()[1])
-                query += " AND CAST(COALESCE(\"Semana\", '') AS TEXT) = ?"
+                query += " AND CAST(COALESCE(p.\"Semana\", '') AS TEXT) = ?"
                 params.append(semana_actual)
             elif modo_pedidos == "proximas_semanas":
                 # Se aplica a través del filtro global "semana" cuando venga informado.
@@ -472,10 +554,14 @@ class PlanningRepository:
                 pass
 
             query += """
-                ORDER BY date("FechaSalida") ASC,
-                         "Cliente" ASC,
-                         "IdPedidoLora" ASC,
-                         "Linea" ASC
+                GROUP BY
+                    p."Semana", p."FechaSalida", p."Cliente", p."IdPedidoLora", p."Linea", p."Cultivo", p."Campaña",
+                    p."VarCoop", mv.GRUPO, mv.SUBGRUPO, p."Calibre", p."Categoria", p."Marca", p."Confeccion",
+                    p."Cajas", mc."NETO", p."ExigePeso"
+                ORDER BY date(p."FechaSalida") ASC,
+                         p."Cliente" ASC,
+                         p."IdPedidoLora" ASC,
+                         p."Linea" ASC
             """
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
             logger.info("Pedidos pendientes finales: %s", len(rows))
