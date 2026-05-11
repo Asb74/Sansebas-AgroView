@@ -82,6 +82,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.tabs.add(self.almacen_tab, text="Stock almacén")
         self.pedidos_tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(self.pedidos_tab, text="Pedidos pendientes")
+        self.tabs.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self.kpi_campo = tk.StringVar(value="Kg campo total: 0 | Nº partidas: 0 | Nº variedades: 0")
         self.kpi_almacen = tk.StringVar(value="Kg stock almacén: 0 | Nº grupos: 0 | Nº variedades: 0 | Nº calibres: 0")
@@ -139,32 +140,36 @@ class PlanificacionDiariaScreen(ttk.Frame):
         }
 
     def load_data(self, save_filters: bool = True) -> None:
+        tab_activa = self.tabs.tab(self.tabs.select(), "text")
         payload = self._filters_payload()
         updated = None
         update_warning = False
-        try:
-            self.stock_campo_rows, updated, update_warning = self.service.load_stock_campo(payload)
-        except Exception as exc:
-            self.stock_campo_rows = []
-            messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock campo: {exc}")
-        try:
-            self.stock_almacen_rows, almacen_warning = self.service.load_stock_almacen(payload)
-            self.stock_almacen_detalle_rows = self.service.load_stock_almacen_detalle_palets(payload)
-            if almacen_warning:
-                messagebox.showwarning("Planificación diaria", almacen_warning)
-        except Exception as exc:
-            self.stock_almacen_rows = []
-            self.stock_almacen_detalle_rows = []
-            logging.getLogger(__name__).warning("No se pudo cargar stock almacén: %s", exc)
-            messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock almacén: {exc}")
         pedidos_kpi = {}
-        modo_pedidos = self.pedidos_modo_var.get()
-        try:
-            self.pedidos_pendientes_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, modo_pedidos)
-        except Exception as exc:
-            self.pedidos_pendientes_rows = []
-            logging.getLogger(__name__).warning("No se pudo cargar pedidos pendientes: %s", exc)
-            messagebox.showwarning("Pedidos pendientes", f"No se pudo cargar pedidos pendientes: {exc}")
+        if tab_activa == "Stock campo":
+            try:
+                self.stock_campo_rows, updated, update_warning = self.service.load_stock_campo(payload)
+            except Exception as exc:
+                self.stock_campo_rows = []
+                messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock campo: {exc}")
+        elif tab_activa == "Stock almacén":
+            try:
+                self.stock_almacen_rows, almacen_warning = self.service.load_stock_almacen(payload)
+                self.stock_almacen_detalle_rows = self.service.load_stock_almacen_detalle_palets(payload)
+                if almacen_warning:
+                    messagebox.showwarning("Planificación diaria", almacen_warning)
+            except Exception as exc:
+                self.stock_almacen_rows = []
+                self.stock_almacen_detalle_rows = []
+                logging.getLogger(__name__).warning("No se pudo cargar stock almacén: %s", exc)
+                messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock almacén: {exc}")
+        elif tab_activa == "Pedidos pendientes":
+            modo_pedidos = self.pedidos_modo_var.get()
+            try:
+                self.pedidos_pendientes_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, modo_pedidos)
+            except Exception as exc:
+                self.pedidos_pendientes_rows = []
+                logging.getLogger(__name__).warning("No se pudo cargar pedidos pendientes: %s", exc)
+                messagebox.showwarning("Pedidos pendientes", f"No se pudo cargar pedidos pendientes: {exc}")
         self.campo_table.set_rows(self.stock_campo_rows)
         self.almacen_table.set_rows(self.stock_almacen_rows)
         self.pedidos_table.set_rows(self.pedidos_pendientes_rows)
@@ -193,6 +198,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
         if save_filters:
             self._save_filters(payload)
         self.filters_status_var.set(self._format_filters_status(payload))
+
+    def _on_tab_changed(self, _event=None) -> None:
+        self.load_data(save_filters=False)
 
     def reset_filters(self) -> None:
         for widget in self.filter_widgets.values():

@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 import sqlite3
+import time
 import traceback
 from typing import Any
 
@@ -406,6 +407,8 @@ class PlanningRepository:
 
     def get_pedidos_pendientes(self, filters: dict, modo_pedidos: str = "10_dias") -> tuple[list[dict], dict[str, float]]:
         logger.info("Cargando pedidos pendientes. Modo=%s Filters=%s", modo_pedidos, filters)
+        t0_total = time.perf_counter()
+        logger.info("get_pedidos_pendientes: inicio")
         pedidos_path = self._db_path("DBPedidos.sqlite")
         logger.info("Ruta DBPedidos.sqlite usada: %s", pedidos_path)
         logger.info("DBPedidos.sqlite existe: %s", pedidos_path.exists())
@@ -427,14 +430,73 @@ class PlanningRepository:
             if not pedidos_cols:
                 logger.warning("No existe la tabla Pedidos en DBPedidos.sqlite")
                 return [], kpi_vacio
+            self._ensure_planning_indexes(conn)
 
             query = """
-                WITH palets_terminados AS (
+                WITH pedidos_filtrados AS (
+                    SELECT
+                        p."Semana",
+                        p."FechaSalida",
+                        p."Cliente",
+                        p."IdPedidoLora",
+                        p."Linea",
+                        p."Cultivo",
+                        p."Campaña",
+                        p."VarCoop",
+                        p."Calibre",
+                        p."Categoria",
+                        p."Marca",
+                        p."Confeccion",
+                        p."NPalet",
+                        p."Cajas",
+                        p."ExigePeso",
+                        p."EMPRESA"
+                    FROM "Pedidos" p
+                    WHERE COALESCE(p."Cancelado", 0) = 0
+                      AND UPPER(TRIM(COALESCE(p."IdPedidoLora", ""))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')
+            """
+            params: list[Any] = []
+            for field, col in (
+                ("campana", 'p."Campaña"'),
+                ("cultivo", 'p."Cultivo"'),
+                ("empresa", 'p."EMPRESA"'),
+                ("semana", 'p."Semana"'),
+                ("var_coop", 'p."VarCoop"'),
+                ("marca", 'p."Marca"'),
+            ):
+                values = self._normalize_filter_values(filters.get(field))
+                if values:
+                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
+                    query += f" AND UPPER(TRIM(COALESCE({col}, ''))) IN ({placeholders})"
+                    params.extend(values)
+            if modo_pedidos == "10_dias":
+                query += " AND date(p.\"FechaSalida\") BETWEEN date('now') AND date('now', '+10 days')"
+            elif modo_pedidos == "todos_futuros":
+                query += " AND date(p.\"FechaSalida\") >= date('now')"
+            elif modo_pedidos == "rango":
+                fecha_desde = str(filters.get("fecha_desde") or "").strip()
+                fecha_hasta = str(filters.get("fecha_hasta") or "").strip()
+                if fecha_desde:
+                    query += " AND date(p.\"FechaSalida\") >= date(?)"
+                    params.append(fecha_desde)
+                if fecha_hasta:
+                    query += " AND date(p.\"FechaSalida\") <= date(?)"
+                    params.append(fecha_hasta)
+            elif modo_pedidos == "semana_actual":
+                semana_actual = str(datetime.now().isocalendar()[1])
+                query += " AND CAST(COALESCE(p.\"Semana\", '') AS TEXT) = ?"
+                params.append(semana_actual)
+            query += """
+                ),
+                palets_terminados AS (
                     SELECT DISTINCT
                         TRIM(ldo.Pedido) AS Pedido,
                         CAST(ldo.Linea AS TEXT) AS Linea,
                         ldo.IdPalet
                     FROM bdloteado.Loteado ldo
+                    INNER JOIN pedidos_filtrados pf
+                        ON TRIM(ldo.Pedido) = TRIM(pf.IdPedidoLora)
+                       AND CAST(ldo.Linea AS TEXT) = CAST(pf.Linea AS TEXT)
                     WHERE UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
                 ),
                 palets_resumen AS (
@@ -442,8 +504,8 @@ class PlanningRepository:
                         pt.Pedido,
                         pt.Linea,
                         pt.IdPalet,
-                        MAX(COALESCE(l.Cajas, 0)) AS CajasPalet,
-                        MAX(COALESCE(l.Neto, 0)) AS KgPalet
+                        SUM(COALESCE(l.Cajas, 0)) AS CajasPalet,
+                        SUM(COALESCE(l.Neto, 0)) AS KgPalet
                     FROM palets_terminados pt
                     LEFT JOIN bdloteado.Lote l
                         ON l.IdPalet = pt.IdPalet
@@ -556,7 +618,7 @@ class PlanningRepository:
                       ) = 0 THEN 'Faltan datos peso caja'
                       ELSE ''
                     END AS "Aviso"
-                FROM "Pedidos" p
+                FROM pedidos_filtrados p
                 LEFT JOIN dbeepl.MVariedad mv
                   ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(p."VarCoop"))
                  AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(p."Cultivo"))
@@ -565,56 +627,18 @@ class PlanningRepository:
                  AND h.Linea = CAST(p."Linea" AS TEXT)
                 LEFT JOIN MConfecciones mc
                   ON CAST(mc.CODIGO AS TEXT) = CAST(p."Confeccion" AS TEXT)
-                WHERE COALESCE(p."Cancelado", 0) = 0
-                  AND UPPER(TRIM(COALESCE(p."IdPedidoLora", ""))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')
             """
-            params: list[Any] = []
-
-            for field, col in (
-                ("campana", 'p."Campaña"'),
-                ("cultivo", 'p."Cultivo"'),
-                ("empresa", 'p."EMPRESA"'),
-                ("semana", 'p."Semana"'),
-                ("var_coop", 'p."VarCoop"'),
-                ("marca", 'p."Marca"'),
-            ):
-                values = self._normalize_filter_values(filters.get(field))
-                if values:
-                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
-                    query += f" AND UPPER(TRIM(COALESCE({col}, ''))) IN ({placeholders})"
-                    params.extend(values)
-
-            if modo_pedidos == "10_dias":
-                query += " AND date(p.\"FechaSalida\") BETWEEN date('now') AND date('now', '+10 days')"
-            elif modo_pedidos == "todos_futuros":
-                query += " AND date(p.\"FechaSalida\") >= date('now')"
-            elif modo_pedidos == "rango":
-                fecha_desde = str(filters.get("fecha_desde") or "").strip()
-                fecha_hasta = str(filters.get("fecha_hasta") or "").strip()
-                if fecha_desde:
-                    query += " AND date(p.\"FechaSalida\") >= date(?)"
-                    params.append(fecha_desde)
-                if fecha_hasta:
-                    query += " AND date(p.\"FechaSalida\") <= date(?)"
-                    params.append(fecha_hasta)
-            elif modo_pedidos == "semana_actual":
-                semana_actual = str(datetime.now().isocalendar()[1])
-                query += " AND CAST(COALESCE(p.\"Semana\", '') AS TEXT) = ?"
-                params.append(semana_actual)
-            elif modo_pedidos == "proximas_semanas":
-                # Se aplica a través del filtro global "semana" cuando venga informado.
-                pass
-            elif modo_pedidos == "todos":
-                # Sin filtro de fecha.
-                pass
-
             query += """
                 ORDER BY date(p."FechaSalida") ASC,
                          p."Cliente" ASC,
                          p."IdPedidoLora" ASC,
                          p."Linea" ASC
+                LIMIT 500
             """
+            logger.info("get_pedidos_pendientes: después de pedidos_filtrados (query construida)")
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+            logger.info("get_pedidos_pendientes: después de query final (%s filas)", len(rows))
+            logger.info("get_pedidos_pendientes: tiempo total %.3fs", time.perf_counter() - t0_total)
             logger.info("Pedidos pendientes finales: %s", len(rows))
             if not rows:
                 logger.warning("No se encontraron pedidos pendientes con los filtros aplicados.")
@@ -631,6 +655,14 @@ class PlanningRepository:
             "Nº líneas parciales": 0,
         }
         return rows, kpi
+
+    @staticmethod
+    def _ensure_planning_indexes(conn: sqlite3.Connection) -> None:
+        conn.execute('CREATE INDEX IF NOT EXISTS bdloteado.idx_loteado_pedido_linea ON Loteado(Pedido, Linea)')
+        conn.execute('CREATE INDEX IF NOT EXISTS bdloteado.idx_loteado_terminado ON Loteado(Terminado)')
+        conn.execute('CREATE INDEX IF NOT EXISTS bdloteado.idx_lote_idpalet ON Lote(IdPalet)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_pedidos_fecha ON Pedidos(FechaSalida)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_pedidos_campana_cultivo ON Pedidos("Campaña", Cultivo)')
     def get_aprovechamientos_reales(self, filters: dict) -> list[dict]:
         fruta_path = self._db_path(DB_FRUTA)
         if not fruta_path.exists():
