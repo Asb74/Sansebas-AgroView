@@ -78,6 +78,56 @@ class PlanningRepository:
                 continue
         return text_path.read_bytes().decode("latin-1", errors="replace")
 
+    def diagnose_loteado_tables(self) -> dict[str, Any]:
+        path = self.db_loteado
+        diagnosis: dict[str, Any] = {"path": str(path), "tables": [], "loteado_columns": [], "has_loteado": False, "has_lote": False, "warning": None}
+        if not path.exists():
+            diagnosis["warning"] = f"No existe la base de loteado: {path}"
+            return diagnosis
+        with sqlite3.connect(path) as conn:
+            diagnosis["tables"] = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+            ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
+            lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
+            diagnosis["has_loteado"] = bool(ldo_table)
+            diagnosis["has_lote"] = bool(lote_table)
+            if ldo_table:
+                diagnosis["loteado_columns"] = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
+        if not diagnosis["has_lote"]:
+            diagnosis["warning"] = "No existe la tabla Lote en bdloteado.sqlite. No se puede calcular stock almacén con neto real de Lote."
+        logger.info("Diagnóstico de bdloteado.sqlite (%s): %s", path, diagnosis)
+        return diagnosis
+
+    def _get_loteado_filter_rows(self, filters: dict) -> list[dict]:
+        path = self.db_loteado
+        if not path.exists():
+            return []
+        with sqlite3.connect(path) as conn:
+            conn.row_factory = sqlite3.Row
+            ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
+            if not ldo_table:
+                return []
+            ldo_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
+            camp_col = self._find_column(ldo_cols, ["CAMPAÑA", "Campaña"])
+            fecha_col = self._find_column(ldo_cols, ["FechaAlmacen", "FechaCreacion"])
+            var_col = self._find_column(ldo_cols, ["Variedad"])
+            if not camp_col or not fecha_col:
+                return []
+            var_expr = f'ldo."{var_col}"' if var_col else "''"
+            rows = [dict(r) for r in conn.execute(f"""
+                SELECT ldo."{camp_col}" as Campana, ldo.CULTIVO as Cultivo, COALESCE(ldo.{fecha_col}, '') as FechaAlmacen,
+                       ldo.EMPRESA as Empresa, {var_expr} as Variedad
+                FROM "{ldo_table}" ldo
+                WHERE UPPER(TRIM(ldo.Estado)) = 'STOCK'
+                  AND UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
+                  AND UPPER(REPLACE(REPLACE(TRIM(ldo.Pedido), '/', ''), ' ', '')) IN ('SP','PRECALIBRADO','ESTANDAR','ESTÁNDAR')
+                  AND UPPER(TRIM(ldo.Estado)) NOT IN ('BAJA','VOLCADO','EXPEDICION','EXPEDICIÓN')
+            """).fetchall()]
+        data: list[dict] = []
+        for r in rows:
+            dt = self._parse_date(r.get("FechaAlmacen"))
+            data.append({"Campaña": r.get("Campana", ""), "Cultivo": r.get("Cultivo", ""), "Empresa": r.get("Empresa", ""), "Variedad": r.get("Variedad", ""), "Semana": dt.isocalendar().week if dt else "", "Fecha": dt.strftime("%Y-%m-%d") if dt else (r.get("FechaAlmacen") or "")})
+        return data
+
     def get_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
         fruta_path = self._db_path(DB_FRUTA)
         calidad_path = self._db_path(DB_CALIDAD)
@@ -153,12 +203,12 @@ class PlanningRepository:
                 traceback.print_exc()
         return data, last_update, update_warning
 
-    def get_stock_almacen(self, filters: dict) -> list[dict]:
+    def get_stock_almacen(self, filters: dict) -> tuple[list[dict], str | None]:
         path = self.db_loteado
         logger.info("BD loteado usada: %s", path)
         if not path.exists():
             logger.warning("No existe la base de loteado: %s", path)
-            return []
+            return [], None
         with sqlite3.connect(path) as conn:
             conn.row_factory = sqlite3.Row
             tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
@@ -167,23 +217,23 @@ class PlanningRepository:
             lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
             if not ldo_table or not lote_table:
                 logger.warning("No se encontraron tablas requeridas en %s (Loteado: %s, Lote: %s)", path, bool(ldo_table), bool(lote_table))
-                return []
+                return [], "Stock almacén no disponible: falta tabla Lote." if ldo_table and not lote_table else None
             ldo_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
             if not ldo_cols:
                 logger.warning("No existe la tabla %s", ldo_table)
-                return []
+                return [], None
             lote_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{lote_table}")').fetchall()]
             if not lote_cols:
                 logger.warning("No existe la tabla %s", lote_table)
-                return []
+                return [], None
             camp_col = self._find_column(ldo_cols, ["CAMPAÑA", "Campaña"])
             if not camp_col:
                 logger.warning("No se encontró la columna de campaña en %s", ldo_table)
-                return []
+                return [], None
             fecha_col = self._find_column(ldo_cols, ["FechaAlmacen", "FechaCreacion"])
             if not fecha_col:
                 logger.warning("No se encontró columna de fecha en %s", ldo_table)
-                return []
+                return [], None
             fecha_expr = f"COALESCE(ldo.{fecha_col}, '')"
 
             query = f"""
@@ -242,24 +292,18 @@ class PlanningRepository:
                     "Estado": r.get("Estado", ""), "Semana": semana,
                 }
             )
-        return data
+        return data, None
 
     def get_filter_options(self, key: str) -> list[str]:
         filters = {"campana": [], "cultivo": [], "empresa": [], "semana": [], "var_coop": [], "fecha_desde": "", "fecha_hasta": ""}
-        campo, _, _ = self.get_stock_campo(filters)
-        try:
-            almacen = self.get_stock_almacen(filters)
-        except Exception as exc:
-            logger.warning("No se pudo cargar stock almacén al calcular filtros: %s", exc)
-            almacen = []
-        rows = campo + almacen
+        rows = self._get_loteado_filter_rows(filters)
         mapping = {
             "campana": "Campaña",
             "cultivo": "Cultivo",
             "empresa": "Empresa",
             "semana": "Semana",
             "var_coop": "Variedad",
-            "marca": "Marca",
+            "fecha": "Fecha",
         }
         col = mapping.get(key)
         if not col:

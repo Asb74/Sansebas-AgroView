@@ -17,8 +17,11 @@ class PlanningService:
     def load_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
         return self.repo.get_stock_campo(filters)
 
-    def load_stock_almacen(self, filters: dict) -> list[dict]:
+    def load_stock_almacen(self, filters: dict) -> tuple[list[dict], str | None]:
         return self.repo.get_stock_almacen(filters)
+
+    def diagnose_loteado_tables(self) -> dict:
+        return self.repo.diagnose_loteado_tables()
 
     def get_filter_options(self, key: str) -> list[str]:
         return self.repo.get_filter_options(key)
