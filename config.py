@@ -3,6 +3,9 @@ import logging
 
 DB_DIR = r"\\Personal\C\BasesSQLite"
 DB_PEDIDOS = "DBPedidos.sqlite"
+DB_FRUTA = "DBfruta.sqlite"
+DB_CALIDAD = "BdCalidad.sqlite"
+DB_LOTEADO = r"\\Personal\C\BasesSQLite\bdloteado.sqlite"
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
