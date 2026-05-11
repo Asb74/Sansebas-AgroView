@@ -13,7 +13,7 @@ from config import DB_LOTEADO
 from db.legacy_sync_repository import LegacySyncRepository
 
 
-VALID_MODES = {"REEMPLAZAR_TABLA"}
+VALID_MODES = {"REEMPLAZAR_TABLA", "CREAR_O_REEMPLAZAR"}
 logger = logging.getLogger(__name__)
 
 
@@ -52,10 +52,22 @@ class LegacySyncService:
         ok, message, csv_path, exported = self._run_export(setting_id)
         imported = 0
         err = None
+        table_existed = False
+        table_created = False
         if ok and csv_path:
             try:
-                imported = self._import_csv_replace_table(Path(setting["SqlitePath"]), setting["SqliteTable"], csv_path)
-                message = f"Exportados={exported} Importados={imported}"
+                mode = self._normalize_mode(str(setting.get("Modo", "REEMPLAZAR_TABLA")))
+                imported, table_existed, table_created = self._import_csv_to_sqlite(
+                    csv_path=csv_path,
+                    sqlite_path=Path(setting["SqlitePath"]),
+                    table_name=setting["SqliteTable"],
+                    mode=mode,
+                )
+                base_message = f"Exportados={exported} Importados={imported}"
+                if not table_existed:
+                    message = f"{base_message}. La tabla destino no existía. Se ha creado correctamente."
+                else:
+                    message = base_message
             except Exception as exc:
                 ok = False
                 err = str(exc)
@@ -77,6 +89,9 @@ class LegacySyncService:
                 "FilasImportadas": imported,
                 "Mensaje": message,
                 "Error": err or "",
+                "ModoUsado": self._normalize_mode(str(setting.get("Modo", "REEMPLAZAR_TABLA"))),
+                "TablaDestinoExistia": 1 if table_existed else 0,
+                "TablaDestinoCreada": 1 if table_created else 0,
             }
         )
         return ok, message if ok else f"{message}. {err or ''}".strip()
@@ -98,7 +113,7 @@ class LegacySyncService:
             raise ValueError("SqlitePath es obligatorio")
         if not str(data.get("SqliteTable", "")).strip():
             raise ValueError("SqliteTable es obligatorio")
-        if str(data.get("Modo", "REEMPLAZAR_TABLA")) not in VALID_MODES:
+        if self._normalize_mode(str(data.get("Modo", "REEMPLAZAR_TABLA"))) not in VALID_MODES:
             raise ValueError("Modo no válido")
         self._validate_identifier(str(data.get("SqliteTable")))
 
@@ -109,9 +124,10 @@ class LegacySyncService:
 
     @staticmethod
     def quote_identifier(name: str) -> str:
-        if not name or any(c in name for c in ['\x00', ';']):
+        cleaned = (name or "").strip()
+        if not cleaned or any(token in cleaned for token in ["\x00", ";", "--", "`", "\n", "\r"]):
             raise ValueError("Identificador SQL inválido")
-        return '"' + name.replace('"', '""') + '"'
+        return '"' + cleaned.replace('"', '""') + '"'
 
     def _run_export(self, setting_id: int) -> tuple[bool, str, Path | None, int]:
         setting = self.repository.get_setting(setting_id)
@@ -221,26 +237,42 @@ class LegacySyncService:
         m = re.search(r"RegistrosExportados=(\d+)", text)
         return int(m.group(1)) if m else 0
 
-    def _import_csv_replace_table(self, sqlite_path: Path, sqlite_table: str, csv_path: Path) -> int:
+    @staticmethod
+    def _normalize_mode(mode: str) -> str:
+        normalized = (mode or "REEMPLAZAR_TABLA").strip().upper()
+        if normalized == "CREAR_O_REEMPLAZAR":
+            return "REEMPLAZAR_TABLA"
+        return normalized
+
+    def _import_csv_to_sqlite(self, csv_path: Path, sqlite_path: Path, table_name: str, mode: str) -> tuple[int, bool, bool]:
+        mode = self._normalize_mode(mode)
+        if mode != "REEMPLAZAR_TABLA":
+            raise ValueError("Modo no soportado todavía")
+
         rows = self._read_csv_rows(csv_path)
         if not rows:
             raise ValueError("CSV vacío")
         header = self._sanitize_headers(rows[0])
         data_rows = rows[1:]
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-        table = self.quote_identifier(sqlite_table)
+        table = self.quote_identifier(table_name)
         col_defs = ", ".join(f"{self.quote_identifier(c)} TEXT" for c in header)
+        columns = ", ".join(self.quote_identifier(c) for c in header)
         placeholders = ",".join(["?"] * len(header))
+
         with sqlite3.connect(sqlite_path) as conn:
+            table_existed = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table_name,)
+            ).fetchone() is not None
             conn.execute("BEGIN")
             conn.execute(f"DROP TABLE IF EXISTS {table}")
             conn.execute(f"CREATE TABLE {table} ({col_defs})")
             conn.executemany(
-                f"INSERT INTO {table} ({', '.join(self.quote_identifier(c) for c in header)}) VALUES ({placeholders})",
+                f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
                 [tuple(r[: len(header)] + [""] * (len(header) - len(r))) for r in data_rows],
             )
             conn.commit()
-        return len(data_rows)
+        return len(data_rows), table_existed, True
 
     @staticmethod
     def _read_csv_rows(path: Path) -> list[list[str]]:

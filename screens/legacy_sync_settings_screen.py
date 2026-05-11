@@ -55,7 +55,17 @@ class LegacySyncSettingsScreen(ttk.Frame):
         for i, f in enumerate(fields):
             ttk.Label(win, text=f).grid(row=i, column=0, sticky="w", padx=6, pady=4)
             vars[f] = tk.StringVar(value=str(data.get(f, "REEMPLAZAR_TABLA" if f == "Modo" else "")))
-            ttk.Entry(win, textvariable=vars[f], width=70).grid(row=i, column=1, sticky="ew", padx=6, pady=4)
+            if f == "Modo":
+                ttk.Combobox(win, textvariable=vars[f], values=["REEMPLAZAR_TABLA", "CREAR_O_REEMPLAZAR"], width=67, state="readonly").grid(row=i, column=1, sticky="ew", padx=6, pady=4)
+            else:
+                ttk.Entry(win, textvariable=vars[f], width=70).grid(row=i, column=1, sticky="ew", padx=6, pady=4)
+        ttk.Label(
+            win,
+            text="Crear/Reemplazar tabla: Borra la tabla destino si existe y la crea de nuevo desde Access. Si no existe, la crea.",
+            foreground="#555",
+            wraplength=700,
+            justify="left",
+        ).grid(row=8, column=1, sticky="w", padx=6, pady=(0, 6))
         activa = tk.IntVar(value=int(data.get("Activa", 1)))
         ttk.Checkbutton(win, text="Activa", variable=activa).grid(row=len(fields), column=1, sticky="w", padx=6)
         ttk.Button(win, text="Buscar Access...", command=lambda: vars["AccessPath"].set(filedialog.askopenfilename(filetypes=[("Access MDB", "*.mdb"), ("Todos", "*.*")]))).grid(row=1, column=2)

@@ -55,11 +55,21 @@ class LegacySyncRepository:
                     Ok INTEGER,
                     FilasExportadas INTEGER,
                     FilasImportadas INTEGER,
+                    ModoUsado TEXT,
+                    TablaDestinoExistia INTEGER DEFAULT 0,
+                    TablaDestinoCreada INTEGER DEFAULT 0,
                     Mensaje TEXT,
                     Error TEXT
                 )
                 '''
             )
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(LegacyTableSyncLog)").fetchall()}
+            if "ModoUsado" not in cols:
+                conn.execute("ALTER TABLE LegacyTableSyncLog ADD COLUMN ModoUsado TEXT")
+            if "TablaDestinoExistia" not in cols:
+                conn.execute("ALTER TABLE LegacyTableSyncLog ADD COLUMN TablaDestinoExistia INTEGER DEFAULT 0")
+            if "TablaDestinoCreada" not in cols:
+                conn.execute("ALTER TABLE LegacyTableSyncLog ADD COLUMN TablaDestinoCreada INTEGER DEFAULT 0")
 
     def get_settings(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -126,13 +136,16 @@ class LegacySyncRepository:
                 '''
                 INSERT INTO LegacyTableSyncLog
                 (SettingId, Nombre, AccessPath, AccessTable, SqlitePath, SqliteTable, Inicio, Fin, Ok,
-                 FilasExportadas, FilasImportadas, Mensaje, Error)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 FilasExportadas, FilasImportadas, ModoUsado, TablaDestinoExistia, TablaDestinoCreada, Mensaje, Error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
                 (
                     log_data.get("SettingId"), log_data.get("Nombre"), log_data.get("AccessPath"), log_data.get("AccessTable"),
                     log_data.get("SqlitePath"), log_data.get("SqliteTable"), log_data.get("Inicio"), log_data.get("Fin"),
                     int(log_data.get("Ok", 0)), log_data.get("FilasExportadas", 0), log_data.get("FilasImportadas", 0),
+                    log_data.get("ModoUsado", "REEMPLAZAR_TABLA"),
+                    int(log_data.get("TablaDestinoExistia", 0)),
+                    int(log_data.get("TablaDestinoCreada", 0)),
                     log_data.get("Mensaje", ""), log_data.get("Error", ""),
                 ),
             )
