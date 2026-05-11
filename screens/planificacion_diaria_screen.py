@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
+import logging
 
 from services.planning_service import PlanningService
 from widgets.data_table import DataTable
@@ -24,7 +25,11 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
     def _load_filter_options(self) -> None:
         for key in ("campana", "cultivo", "empresa", "semana", "var_coop", "marca"):
-            self.filter_widgets[key].set_options(self.service.get_filter_options(key))
+            try:
+                self.filter_widgets[key].set_options(self.service.get_filter_options(key))
+            except Exception as exc:
+                logging.getLogger(__name__).warning("No se pudo cargar opciones de filtro %s: %s", key, exc)
+                self.filter_widgets[key].set_options([])
 
     def _build_ui(self) -> None:
         self.grid_rowconfigure(2, weight=1)
@@ -97,15 +102,19 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
     def load_data(self) -> None:
         payload = self._filters_payload()
+        updated = None
+        update_warning = False
         try:
             self.stock_campo_rows, updated, update_warning = self.service.load_stock_campo(payload)
+        except Exception as exc:
+            self.stock_campo_rows = []
+            messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock campo: {exc}")
+        try:
             self.stock_almacen_rows = self.service.load_stock_almacen(payload)
         except Exception as exc:
-            if "archivo auxiliar" in str(exc).lower():
-                messagebox.showwarning("Planificación diaria", "No se pudo leer un archivo auxiliar de actualización. Se continuará sin ese dato.")
-            else:
-                messagebox.showwarning("Planificación diaria", str(exc))
-            return
+            self.stock_almacen_rows = []
+            logging.getLogger(__name__).warning("No se pudo cargar stock almacén: %s", exc)
+            messagebox.showwarning("Planificación diaria", "No se pudo cargar stock almacén. Se continuará con stock campo.")
         self.campo_table.set_rows(self.stock_campo_rows)
         self.almacen_table.set_rows(self.stock_almacen_rows)
         self.kpi_campo.set(
