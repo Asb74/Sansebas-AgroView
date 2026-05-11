@@ -429,20 +429,40 @@ class PlanningRepository:
                 return [], kpi_vacio
 
             query = """
-                WITH hecho AS (
-                    SELECT
+                WITH palets_terminados AS (
+                    SELECT DISTINCT
                         TRIM(ldo.Pedido) AS Pedido,
                         CAST(ldo.Linea AS TEXT) AS Linea,
-                        COUNT(DISTINCT ldo.IdPalet) AS PaletsHechos,
-                        SUM(COALESCE(l.Cajas,0)) AS CajasHechas,
-                        SUM(COALESCE(l.Neto,0)) AS KgHechoReal
+                        ldo.IdPalet
                     FROM bdloteado.Loteado ldo
-                    INNER JOIN bdloteado.Lote l
-                        ON l.IdPalet = ldo.IdPalet
                     WHERE UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
+                ),
+                palets_resumen AS (
+                    SELECT
+                        pt.Pedido,
+                        pt.Linea,
+                        pt.IdPalet,
+                        MAX(COALESCE(l.Cajas, 0)) AS CajasPalet,
+                        MAX(COALESCE(l.Neto, 0)) AS KgPalet
+                    FROM palets_terminados pt
+                    LEFT JOIN bdloteado.Lote l
+                        ON l.IdPalet = pt.IdPalet
                     GROUP BY
-                        TRIM(ldo.Pedido),
-                        CAST(ldo.Linea AS TEXT)
+                        pt.Pedido,
+                        pt.Linea,
+                        pt.IdPalet
+                ),
+                hecho AS (
+                    SELECT
+                        Pedido,
+                        Linea,
+                        COUNT(DISTINCT IdPalet) AS PaletsHechos,
+                        SUM(CajasPalet) AS CajasHechas,
+                        SUM(KgPalet) AS KgHechoReal
+                    FROM palets_resumen
+                    GROUP BY
+                        Pedido,
+                        Linea
                 )
                 SELECT
                     p."Semana" AS "Semana",
@@ -460,39 +480,38 @@ class PlanningRepository:
                     p."Confeccion" AS "Confección",
                     COALESCE(p."NPalet", 0) AS "Palets pedido",
                     COALESCE(h.PaletsHechos, 0) AS "Palets hechos",
-                    COALESCE(p."NPalet", 0) - COALESCE(h.PaletsHechos, 0) AS "Palets pendientes",
+                    MAX(0, COALESCE(p."NPalet", 0) - COALESCE(h.PaletsHechos, 0)) AS "Palets pendientes",
                     COALESCE(p."Cajas", 0) AS "Cajas pedido",
                     COALESCE(h.CajasHechas, 0) AS "Cajas hechas",
-                    COALESCE(p."Cajas", 0) - COALESCE(h.CajasHechas, 0) AS "Cajas pendientes",
+                    MAX(0, COALESCE(p."Cajas", 0) - COALESCE(h.CajasHechas, 0)) AS "Cajas pendientes",
                     CASE
                       WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
                       WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
                       ELSE 0
                     END AS "Kg pedido teórico",
                     COALESCE(h.KgHechoReal, 0) AS "Kg hecho real",
-                    (
+                    MAX(0, (
                       CASE
                         WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
                         WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
                         ELSE 0
                       END
-                    ) - COALESCE(h.KgHechoReal, 0) AS "Kg pendiente",
+                    ) - COALESCE(h.KgHechoReal, 0)) AS "Kg pendiente",
                     CASE
-                      WHEN (
+                      WHEN NULLIF((
                         CASE
                           WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
                           WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
-                      ) > 0
-                      THEN ROUND((COALESCE(h.KgHechoReal, 0) * 100.0) / (
+                      ), 0) IS NULL THEN 0
+                      ELSE ROUND((COALESCE(h.KgHechoReal, 0) / NULLIF((
                         CASE
                           WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
                           WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
-                      ), 2)
-                      ELSE 0
+                      ), 0)) * 100, 2)
                     END AS "% hecho",
                     CASE
                       WHEN (
@@ -509,14 +528,14 @@ class PlanningRepository:
                           WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
-                      ) THEN 'Excedido'
+                      ) * 1.02 THEN 'Excedido'
                       WHEN COALESCE(h.KgHechoReal, 0) >= (
                         CASE
                           WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
                           WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
-                      ) THEN 'Completo'
+                      ) * 0.98 THEN 'Completo'
                       WHEN COALESCE(h.KgHechoReal, 0) > 0
                        AND COALESCE(h.KgHechoReal, 0) < (
                         CASE
