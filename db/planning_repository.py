@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 import sqlite3
+import traceback
 from typing import Any
 
 from config import DB_DIR
@@ -42,7 +43,27 @@ class PlanningRepository:
                 continue
         return None
 
-    def get_stock_campo(self, filters: dict) -> tuple[list[dict], str | None]:
+    @staticmethod
+    def _normalize_filter_values(value: Any) -> list[str]:
+        if isinstance(value, list):
+            raw = value
+        elif value is None:
+            raw = []
+        else:
+            raw = [value]
+        return [str(v).strip() for v in raw if str(v or "").strip()]
+
+    @staticmethod
+    def read_text_safe(path: str | Path) -> str:
+        text_path = Path(path)
+        for enc in ("utf-8-sig", "cp1252", "latin-1"):
+            try:
+                return text_path.read_text(encoding=enc)
+            except UnicodeDecodeError:
+                continue
+        return text_path.read_bytes().decode("latin-1", errors="replace")
+
+    def get_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
         fruta_path = self._db_path("DBfruta.sqlite")
         calidad_path = self._db_path("BdCalidad.sqlite")
         if not fruta_path.exists():
@@ -65,17 +86,18 @@ class PlanningRepository:
                   AND p.CULTIVO NOT IN ('DIRECTO','DIRECTOCHF','INDUSTRIA','VENTA','VENTACHF')
             """
             params: list[Any] = []
-            for field, col in (("campana", 'p."CAMPAÑA"'), ("cultivo", "p.CULTIVO"), ("empresa", "p.EMPRESA"), ("variedad", "p.Variedad")):
-                val = (filters.get(field) or "").strip()
-                if val:
-                    query += f" AND UPPER(TRIM({col})) = UPPER(TRIM(?))"
-                    params.append(val)
+            for field, col in (("campana", 'p."CAMPAÑA"'), ("cultivo", "p.CULTIVO"), ("empresa", "p.EMPRESA"), ("var_coop", "p.Variedad")):
+                values = self._normalize_filter_values(filters.get(field))
+                if values:
+                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
+                    query += f" AND UPPER(TRIM({col})) IN ({placeholders})"
+                    params.extend(values)
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
 
         data: list[dict] = []
         f_desde = self._parse_date(filters.get("fecha_desde"))
         f_hasta = self._parse_date(filters.get("fecha_hasta"))
-        semana_filter = str(filters.get("semana") or "").strip()
+        semana_filter = set(self._normalize_filter_values(filters.get("semana")))
         for r in rows:
             dt = self._parse_date(r.get("FechaCarga"))
             semana = dt.isocalendar().week if dt else ""
@@ -83,7 +105,7 @@ class PlanningRepository:
                 continue
             if f_hasta and (dt is None or dt.date() > f_hasta.date()):
                 continue
-            if semana_filter and str(semana) != semana_filter:
+            if semana_filter and str(semana) not in semana_filter:
                 continue
             neto_partida = float(r.get("NetoPartida") or 0)
             neto = float(r.get("Neto") or 0)
@@ -106,8 +128,15 @@ class PlanningRepository:
             )
 
         update_file = self.base_dir / "ultima_actualizacion.txt"
-        last_update = update_file.read_text(encoding="utf-8").strip() if update_file.exists() else None
-        return data, last_update
+        last_update = None
+        update_warning = False
+        if update_file.exists():
+            try:
+                last_update = self.read_text_safe(update_file).strip()
+            except Exception:
+                update_warning = True
+                traceback.print_exc()
+        return data, last_update, update_warning
 
     def get_stock_almacen(self, filters: dict) -> list[dict]:
         path = self._db_path("BDPerceco.sqlite")
@@ -142,11 +171,12 @@ class PlanningRepository:
                   AND UPPER(TRIM(ldo.Estado)) NOT IN ('BAJA','VOLCADO','EXPEDICION','EXPEDICIÓN')
             """
             params: list[Any] = []
-            for field, col in (("campana", f'ldo."{camp_col}"'), ("cultivo", "ldo.CULTIVO"), ("empresa", "ldo.EMPRESA"), ("variedad", "l.Variedad")):
-                val = (filters.get(field) or "").strip()
-                if val:
-                    query += f" AND UPPER(TRIM({col})) = UPPER(TRIM(?))"
-                    params.append(val)
+            for field, col in (("campana", f'ldo."{camp_col}"'), ("cultivo", "ldo.CULTIVO"), ("empresa", "ldo.EMPRESA"), ("var_coop", "l.Variedad")):
+                values = self._normalize_filter_values(filters.get(field))
+                if values:
+                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
+                    query += f" AND UPPER(TRIM({col})) IN ({placeholders})"
+                    params.extend(values)
             query += """
                 GROUP BY ldo.IdPalet, ldo.""" + f'"{camp_col}"' + """, ldo.CULTIVO, ldo.Pedido, ldo.Estado,
                          ldo.Terminado, FechaAlmacen, ldo.Categoria, ldo.Marca, ldo.EMPRESA,
@@ -157,7 +187,7 @@ class PlanningRepository:
         data: list[dict] = []
         f_desde = self._parse_date(filters.get("fecha_desde"))
         f_hasta = self._parse_date(filters.get("fecha_hasta"))
-        semana_filter = str(filters.get("semana") or "").strip()
+        semana_filter = set(self._normalize_filter_values(filters.get("semana")))
         for r in rows:
             dt = self._parse_date(r.get("FechaAlmacen"))
             semana = dt.isocalendar().week if dt else ""
@@ -165,7 +195,7 @@ class PlanningRepository:
                 continue
             if f_hasta and (dt is None or dt.date() > f_hasta.date()):
                 continue
-            if semana_filter and str(semana) != semana_filter:
+            if semana_filter and str(semana) not in semana_filter:
                 continue
             data.append(
                 {
@@ -178,3 +208,22 @@ class PlanningRepository:
                 }
             )
         return data
+
+    def get_filter_options(self, key: str) -> list[str]:
+        filters = {"campana": [], "cultivo": [], "empresa": [], "semana": [], "var_coop": [], "fecha_desde": "", "fecha_hasta": ""}
+        campo, _, _ = self.get_stock_campo(filters)
+        almacen = self.get_stock_almacen(filters)
+        rows = campo + almacen
+        mapping = {
+            "campana": "Campaña",
+            "cultivo": "Cultivo",
+            "empresa": "Empresa",
+            "semana": "Semana",
+            "var_coop": "Variedad",
+            "marca": "Marca",
+        }
+        col = mapping.get(key)
+        if not col:
+            return []
+        values = sorted({str(r.get(col, "")).strip() for r in rows if str(r.get(col, "")).strip()})
+        return values

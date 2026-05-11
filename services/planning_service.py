@@ -14,11 +14,14 @@ class PlanningService:
     def __init__(self) -> None:
         self.repo = PlanningRepository()
 
-    def load_stock_campo(self, filters: dict) -> tuple[list[dict], str | None]:
+    def load_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
         return self.repo.get_stock_campo(filters)
 
     def load_stock_almacen(self, filters: dict) -> list[dict]:
         return self.repo.get_stock_almacen(filters)
+
+    def get_filter_options(self, key: str) -> list[str]:
+        return self.repo.get_filter_options(key)
 
     def aggregate_stock_campo(self, rows: list[dict]) -> list[dict]:
         agg: dict[tuple, float] = defaultdict(float)
