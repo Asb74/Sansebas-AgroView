@@ -396,187 +396,66 @@ class PlanningRepository:
         return f"CASE WHEN length({raw}) >= 10 AND substr({raw},5,1)='-' THEN {ymd_iso} WHEN length({raw}) >= 10 AND substr({raw},3,1)='/' THEN {ymd_dmy} ELSE {raw} END"
 
     def get_pedidos_pendientes(self, filters: dict, modo_pedidos: str = "10_dias") -> tuple[list[dict], dict[str, float]]:
-        logger.info("Cargando pedidos pendientes. Modo=%s Filters=%s", modo_pedidos, filters)
+        logger.info("Cargando pedidos pendientes (prueba mínima). Modo=%s Filters=%s", modo_pedidos, filters)
         pedidos_path = self._db_path("DBPedidos.sqlite")
         logger.info("Ruta DBPedidos.sqlite usada: %s", pedidos_path)
         logger.info("DBPedidos.sqlite existe: %s", pedidos_path.exists())
+        kpi_vacio = {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Nº pedidos": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0}
         if not pedidos_path.exists():
             logger.warning("No existe DBPedidos.sqlite en la ruta esperada")
-            return [], {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Nº pedidos": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0}
-        if not self.db_loteado.exists():
-            logger.warning("No existe la base de loteado: %s", self.db_loteado)
-            return [], {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Nº pedidos": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0}
+            return [], kpi_vacio
+
         with sqlite3.connect(pedidos_path) as conn:
             conn.row_factory = sqlite3.Row
-            conn.execute(f"ATTACH DATABASE '{self.db_loteado.as_posix()}' AS loteado_db")
-            tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-            logger.info("Tablas encontradas en DBPedidos.sqlite: %s", tables)
             pedidos_cols = [r["name"] for r in conn.execute('PRAGMA table_info("Pedidos")').fetchall()]
             if not pedidos_cols:
                 logger.warning("No existe la tabla Pedidos en DBPedidos.sqlite")
-                return [], {}
-            cancelado_col = self._find_column(pedidos_cols, ["Cancelado"])
-            fecha_col = self._find_column(pedidos_cols, ["FechaSalida", "Fecha"])
-            linea_col = self._find_column(pedidos_cols, ["Linea", "Line"])
-            if not fecha_col:
-                fecha_col = "FechaSalida" if "FechaSalida" in pedidos_cols else pedidos_cols[0]
-            if not linea_col:
-                linea_col = "Linea" if "Linea" in pedidos_cols else pedidos_cols[0]
-            where = ["1=1"]
-            params: list[Any] = []
-            fecha_expr = self._fecha_expr_sql("p", fecha_col)
-            fecha_filtrada = bool(filters.get("aplicar_filtro_fecha", True))
-            if cancelado_col:
-                where.append(f'UPPER(TRIM(COALESCE(p."{cancelado_col}",""))) NOT IN (\'1\',\'S\',\'SI\',\'SÍ\',\'TRUE\',\'T\',\'X\')')
-            where.append('UPPER(REPLACE(REPLACE(TRIM(COALESCE(p."IdPedidoLora","")), "/", ""), " ", "")) NOT IN (\'SP\',\'PRECALIBRADO\',\'ESTANDAR\',\'ESTÁNDAR\')')
-            if fecha_filtrada and modo_pedidos == "10_dias":
-                where.append(f'DATE({fecha_expr}) BETWEEN DATE("now","localtime") AND DATE("now","localtime","+10 day")')
-            elif fecha_filtrada and modo_pedidos == "semana_actual":
-                where.append('CAST(COALESCE(p."Semana","") AS TEXT) = strftime("%W","now","localtime")')
-            elif fecha_filtrada and modo_pedidos == "todos_futuros":
-                where.append(f'DATE({fecha_expr}) >= DATE("now","localtime")')
-            elif modo_pedidos == "todos":
-                logger.info('Modo pedidos "todos": sin filtro de fecha aplicado')
-            elif fecha_filtrada and modo_pedidos == "rango":
-                if str(filters.get("fecha_desde", "")).strip():
-                    where.append(f'DATE({fecha_expr}) >= DATE(?)')
-                    params.append(str(filters["fecha_desde"]).strip())
-                if str(filters.get("fecha_hasta", "")).strip():
-                    where.append(f'DATE({fecha_expr}) <= DATE(?)')
-                    params.append(str(filters["fecha_hasta"]).strip())
-            elif fecha_filtrada and modo_pedidos in ("semana", "proximas_semanas"):
-                semanas = self._normalize_filter_values(filters.get("semana"))
-                if semanas:
-                    where.append('CAST(COALESCE(p."Semana","") AS TEXT) IN (' + ",".join(["?"] * len(semanas)) + ")")
-                    params.extend(semanas)
-            for field, column in (("campana", "Campaña"), ("cultivo", "Cultivo"), ("empresa", "EMPRESA"), ("var_coop", "VarCoop"), ("grupo_varietal", "GRUPO"), ("marca", "Marca")):
-                if column not in pedidos_cols:
-                    continue
-                vals = self._normalize_filter_values(filters.get(field))
-                if vals:
-                    where.append(f'UPPER(TRIM(COALESCE(p."{column}",""))) IN ({",".join(["UPPER(TRIM(?))"] * len(vals))})')
-                    params.extend(vals)
-            ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
-            lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
-            if not ldo_table or not lote_table:
-                return [], {}
-            query = f"""
-                WITH hechos AS (
-                    SELECT CAST(ldo.Pedido AS TEXT) AS IdPedidoLora, CAST(COALESCE(ldo.Linea,0) AS INTEGER) AS Linea,
-                           SUM(COALESCE(l.Cajas,0)) AS CajasHechas, SUM(COALESCE(l.Neto,0)) AS KgHechoReal
-                    FROM loteado_db."{ldo_table}" ldo
-                    INNER JOIN loteado_db."{lote_table}" l ON l.IdPalet = ldo.IdPalet
-                    WHERE UPPER(TRIM(COALESCE(ldo.Terminado,''))) IN ('S','SI','SÍ')
-                    GROUP BY CAST(ldo.Pedido AS TEXT), CAST(COALESCE(ldo.Linea,0) AS INTEGER)
-                )
-                SELECT p."Semana", p."{fecha_col}" AS FechaSalida, p."Cliente", p."IdPedidoLora",
-                       COALESCE(p."{linea_col}",0) AS Linea, p."Cultivo", p."Campaña", p."VarCoop", p."GRUPO" AS GrupoVarietal,
-                       p."Calibre", p."Categoria", p."Marca", p."Confeccion", COALESCE(p."Cajas",0) AS CajasPedido,
-                       COALESCE(h.CajasHechas,0) AS CajasHechas, COALESCE(h.KgHechoReal,0) AS KgHechoReal,
-                       COALESCE(mc.NETO,0) AS NetoCajaConf, COALESCE(p."ExigePeso",0) AS ExigePeso
-                FROM "Pedidos" p
-                LEFT JOIN "MConfecciones" mc ON CAST(mc.CODIGO AS TEXT)=CAST(p."Confeccion" AS TEXT)
-                LEFT JOIN hechos h ON h.IdPedidoLora = CAST(p."IdPedidoLora" AS TEXT) AND h.Linea = CAST(COALESCE(p."{linea_col}",0) AS INTEGER)
-                WHERE {" AND ".join(where)}
-                ORDER BY DATE({fecha_expr}) ASC, CAST(p."IdPedidoLora" AS TEXT) ASC, CAST(COALESCE(p."{linea_col}",0) AS INTEGER) ASC
-            """
-            total_pedidos = conn.execute('SELECT COUNT(*) FROM "Pedidos"').fetchone()[0]
-            min_max = conn.execute(f'SELECT MIN({fecha_expr}), MAX({fecha_expr}) FROM "Pedidos" p').fetchone()
-            campanas = [r[0] for r in conn.execute('SELECT DISTINCT "Campaña" FROM "Pedidos" ORDER BY "Campaña"').fetchall()] if "Campaña" in pedidos_cols else []
-            cultivos = [r[0] for r in conn.execute('SELECT DISTINCT Cultivo FROM "Pedidos" ORDER BY Cultivo').fetchall()] if "Cultivo" in pedidos_cols else []
-            empresas = [r[0] for r in conn.execute('SELECT DISTINCT EMPRESA FROM "Pedidos" ORDER BY EMPRESA').fetchall()] if "EMPRESA" in pedidos_cols else []
+                return [], kpi_vacio
 
-            query_cc = 'SELECT COUNT(*) FROM "Pedidos" WHERE 1=1'
-            params_cc: list[Any] = []
-            campana_vals = self._normalize_filter_values(filters.get("campana"))
-            if campana_vals and "Campaña" in pedidos_cols:
-                query_cc += f' AND UPPER(TRIM(COALESCE("Pedidos"."Campaña",""))) IN ({",".join(["UPPER(TRIM(?))"] * len(campana_vals))})'
-                params_cc.extend(campana_vals)
-            cultivo_vals = self._normalize_filter_values(filters.get("cultivo"))
-            if cultivo_vals and "Cultivo" in pedidos_cols:
-                query_cc += f' AND UPPER(TRIM(COALESCE("Pedidos".Cultivo,""))) IN ({",".join(["UPPER(TRIM(?))"] * len(cultivo_vals))})'
-                params_cc.extend(cultivo_vals)
-            if cancelado_col:
-                query_cc += f" AND UPPER(TRIM(COALESCE(\"Pedidos\".\"{cancelado_col}\",\"\"))) NOT IN ('1','S','SI','SÍ','TRUE','T','X')"
-            query_cc += " AND UPPER(REPLACE(REPLACE(TRIM(COALESCE(\"Pedidos\".\"IdPedidoLora\",\"\")), '/', ''), ' ', '')) NOT IN ('SP','PRECALIBRADO','ESTANDAR','ESTÁNDAR')"
-            cc_count = conn.execute(query_cc, params_cc).fetchone()[0]
+            total = conn.execute('SELECT COUNT(*) AS TotalPedidos FROM "Pedidos"').fetchone()[0]
+            logger.info("Total pedidos en BD: %s", total)
 
-            query_fecha = 'SELECT COUNT(*) FROM "Pedidos" p WHERE 1=1'
-            params_fecha: list[Any] = []
-            if fecha_filtrada and modo_pedidos == "10_dias":
-                query_fecha += f' AND DATE({fecha_expr}) BETWEEN DATE("now","localtime") AND DATE("now","localtime","+10 day")'
-            elif modo_pedidos == "todos":
-                pass
-            elif fecha_filtrada and modo_pedidos == "semana_actual":
-                query_fecha += ' AND CAST(COALESCE(p."Semana","") AS TEXT) = strftime("%W","now","localtime")'
-            elif fecha_filtrada and modo_pedidos == "todos_futuros":
-                query_fecha += f' AND DATE({fecha_expr}) >= DATE("now","localtime")'
-            elif fecha_filtrada and modo_pedidos == "rango":
-                if str(filters.get("fecha_desde", "")).strip():
-                    query_fecha += f' AND DATE({fecha_expr}) >= DATE(?)'
-                    params_fecha.append(str(filters["fecha_desde"]).strip())
-                if str(filters.get("fecha_hasta", "")).strip():
-                    query_fecha += f' AND DATE({fecha_expr}) <= DATE(?)'
-                    params_fecha.append(str(filters["fecha_hasta"]).strip())
-            elif fecha_filtrada and modo_pedidos in ("semana", "proximas_semanas"):
-                semanas = self._normalize_filter_values(filters.get("semana"))
-                if semanas:
-                    query_fecha += ' AND CAST(COALESCE(p."Semana","") AS TEXT) IN (' + ",".join(["?"] * len(semanas)) + ")"
-                    params_fecha.extend(semanas)
-            fecha_count = conn.execute(query_fecha, params_fecha).fetchone()[0]
-            logger.info("COUNT(*) FROM Pedidos: %s", total_pedidos)
+            muestras = [dict(r) for r in conn.execute('SELECT * FROM "Pedidos" LIMIT 5').fetchall()]
+            for row in muestras:
+                logger.info("Ejemplo pedido: %s", row)
+
+            min_max = conn.execute('SELECT MIN("FechaSalida") AS MinFechaSalida, MAX("FechaSalida") AS MaxFechaSalida FROM "Pedidos"').fetchone()
             logger.info("MIN(FechaSalida), MAX(FechaSalida): %s, %s", min_max[0], min_max[1])
-            logger.info("Campañas disponibles: %s", campanas)
-            logger.info("Cultivos disponibles: %s", cultivos)
-            logger.info("Empresas disponibles: %s", empresas)
-            logger.info("COUNT con filtros base (campaña/cultivo/cancelados/técnicos): %s", cc_count)
-            logger.info("COUNT tras filtro modo pedidos (%s): %s", modo_pedidos, fecha_count)
-            logger.info("SQL pedidos pendientes: %s", query)
-            logger.info("Params pedidos pendientes: %s", params)
-            rows = [dict(r) for r in conn.execute(query, params).fetchall()]
-            if not rows:
-                logger.warning("Pedidos pendientes devolvió 0 filas. Revisar filtros y fechas.")
-        out: list[dict] = []
-        kpi = {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Nº pedidos": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0}
-        pedidos_unicos: set[str] = set()
-        for r in rows:
-            cajas = float(r.get("CajasPedido") or 0)
-            neto_conf = float(r.get("NetoCajaConf") or 0)
-            exige = float(r.get("ExigePeso") or 0)
-            neto_caja = neto_conf if neto_conf > 0 else exige
-            kg_teor = cajas * neto_caja if neto_caja > 0 else 0.0
-            kg_hecho = float(r.get("KgHechoReal") or 0)
-            kg_pend = max(0.0, kg_teor - kg_hecho)
-            aviso = "Faltan datos peso caja" if kg_teor == 0 else ""
-            if kg_teor == 0:
-                estado = "Sin datos"
-            elif kg_hecho == 0:
-                estado = "Pendiente"
-            elif kg_hecho > kg_teor:
-                estado = "Excedido"
-            elif kg_hecho >= kg_teor:
-                estado = "Completo"
-            else:
-                estado = "Parcial"
-            pct = 0.0 if kg_teor <= 0 else (kg_hecho / kg_teor) * 100
-            pedidos_unicos.add(str(r.get("IdPedidoLora") or ""))
-            out.append({"Semana": r.get("Semana", ""), "Fecha salida": r.get("FechaSalida", ""), "Cliente": r.get("Cliente", ""), "IdPedidoLora": r.get("IdPedidoLora", ""),
-                        "Línea": r.get("Linea", 0), "Cultivo": r.get("Cultivo", ""), "Campaña": r.get("Campaña", ""), "Variedad Coop": r.get("VarCoop", ""),
-                        "Grupo varietal": r.get("GrupoVarietal", ""), "Calibre": r.get("Calibre", ""), "Categoría": r.get("Categoria", ""), "Marca": r.get("Marca", ""),
-                        "Confección": r.get("Confeccion", ""), "Cajas pedido": round(cajas, 2), "Cajas hechas": round(float(r.get("CajasHechas") or 0), 2),
-                        "Cajas pendientes": round(max(0.0, cajas - float(r.get("CajasHechas") or 0)), 2), "Kg pedido teórico": round(kg_teor, 2),
-                        "Kg hecho real": round(kg_hecho, 2), "Kg pendiente": round(kg_pend, 2), "% hecho": round(pct, 2), "Estado": estado, "Aviso": aviso})
-            kpi["Kg pedido teórico total"] += kg_teor
-            kpi["Kg hecho real total"] += kg_hecho
-            kpi["Kg pendiente total"] += kg_pend
-            if aviso:
-                kpi["Nº líneas sin datos"] += 1
-            if estado == "Parcial":
-                kpi["Nº líneas parciales"] += 1
-        kpi["Nº pedidos"] = len({p for p in pedidos_unicos if p})
-        kpi["Nº líneas"] = len(out)
-        return out, kpi
 
+            if modo_pedidos == "todos":
+                logger.info('Modo pedidos "todos": sin filtro de fecha aplicado (temporal prueba mínima)')
+
+            # PRUEBA MÍNIMA TEMPORAL: sin filtros de campaña/cultivo/empresa/semana/grupo varietal/marca
+            query_minima = """
+                SELECT
+                    "IdPedidoLora",
+                    "Linea",
+                    "Cliente",
+                    "FechaSalida",
+                    "Cultivo",
+                    "Campaña",
+                    "VariedadCoop",
+                    "Cajas"
+                FROM "Pedidos"
+                LIMIT 100
+            """
+            rows = [dict(r) for r in conn.execute(query_minima).fetchall()]
+            logger.info("Pedidos devueltos prueba mínima: %s", len(rows))
+            if not rows:
+                logger.warning("Prueba mínima de pedidos devolvió 0 filas.")
+                return [], kpi_vacio
+
+        pedidos_unicos = {str(r.get("IdPedidoLora") or "").strip() for r in rows if str(r.get("IdPedidoLora") or "").strip()}
+        kpi = {
+            "Kg pedido teórico total": 0.0,
+            "Kg hecho real total": 0.0,
+            "Kg pendiente total": 0.0,
+            "Nº pedidos": len(pedidos_unicos),
+            "Nº líneas": len(rows),
+            "Nº líneas sin datos": 0,
+            "Nº líneas parciales": 0,
+        }
+        return rows, kpi
     def get_aprovechamientos_reales(self, filters: dict) -> list[dict]:
         fruta_path = self._db_path(DB_FRUTA)
         if not fruta_path.exists():
