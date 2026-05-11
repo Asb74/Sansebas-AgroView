@@ -8,7 +8,7 @@ from screens.boa_precios_screen import BOAPreciosScreen
 from screens.boa_reclamaciones_screen import BOAReclamacionesScreen
 from screens.boa_resumen_screen import BOAResumenScreen
 from services.comercial_service import ComercialService
-from utils.ui_assets import get_logo
+from widgets.screen_header import ScreenHeader
 from widgets.date_picker import DatePickerPopup
 from widgets.multi_select_filter import MultiSelectFilter
 
@@ -38,7 +38,6 @@ class BOAComercialScreen(ttk.Frame):
         self.fecha_hasta_var = tk.StringVar()
         self.filters_status_var = tk.StringVar(value="Sin filtros activos")
         self.filter_widgets: dict[str, MultiSelectFilter] = {}
-        self.logo_img = get_logo("64", master=self)
 
         self._build_ui()
         self._load_filters()
@@ -50,15 +49,8 @@ class BOAComercialScreen(ttk.Frame):
         self.grid_rowconfigure(3, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        header = ttk.Frame(self)
+        header = ScreenHeader(self, title="BOA Comercial", on_back=self.on_back)
         header.grid(row=0, column=0, sticky="ew")
-        header.grid_columnconfigure(0, weight=1)
-        title_frame = ttk.Frame(header)
-        title_frame.grid(row=0, column=0, sticky="w", padx=(10, 0))
-        if self.logo_img is not None:
-            tk.Label(title_frame, image=self.logo_img, bg="#f3f6f2").pack(side="left", padx=(0, 10))
-        ttk.Label(title_frame, text="BOA Comercial", style="Section.TLabel").pack(side="left")
-        ttk.Button(header, text="Volver", command=self.on_back).grid(row=0, column=1, sticky="e")
 
         filters = ttk.LabelFrame(self, text="Filtros globales", padding=12)
         filters.grid(row=1, column=0, sticky="ew", pady=(8, 0))
