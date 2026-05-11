@@ -543,34 +543,35 @@ class PlanningRepository:
                     COALESCE(p."NPalet", 0) AS "Palets pedido",
                     COALESCE(h.PaletsHechos, 0) AS "Palets hechos",
                     MAX(0, COALESCE(p."NPalet", 0) - COALESCE(h.PaletsHechos, 0)) AS "Palets pendientes",
-                    COALESCE(p."Cajas", 0) AS "Cajas pedido",
+                    COALESCE(p."Cajas", 0) AS "Cajas/palet",
+                    COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) AS "Cajas pedido",
                     COALESCE(h.CajasHechas, 0) AS "Cajas hechas",
-                    MAX(0, COALESCE(p."Cajas", 0) - COALESCE(h.CajasHechas, 0)) AS "Cajas pendientes",
+                    MAX(0, (COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0)) - COALESCE(h.CajasHechas, 0)) AS "Cajas pendientes",
                     CASE
-                      WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
-                      WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                      WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
+                      WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
                       ELSE 0
                     END AS "Kg pedido teórico",
                     COALESCE(h.KgHechoReal, 0) AS "Kg hecho real",
                     MAX(0, (
                       CASE
-                        WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
-                        WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                        WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
+                        WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
                         ELSE 0
                       END
                     ) - COALESCE(h.KgHechoReal, 0)) AS "Kg pendiente",
                     CASE
                       WHEN NULLIF((
                         CASE
-                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
-                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
                       ), 0) IS NULL THEN 0
                       ELSE ROUND((COALESCE(h.KgHechoReal, 0) / NULLIF((
                         CASE
-                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
-                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
                       ), 0)) * 100, 2)
@@ -578,31 +579,31 @@ class PlanningRepository:
                     CASE
                       WHEN (
                         CASE
-                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
-                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
                       ) = 0 THEN 'Sin datos'
                       WHEN COALESCE(h.KgHechoReal, 0) = 0 THEN 'Pendiente'
                       WHEN COALESCE(h.KgHechoReal, 0) > (
                         CASE
-                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
-                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
                       ) * 1.02 THEN 'Excedido'
                       WHEN COALESCE(h.KgHechoReal, 0) >= (
                         CASE
-                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
-                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
                       ) * 0.98 THEN 'Completo'
                       WHEN COALESCE(h.KgHechoReal, 0) > 0
                        AND COALESCE(h.KgHechoReal, 0) < (
                         CASE
-                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
-                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
                       ) THEN 'Parcial'
@@ -611,8 +612,8 @@ class PlanningRepository:
                     CASE
                       WHEN (
                         CASE
-                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
-                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
                       ) = 0 THEN 'Faltan datos peso caja'
@@ -646,13 +647,13 @@ class PlanningRepository:
 
         pedidos_unicos = {str(r.get("IdPedidoLora") or "").strip() for r in rows if str(r.get("IdPedidoLora") or "").strip()}
         kpi = {
-            "Kg pedido teórico total": 0.0,
-            "Kg hecho real total": 0.0,
-            "Kg pendiente total": 0.0,
+            "Kg pedido teórico total": sum(float(r.get("Kg pedido teórico", 0) or 0) for r in rows),
+            "Kg hecho real total": sum(float(r.get("Kg hecho real", 0) or 0) for r in rows),
+            "Kg pendiente total": sum(float(r.get("Kg pendiente", 0) or 0) for r in rows),
             "Nº pedidos": len(pedidos_unicos),
             "Nº líneas": len(rows),
-            "Nº líneas sin datos": 0,
-            "Nº líneas parciales": 0,
+            "Nº líneas sin datos": sum(1 for r in rows if str(r.get("Estado", "")).strip().lower() == "sin datos"),
+            "Nº líneas parciales": sum(1 for r in rows if str(r.get("Estado", "")).strip().lower() == "parcial"),
         }
         return rows, kpi
 
