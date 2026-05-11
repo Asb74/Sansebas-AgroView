@@ -14,6 +14,7 @@ from widgets.multi_select_filter import MultiSelectFilter
 class PlanificacionDiariaScreen(ttk.Frame):
     FILTERS_FILE = Path("config") / "planificacion_diaria_filters.json"
     FILTER_KEYS = ["campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "marca"]
+    PEDIDOS_MODOS = [("Próximos 10 días", "10_dias"), ("Semana actual", "semana_actual"), ("Próximas semanas", "proximas_semanas"), ("Rango fechas", "rango"), ("Todos futuros", "todos_futuros"), ("Todos", "todos")]
 
     def __init__(self, master: tk.Misc, on_back) -> None:
         super().__init__(master, padding=16)
@@ -22,6 +23,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.fecha_desde_var = tk.StringVar()
         self.fecha_hasta_var = tk.StringVar()
         self.filter_widgets: dict[str, MultiSelectFilter] = {}
+        self.pedidos_modo_var = tk.StringVar(value="10_dias")
         self.filters_status_var = tk.StringVar(value="Sin filtros activos")
         self.stock_campo_rows: list[dict] = []
         self.stock_almacen_rows: list[dict] = []
@@ -97,6 +99,14 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.almacen_table = DataTable(self.almacen_tab, ["Cultivo", "Campaña", "Variedad", "Grupo varietal", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Palets", "Cajas", "Kg stock", "Agrupado"])
         self.almacen_table.pack(fill="both", expand=True)
 
+        pedidos_filters = ttk.Frame(self.pedidos_tab)
+        pedidos_filters.pack(fill="x", pady=(0, 6))
+        ttk.Label(pedidos_filters, text="Modo pedidos").pack(side="left", padx=(0, 6))
+        self._pedidos_modo_combo = ttk.Combobox(pedidos_filters, state="readonly", width=24, values=[m[0] for m in self.PEDIDOS_MODOS])
+        self._pedidos_modo_combo.pack(side="left")
+        self._sync_pedidos_mode_combo()
+        self._pedidos_modo_combo.bind("<<ComboboxSelected>>", self._on_pedidos_modo_changed)
+
         ttk.Label(self.pedidos_tab, textvariable=self.kpi_pedidos, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
         self.pedidos_table = DataTable(
             self.pedidos_tab,
@@ -124,6 +134,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             "marca": self.filter_widgets["marca"].get_selected(),
             "fecha_desde": self.fecha_desde_var.get().strip(),
             "fecha_hasta": self.fecha_hasta_var.get().strip(),
+            "pedidos_modo": self.pedidos_modo_var.get(),
         }
 
     def load_data(self, save_filters: bool = True) -> None:
@@ -147,7 +158,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock almacén: {exc}")
         pedidos_kpi = {}
         try:
-            self.pedidos_pendientes_rows, pedidos_kpi = self.service.get_pedidos_pendientes(payload, modo="10_dias")
+            self.pedidos_pendientes_rows, pedidos_kpi = self.service.get_pedidos_pendientes(payload, modo=self.pedidos_modo_var.get())
         except Exception as exc:
             self.pedidos_pendientes_rows = []
             logging.getLogger(__name__).warning("No se pudieron cargar pedidos pendientes: %s", exc)
@@ -186,6 +197,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
             widget.clear()
         self.fecha_desde_var.set("")
         self.fecha_hasta_var.set("")
+        self.pedidos_modo_var.set("10_dias")
+        self._sync_pedidos_mode_combo()
         self._clear_saved_filters()
         self.filters_status_var.set("Sin filtros activos")
 
@@ -199,8 +212,25 @@ class PlanificacionDiariaScreen(ttk.Frame):
             messagebox.showinfo("Exportación", f"Archivo guardado en:\n{path}")
 
 
+    def _pedidos_mode_label(self, mode_key: str) -> str:
+        for label, key in self.PEDIDOS_MODOS:
+            if key == mode_key:
+                return label
+        return "Próximos 10 días"
+
+    def _sync_pedidos_mode_combo(self) -> None:
+        if hasattr(self, "_pedidos_modo_combo"):
+            self._pedidos_modo_combo.set(self._pedidos_mode_label(self.pedidos_modo_var.get()))
+
+    def _on_pedidos_modo_changed(self, _event=None) -> None:
+        label = self._pedidos_modo_combo.get()
+        lookup = {lbl: key for lbl, key in self.PEDIDOS_MODOS}
+        self.pedidos_modo_var.set(lookup.get(label, "10_dias"))
+        self.load_data(save_filters=True)
+
     def _format_filters_status(self, payload: dict) -> str:
         labels = {
+            "pedidos_modo": "Modo pedidos",
             "campana": "Campaña",
             "cultivo": "Cultivo",
             "empresa": "Empresa",
@@ -215,9 +245,11 @@ class PlanificacionDiariaScreen(ttk.Frame):
         if not has_values:
             return "Sin filtros activos"
         parts: list[str] = []
-        for key in ("campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "marca", "fecha_desde", "fecha_hasta"):
+        for key in ("pedidos_modo", "campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "marca", "fecha_desde", "fecha_hasta"):
             value = payload.get(key, []) if key in self.FILTER_KEYS else payload.get(key, "")
-            if isinstance(value, list):
+            if key == "pedidos_modo":
+                display = self._pedidos_mode_label(str(value).strip())
+            elif isinstance(value, list):
                 display = ",".join(value) if value else "Todos"
             else:
                 display = str(value).strip() or "Todos"
@@ -242,6 +274,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
             self.filter_widgets[key].set_selected([str(v).strip() for v in values if str(v or "").strip()])
         self.fecha_desde_var.set(str(payload.get("fecha_desde", "") or "").strip())
         self.fecha_hasta_var.set(str(payload.get("fecha_hasta", "") or "").strip())
+        self.pedidos_modo_var.set(str(payload.get("pedidos_modo", "10_dias") or "10_dias").strip() or "10_dias")
+        self._sync_pedidos_mode_combo()
         self.filters_status_var.set(self._format_filters_status(self._filters_payload()))
 
     def _clear_saved_filters(self) -> None:
