@@ -40,9 +40,9 @@ class PlanningService:
     def aggregate_stock_campo(self, rows: list[dict]) -> list[dict]:
         agg: dict[tuple, float] = defaultdict(float)
         for r in rows:
-            key = (r.get("Cultivo", ""), r.get("Variedad", ""), r.get("Semana", ""))
+            key = (r.get("Cultivo", ""), r.get("Variedad", ""), r.get("Grupo varietal", ""), r.get("Semana", ""))
             agg[key] += float(r.get("Kg campo", 0) or 0)
-        return [{"Cultivo": k[0], "Variedad": k[1], "Semana": k[2], "Kg campo": round(v, 2)} for k, v in agg.items()]
+        return [{"Cultivo": k[0], "Variedad": k[1], "Grupo varietal": k[2], "Semana": k[3], "Kg campo": round(v, 2)} for k, v in agg.items()]
 
     def aggregate_stock_almacen(self, rows: list[dict]) -> list[dict]:
         agg: dict[tuple, float] = defaultdict(float)
