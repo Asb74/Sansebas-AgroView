@@ -69,7 +69,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Button(btns, text="Aplicar filtros", command=lambda: self.load_data(save_filters=True)).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Limpiar filtros", command=self.reset_filters).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Reaplicar filtros", command=lambda: self.load_data(save_filters=True)).pack(side="left", padx=(0, 8))
-        ttk.Button(btns, text="Exportar Excel", command=self.export_excel).pack(side="left")
+        ttk.Button(btns, text="Exportar Excel", command=self.export_excel).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Actualizar planificación", command=self._actualizar_planificacion).pack(side="left")
         ttk.Label(filters_frame, textvariable=self.filters_status_var).grid(row=3, column=0, columnspan=9, sticky="w", padx=4, pady=(6, 0))
 
         self.tabs = ttk.Notebook(self)
@@ -212,6 +213,25 @@ class PlanificacionDiariaScreen(ttk.Frame):
         if path:
             messagebox.showinfo("Exportación", f"Archivo guardado en:\n{path}")
 
+
+
+    def _actualizar_planificacion(self) -> None:
+        confirm = messagebox.askyesno(
+            "Actualizar planificación",
+            "¿Quieres actualizar los datos de planificación desde hoy?\n\n"
+            "Esto refrescará pedidos, loteado, lote y pesos frescos desde el día actual.\n"
+            "Si estás trabajando con una foto fija, cancela esta acción.",
+            parent=self,
+        )
+        if not confirm:
+            return
+        ok, msg = self.service.actualizar_planificacion_hoy_en_adelante()
+        if not ok:
+            messagebox.showerror("Actualizar planificación", msg, parent=self)
+            return
+        messagebox.showinfo("Actualizar planificación", msg.replace(" | ", "\n").replace("Planificación rápida OK. ", ""), parent=self)
+        self._load_filter_options()
+        self.load_data(save_filters=True)
 
     def _pedidos_mode_label(self, mode_key: str) -> str:
         for label, key in self.PEDIDOS_MODOS:

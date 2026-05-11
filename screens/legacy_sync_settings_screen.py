@@ -56,7 +56,7 @@ class LegacySyncSettingsScreen(ttk.Frame):
             ttk.Label(win, text=f).grid(row=i, column=0, sticky="w", padx=6, pady=4)
             vars[f] = tk.StringVar(value=str(data.get(f, "REEMPLAZAR_TABLA" if f == "Modo" else "")))
             if f == "Modo":
-                ttk.Combobox(win, textvariable=vars[f], values=["REEMPLAZAR_TABLA", "CREAR_O_REEMPLAZAR"], width=67, state="readonly").grid(row=i, column=1, sticky="ew", padx=6, pady=4)
+                ttk.Combobox(win, textvariable=vars[f], values=["REEMPLAZAR_TABLA", "CREAR_O_REEMPLAZAR", "PLANIFICACION_HOY_EN_ADELANTE"], width=67, state="readonly").grid(row=i, column=1, sticky="ew", padx=6, pady=4)
             else:
                 ttk.Entry(win, textvariable=vars[f], width=70).grid(row=i, column=1, sticky="ew", padx=6, pady=4)
         ttk.Label(

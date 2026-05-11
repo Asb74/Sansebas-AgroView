@@ -10,11 +10,13 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from db.planning_repository import PlanningRepository
+from services.legacy_sync_service import LegacySyncService
 
 
 class PlanningService:
     def __init__(self) -> None:
         self.repo = PlanningRepository()
+        self.legacy_sync = LegacySyncService()
 
     def load_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
         return self.repo.get_stock_campo(filters)
@@ -93,3 +95,6 @@ class PlanningService:
                 ws.cell(r, kg_col_idx).number_format = "#,##0.00"
         wb.save(Path(target))
         return target
+
+    def actualizar_planificacion_hoy_en_adelante(self) -> tuple[bool, str]:
+        return self.legacy_sync.sync_planificacion_hoy_en_adelante()

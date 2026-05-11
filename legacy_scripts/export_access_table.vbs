@@ -53,7 +53,12 @@ logFile.WriteLine "ProveedorUsado=" & providerUsed
 
 Set rs = CreateObject("ADODB.Recordset")
 On Error Resume Next
-rs.Open "SELECT * FROM [" & tableName & "]", conn, 3, 1
+Dim sourceSql
+sourceSql = tableName
+If UCase(Left(Trim(tableName), 6)) <> "SELECT" Then
+    sourceSql = "SELECT * FROM [" & tableName & "]"
+End If
+rs.Open sourceSql, conn, 3, 1
 If Err.Number <> 0 Then
     logFile.WriteLine "ERROR"
     logFile.WriteLine "Tabla=" & tableName
