@@ -429,6 +429,21 @@ class PlanningRepository:
                 return [], kpi_vacio
 
             query = """
+                WITH hecho AS (
+                    SELECT
+                        TRIM(ldo.Pedido) AS Pedido,
+                        CAST(ldo.Linea AS TEXT) AS Linea,
+                        COUNT(DISTINCT ldo.IdPalet) AS PaletsHechos,
+                        SUM(COALESCE(l.Cajas,0)) AS CajasHechas,
+                        SUM(COALESCE(l.Neto,0)) AS KgHechoReal
+                    FROM bdloteado.Loteado ldo
+                    INNER JOIN bdloteado.Lote l
+                        ON l.IdPalet = ldo.IdPalet
+                    WHERE UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
+                    GROUP BY
+                        TRIM(ldo.Pedido),
+                        CAST(ldo.Linea AS TEXT)
+                )
                 SELECT
                     p."Semana" AS "Semana",
                     p."FechaSalida" AS "Fecha salida",
@@ -443,22 +458,25 @@ class PlanningRepository:
                     p."Categoria" AS "Categoría",
                     p."Marca" AS "Marca",
                     p."Confeccion" AS "Confección",
+                    COALESCE(p."NPalet", 0) AS "Palets pedido",
+                    COALESCE(h.PaletsHechos, 0) AS "Palets hechos",
+                    COALESCE(p."NPalet", 0) - COALESCE(h.PaletsHechos, 0) AS "Palets pendientes",
                     COALESCE(p."Cajas", 0) AS "Cajas pedido",
-                    SUM(COALESCE(l."Cajas", 0)) AS "Cajas hechas",
-                    COALESCE(p."Cajas", 0) - SUM(COALESCE(l."Cajas", 0)) AS "Cajas pendientes",
+                    COALESCE(h.CajasHechas, 0) AS "Cajas hechas",
+                    COALESCE(p."Cajas", 0) - COALESCE(h.CajasHechas, 0) AS "Cajas pendientes",
                     CASE
                       WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
                       WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
                       ELSE 0
                     END AS "Kg pedido teórico",
-                    SUM(COALESCE(l."Neto", 0)) AS "Kg hecho real",
+                    COALESCE(h.KgHechoReal, 0) AS "Kg hecho real",
                     (
                       CASE
                         WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
                         WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
                         ELSE 0
                       END
-                    ) - SUM(COALESCE(l."Neto", 0)) AS "Kg pendiente",
+                    ) - COALESCE(h.KgHechoReal, 0) AS "Kg pendiente",
                     CASE
                       WHEN (
                         CASE
@@ -467,7 +485,7 @@ class PlanningRepository:
                           ELSE 0
                         END
                       ) > 0
-                      THEN ROUND((SUM(COALESCE(l."Neto", 0)) * 100.0) / (
+                      THEN ROUND((COALESCE(h.KgHechoReal, 0) * 100.0) / (
                         CASE
                           WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
                           WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
@@ -484,23 +502,29 @@ class PlanningRepository:
                           ELSE 0
                         END
                       ) = 0 THEN 'Sin datos'
-                      WHEN SUM(COALESCE(l."Neto", 0)) = 0 THEN 'Pendiente'
-                      WHEN SUM(COALESCE(l."Neto", 0)) >= (
+                      WHEN COALESCE(h.KgHechoReal, 0) = 0 THEN 'Pendiente'
+                      WHEN COALESCE(h.KgHechoReal, 0) > (
                         CASE
                           WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
                           WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
-                      ) THEN CASE
-                        WHEN SUM(COALESCE(l."Neto", 0)) > (
-                          CASE
-                            WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
-                            WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
-                            ELSE 0
-                          END
-                        ) THEN 'Excedido'
-                        ELSE 'Completo'
-                      END
+                      ) THEN 'Excedido'
+                      WHEN COALESCE(h.KgHechoReal, 0) >= (
+                        CASE
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          ELSE 0
+                        END
+                      ) THEN 'Completo'
+                      WHEN COALESCE(h.KgHechoReal, 0) > 0
+                       AND COALESCE(h.KgHechoReal, 0) < (
+                        CASE
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          ELSE 0
+                        END
+                      ) THEN 'Parcial'
                       ELSE 'Parcial'
                     END AS "Estado",
                     CASE
@@ -517,12 +541,9 @@ class PlanningRepository:
                 LEFT JOIN dbeepl.MVariedad mv
                   ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(p."VarCoop"))
                  AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(p."Cultivo"))
-                LEFT JOIN bdloteado.Loteado ldo
-                  ON TRIM(ldo.Pedido) = TRIM(p."IdPedidoLora")
-                 AND CAST(ldo.Linea AS TEXT) = CAST(p."Linea" AS TEXT)
-                 AND UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
-                LEFT JOIN bdloteado.Lote l
-                  ON l.IdPalet = ldo.IdPalet
+                LEFT JOIN hecho h
+                  ON h.Pedido = TRIM(p."IdPedidoLora")
+                 AND h.Linea = CAST(p."Linea" AS TEXT)
                 LEFT JOIN MConfecciones mc
                   ON CAST(mc.CODIGO AS TEXT) = CAST(p."Confeccion" AS TEXT)
                 WHERE COALESCE(p."Cancelado", 0) = 0
@@ -569,10 +590,6 @@ class PlanningRepository:
                 pass
 
             query += """
-                GROUP BY
-                    p."Semana", p."FechaSalida", p."Cliente", p."IdPedidoLora", p."Linea", p."Cultivo", p."Campaña",
-                    p."VarCoop", mv.GRUPO, mv.SUBGRUPO, p."Calibre", p."Categoria", p."Marca", p."Confeccion",
-                    p."Cajas", mc."NETO", p."ExigePeso"
                 ORDER BY date(p."FechaSalida") ASC,
                          p."Cliente" ASC,
                          p."IdPedidoLora" ASC,
