@@ -28,7 +28,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         diag = self.service.diagnose_loteado_tables()
         if diag.get("warning"):
             logging.getLogger(__name__).warning(diag["warning"])
-        for key in ("campana", "cultivo", "empresa", "semana", "var_coop", "marca"):
+        for key in ("campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "marca"):
             try:
                 self.filter_widgets[key].set_options(self.service.get_filter_options(key))
             except Exception as exc:
@@ -42,7 +42,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
         filters_frame = ttk.LabelFrame(self, text="Filtros globales", padding=10)
         filters_frame.grid(row=1, column=0, sticky="ew", pady=(8, 8))
-        fields = [("Campaña", "campana"), ("Cultivo", "cultivo"), ("Semana", "semana"), ("Fecha desde", "fecha_desde"), ("Fecha hasta", "fecha_hasta"), ("Empresa", "empresa"), ("Variedad Coop", "var_coop"), ("Marca", "marca")]
+        fields = [("Campaña", "campana"), ("Cultivo", "cultivo"), ("Semana", "semana"), ("Fecha desde", "fecha_desde"), ("Fecha hasta", "fecha_hasta"), ("Empresa", "empresa"), ("Variedad Coop", "var_coop"), ("Grupo varietal", "grupo_varietal"), ("Marca", "marca")]
         for i, (label, key) in enumerate(fields):
             ttk.Label(filters_frame, text=label).grid(row=0, column=i, sticky="w", padx=4)
             if key == "fecha_desde":
@@ -55,12 +55,12 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 self.filter_widgets[key] = widget
             filters_frame.grid_columnconfigure(i, weight=1)
         btns = ttk.Frame(filters_frame)
-        btns.grid(row=2, column=0, columnspan=8, sticky="w", pady=(8, 0))
+        btns.grid(row=2, column=0, columnspan=9, sticky="w", pady=(8, 0))
         ttk.Button(btns, text="Aplicar filtros", command=self.load_data).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Limpiar filtros", command=self.reset_filters).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Reaplicar filtros", command=self.load_data).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Exportar Excel", command=self.export_excel).pack(side="left")
-        ttk.Label(filters_frame, textvariable=self.filters_status_var).grid(row=3, column=0, columnspan=8, sticky="w", padx=4, pady=(6, 0))
+        ttk.Label(filters_frame, textvariable=self.filters_status_var).grid(row=3, column=0, columnspan=9, sticky="w", padx=4, pady=(6, 0))
 
         self.tabs = ttk.Notebook(self)
         self.tabs.grid(row=2, column=0, sticky="nsew")
@@ -83,7 +83,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         header_almacen.pack(fill="x", pady=(0, 6))
         ttk.Label(header_almacen, textvariable=self.kpi_almacen, style="KPI.TLabel").pack(side="left")
         ttk.Button(header_almacen, text="Ver detalle palets", command=self.show_detalle_palets).pack(side="right")
-        self.almacen_table = DataTable(self.almacen_tab, ["Cultivo", "Campaña", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Palets", "Cajas", "Kg stock", "Agrupado"])
+        self.almacen_table = DataTable(self.almacen_tab, ["Cultivo", "Campaña", "Variedad", "Grupo varietal", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Palets", "Cajas", "Kg stock", "Agrupado"])
         self.almacen_table.pack(fill="both", expand=True)
 
     def _build_date_field(self, parent: ttk.Frame, row: int, col: int, var: tk.StringVar) -> None:
@@ -102,6 +102,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             "empresa": self.filter_widgets["empresa"].get_selected(),
             "semana": self.filter_widgets["semana"].get_selected(),
             "var_coop": self.filter_widgets["var_coop"].get_selected(),
+            "grupo_varietal": self.filter_widgets["grupo_varietal"].get_selected(),
             "marca": self.filter_widgets["marca"].get_selected(),
             "fecha_desde": self.fecha_desde_var.get().strip(),
             "fecha_hasta": self.fecha_hasta_var.get().strip(),
@@ -170,7 +171,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         modal.grab_set()
         table = DataTable(
             modal,
-            ["IdPalet", "Pedido", "FechaAlmacen", "Estado", "Terminado", "Variedad", "Calibre", "Categoria", "Marca", "IdConfeccion", "Confeccion", "Cajas", "Neto"],
+            ["IdPalet", "Pedido", "FechaAlmacen", "Estado", "Terminado", "Variedad", "Grupo varietal", "Calibre", "Categoria", "Marca", "IdConfeccion", "Confeccion", "Cajas", "Neto"],
         )
         table.pack(fill="both", expand=True, padx=10, pady=10)
         rows = []
@@ -183,6 +184,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                     "Estado": row.get("Estado", ""),
                     "Terminado": row.get("Terminado", ""),
                     "Variedad": row.get("Variedad", ""),
+                    "Grupo varietal": row.get("GrupoVarietal", ""),
                     "Calibre": row.get("Calibre", ""),
                     "Categoria": row.get("Categoria", ""),
                     "Marca": row.get("Marca", ""),

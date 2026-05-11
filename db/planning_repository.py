@@ -238,7 +238,9 @@ class PlanningRepository:
         with sqlite3.connect(path) as conn:
             conn.row_factory = sqlite3.Row
             db_pedidos = self._db_path("DBPedidos.sqlite")
+            db_eepl = self._db_path("DBEEPPL.sqlite")
             conn.execute(f"ATTACH DATABASE '{db_pedidos.as_posix()}' AS dbpedidos")
+            conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepp")
             tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
             logger.info("Tablas encontradas: %s", tables)
             ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
@@ -267,12 +269,16 @@ class PlanningRepository:
             query = f"""
                 SELECT ldo.CULTIVO as Cultivo, ldo."{camp_col}" as Campana, l.Variedad, l.Calibre,
                        l.Lote as Categoria, mc.MARCA as Marca, l.IdConfeccion, l.Confeccion,
+                       TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')) AS GrupoVarietal,
                        COUNT(DISTINCT ldo.IdPalet) AS Palets,
                        SUM(COALESCE(l.Cajas,0)) AS Cajas,
                        SUM(COALESCE(l.Neto,0)) AS KgStock
                 FROM "{ldo_table}" ldo
                 INNER JOIN "{lote_table}" l ON l.IdPalet = ldo.IdPalet
                 LEFT JOIN dbpedidos.MConfecciones mc ON CAST(mc.CODIGO AS TEXT) = CAST(l.IdConfeccion AS TEXT)
+                LEFT JOIN dbeepp.MVariedad mv
+                  ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(l.Variedad))
+                 AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(ldo.CULTIVO))
                 WHERE UPPER(TRIM(ldo.Estado)) = 'STOCK'
                   AND UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
                   AND UPPER(REPLACE(REPLACE(TRIM(ldo.Pedido), '/', ''), ' ', '')) IN ('SP','PRECALIBRADO','ESTANDAR','ESTÁNDAR')
@@ -289,9 +295,14 @@ class PlanningRepository:
                 placeholders = ",".join(["CAST(? AS TEXT)"] * len(campana_values))
                 query += f' AND CAST(ldo."{camp_col}" AS TEXT) IN ({placeholders})'
                 params.extend(campana_values)
+            grupo_varietal_values = self._normalize_filter_values(filters.get("grupo_varietal"))
+            if grupo_varietal_values:
+                placeholders = ",".join(["UPPER(TRIM(?))"] * len(grupo_varietal_values))
+                query += f" AND UPPER(TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,''))) IN ({placeholders})"
+                params.extend(grupo_varietal_values)
             query += """
                 GROUP BY ldo.CULTIVO, ldo.""" + f'"{camp_col}"' + """, l.Variedad, l.Calibre,
-                         l.Lote, mc.MARCA, l.IdConfeccion, l.Confeccion
+                         l.Lote, mc.MARCA, l.IdConfeccion, l.Confeccion, mv.GRUPO, mv.SUBGRUPO
             """
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
 
@@ -299,7 +310,7 @@ class PlanningRepository:
         for r in rows:
             data.append(
                 {
-                    "Campaña": r.get("Campana", ""), "Cultivo": r.get("Cultivo", ""), "Variedad": r.get("Variedad", ""), "Calibre": r.get("Calibre", ""),
+                    "Campaña": r.get("Campana", ""), "Cultivo": r.get("Cultivo", ""), "Variedad": r.get("Variedad", ""), "Grupo varietal": r.get("GrupoVarietal", ""), "Calibre": r.get("Calibre", ""),
                     "Categoría": r.get("Categoria", ""), "Marca": r.get("Marca", ""), "IdConfeccion": r.get("IdConfeccion", ""), "Confección": r.get("Confeccion", ""),
                     "Palets": int(r.get("Palets") or 0),
                     "Cajas": round(float(r.get("Cajas") or 0), 2), "Kg stock": round(float(r.get("KgStock") or 0), 2),
@@ -315,7 +326,9 @@ class PlanningRepository:
         with sqlite3.connect(path) as conn:
             conn.row_factory = sqlite3.Row
             db_pedidos = self._db_path("DBPedidos.sqlite")
+            db_eepl = self._db_path("DBEEPPL.sqlite")
             conn.execute(f"ATTACH DATABASE '{db_pedidos.as_posix()}' AS dbpedidos")
+            conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepp")
             ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
             lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
             if not ldo_table or not lote_table:
@@ -328,10 +341,14 @@ class PlanningRepository:
             query = f"""
                 SELECT ldo.IdPalet, ldo.Pedido, COALESCE(ldo.{fecha_col}, '') as FechaAlmacen,
                        ldo.Estado, ldo.Terminado, l.Variedad, l.Calibre, l.Lote as Categoria, mc.MARCA as Marca,
-                       l.IdConfeccion, l.Confeccion, SUM(COALESCE(l.Cajas,0)) AS Cajas, SUM(COALESCE(l.Neto,0)) AS Neto
+                       l.IdConfeccion, l.Confeccion, TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')) AS GrupoVarietal,
+                       SUM(COALESCE(l.Cajas,0)) AS Cajas, SUM(COALESCE(l.Neto,0)) AS Neto
                 FROM "{ldo_table}" ldo
                 INNER JOIN "{lote_table}" l ON l.IdPalet = ldo.IdPalet
                 LEFT JOIN dbpedidos.MConfecciones mc ON CAST(mc.CODIGO AS TEXT) = CAST(l.IdConfeccion AS TEXT)
+                LEFT JOIN dbeepp.MVariedad mv
+                  ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(l.Variedad))
+                 AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(ldo.CULTIVO))
                 WHERE UPPER(TRIM(ldo.Estado)) = 'STOCK'
                   AND UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
                   AND UPPER(REPLACE(REPLACE(TRIM(ldo.Pedido), '/', ''), ' ', '')) IN ('SP','PRECALIBRADO','ESTANDAR','ESTÁNDAR')
@@ -348,9 +365,14 @@ class PlanningRepository:
                 placeholders = ",".join(["CAST(? AS TEXT)"] * len(campana_values))
                 query += f' AND CAST(ldo."{camp_col}" AS TEXT) IN ({placeholders})'
                 params.extend(campana_values)
+            grupo_varietal_values = self._normalize_filter_values(filters.get("grupo_varietal"))
+            if grupo_varietal_values:
+                placeholders = ",".join(["UPPER(TRIM(?))"] * len(grupo_varietal_values))
+                query += f" AND UPPER(TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,''))) IN ({placeholders})"
+                params.extend(grupo_varietal_values)
             query += """
                 GROUP BY ldo.IdPalet, ldo.Pedido, FechaAlmacen, ldo.Estado, ldo.Terminado,
-                         l.Variedad, l.Calibre, l.Lote, mc.MARCA, l.IdConfeccion, l.Confeccion
+                         l.Variedad, l.Calibre, l.Lote, mc.MARCA, l.IdConfeccion, l.Confeccion, mv.GRUPO, mv.SUBGRUPO
             """
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
         return rows
@@ -434,6 +456,32 @@ class PlanningRepository:
         return result
 
     def get_filter_options(self, key: str) -> list[str]:
+        if key == "grupo_varietal":
+            path = self.db_loteado
+            if not path.exists():
+                return []
+            with sqlite3.connect(path) as conn:
+                db_eepl = self._db_path("DBEEPPL.sqlite")
+                conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepp")
+                ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
+                lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
+                if not ldo_table or not lote_table:
+                    return []
+                rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')) AS GrupoVarietal
+                    FROM "{ldo_table}" ldo
+                    INNER JOIN "{lote_table}" l ON l.IdPalet = ldo.IdPalet
+                    LEFT JOIN dbeepp.MVariedad mv
+                      ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(l.Variedad))
+                     AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(ldo.CULTIVO))
+                    WHERE UPPER(TRIM(ldo.Estado)) = 'STOCK'
+                      AND UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
+                      AND UPPER(REPLACE(REPLACE(TRIM(ldo.Pedido), '/', ''), ' ', '')) IN ('SP','PRECALIBRADO','ESTANDAR','ESTÁNDAR')
+                    """
+                ).fetchall()
+            return sorted({str(r[0] or "").strip() for r in rows if str(r[0] or "").strip()})
+
         filters = {"campana": [], "cultivo": [], "empresa": [], "semana": [], "var_coop": [], "fecha_desde": "", "fecha_hasta": ""}
         rows = self._get_loteado_filter_rows(filters)
         mapping = {
