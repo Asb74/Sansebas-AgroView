@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime
+from datetime import date, datetime
 import logging
 from pathlib import Path
 import re
@@ -13,7 +13,7 @@ from config import DB_LOTEADO
 from db.legacy_sync_repository import LegacySyncRepository
 
 
-VALID_MODES = {"REEMPLAZAR_TABLA", "CREAR_O_REEMPLAZAR"}
+VALID_MODES = {"REEMPLAZAR_TABLA", "CREAR_O_REEMPLAZAR", "PLANIFICACION_HOY_EN_ADELANTE"}
 logger = logging.getLogger(__name__)
 
 
@@ -49,6 +49,9 @@ class LegacySyncService:
         setting = self.repository.get_setting(setting_id)
         if not setting:
             return False, "Configuración no encontrada"
+        mode = self._normalize_mode(str(setting.get("Modo", "REEMPLAZAR_TABLA")))
+        if mode == "PLANIFICACION_HOY_EN_ADELANTE":
+            return self.sync_planificacion_hoy_en_adelante(setting_id)
         ok, message, csv_path, exported = self._run_export(setting_id)
         imported = 0
         err = None
@@ -56,7 +59,6 @@ class LegacySyncService:
         table_created = False
         if ok and csv_path:
             try:
-                mode = self._normalize_mode(str(setting.get("Modo", "REEMPLAZAR_TABLA")))
                 imported, table_existed, table_created = self._import_csv_to_sqlite(
                     csv_path=csv_path,
                     sqlite_path=Path(setting["SqlitePath"]),
@@ -102,6 +104,82 @@ class LegacySyncService:
             ok, msg = self.sync_setting(int(row["Id"]))
             results.append((int(row["Id"]), ok, msg))
         return results
+
+    def sync_planificacion_hoy_en_adelante(self, setting_id: int | None = None) -> tuple[bool, str]:
+        start = datetime.utcnow()
+        fecha_corte = date.today().isoformat()
+        logger.info("Iniciando actualización planificación rápida. Fecha corte=%s", fecha_corte)
+        try:
+            pedidos = self._actualizar_pedidos_desde_hoy(fecha_corte)
+            id_palets, loteado = self._actualizar_loteado_desde_hoy(fecha_corte)
+            lote = self._actualizar_lote_por_palets(id_palets)
+            pesos = self._actualizar_pesosfres_desde_hoy(fecha_corte)
+            elapsed = (datetime.utcnow() - start).total_seconds()
+            msg = (
+                f"Planificación rápida OK. Pedidos: {pedidos} | Loteado: {loteado} | "
+                f"Lote: {lote} | PesosFres: {pesos}"
+            )
+            logger.info("%s | tiempo=%.2fs", msg, elapsed)
+            if setting_id:
+                self.repository.update_sync_result(setting_id, True, msg, None)
+            return True, msg
+        except Exception as exc:
+            err = f"Error actualización planificación rápida: {exc}"
+            logger.exception(err)
+            if setting_id:
+                self.repository.update_sync_result(setting_id, False, "Error en planificación rápida", str(exc))
+            return False, err
+
+    def _actualizar_pedidos_desde_hoy(self, fecha_corte: str) -> int:
+        return self._sync_filtered_table("DBPedidos.sqlite", "Pedidos", f"SELECT * FROM Pedidos WHERE FechaSalida >= #{fecha_corte}#", "date(FechaSalida) >= date('now')")
+
+    def _actualizar_loteado_desde_hoy(self, fecha_corte: str) -> tuple[list[str], int]:
+        where = f"FechaCreacion >= #{fecha_corte}# OR FechaAlmacen >= #{fecha_corte}# OR FechaExpedicion >= #{fecha_corte}#"
+        query = f"SELECT * FROM Loteado WHERE {where}"
+        setting = self._find_setting("BDLoteado.sqlite", "Loteado")
+        ok, msg, csv_path, _ = self._run_export_custom(setting, query)
+        if not ok or not csv_path:
+            raise RuntimeError(msg)
+        rows = self._read_csv_rows(csv_path)
+        if len(rows) <= 1:
+            return [], 0
+        header = self._sanitize_headers(rows[0])
+        idx = next((i for i,c in enumerate(header) if c.lower()=="idpalet"), -1)
+        palets = sorted({r[idx] for r in rows[1:] if idx >= 0 and idx < len(r) and str(r[idx]).strip()})
+        sqlite_path = Path(setting["SqlitePath"])
+        with sqlite3.connect(sqlite_path) as conn:
+            conn.execute("BEGIN")
+            deleted = conn.execute("DELETE FROM Loteado WHERE FechaCreacion >= date('now') OR FechaAlmacen >= date('now') OR FechaExpedicion >= date('now')").rowcount
+            imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, "Loteado")
+            conn.commit()
+        logger.info("Loteado fecha_corte=%s query=%s borrados=%s importados=%s", fecha_corte, query, deleted, imported)
+        return palets, imported
+
+    def _actualizar_lote_por_palets(self, id_palets: list[str]) -> int:
+        if not id_palets:
+            return 0
+        setting = self._find_setting("BDLoteado.sqlite", "Lote")
+        ids_sql = ",".join(f"'{p.replace("'", "''")}'" for p in id_palets)
+        query = f"SELECT * FROM Lote WHERE IdPalet IN ({ids_sql})"
+        ok, msg, csv_path, _ = self._run_export_custom(setting, query)
+        if not ok or not csv_path:
+            raise RuntimeError(msg)
+        sqlite_path = Path(setting["SqlitePath"])
+        with sqlite3.connect(sqlite_path) as conn:
+            conn.execute("BEGIN")
+            placeholders = ",".join(["?"] * len(id_palets))
+            conn.execute(f"DELETE FROM Lote WHERE IdPalet IN ({placeholders})", id_palets)
+            imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, "Lote")
+            conn.commit()
+        return imported
+
+    def _actualizar_pesosfres_desde_hoy(self, fecha_corte: str) -> int:
+        return self._sync_filtered_table("DBfruta.sqlite", "PesosFres", f"SELECT * FROM PesosFres WHERE Fcarga >= #{fecha_corte}#", "date(Fcarga) >= date('now')")
+
+    @staticmethod
+    def get_campana_actual(base_date: date | None = None) -> int:
+        d = base_date or date.today()
+        return d.year + 1 if d.month >= 9 else d.year
 
     def _validate(self, data: dict[str, Any]) -> None:
         access = Path(str(data.get("AccessPath", "")).strip())
@@ -168,6 +246,60 @@ class LegacySyncService:
             )
         return True, "Exportación OK", csv_path, exported
 
+
+
+    def _sync_filtered_table(self, sqlite_name: str, table_name: str, access_query: str, sqlite_where: str) -> int:
+        setting = self._find_setting(sqlite_name, table_name)
+        ok, msg, csv_path, _ = self._run_export_custom(setting, access_query)
+        if not ok or not csv_path:
+            raise RuntimeError(msg)
+        sqlite_path = Path(setting["SqlitePath"])
+        with sqlite3.connect(sqlite_path) as conn:
+            conn.execute("BEGIN")
+            deleted = conn.execute(f"DELETE FROM {self.quote_identifier(table_name)} WHERE {sqlite_where}").rowcount
+            imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, table_name)
+            conn.commit()
+        logger.info("Tabla=%s query=%s borrados=%s importados=%s", table_name, access_query, deleted, imported)
+        return imported
+
+    def _find_setting(self, sqlite_name: str, sqlite_table: str) -> dict[str, Any]:
+        for s in self.repository.get_settings():
+            if Path(str(s.get("SqlitePath", ""))).name.lower() == sqlite_name.lower() and str(s.get("SqliteTable", "")).lower() == sqlite_table.lower():
+                return s
+        raise ValueError(f"No existe configuración legacy para {sqlite_name}:{sqlite_table}")
+
+    def _run_export_custom(self, setting: dict[str, Any], table_or_query: str) -> tuple[bool, str, Path | None, int]:
+        tmp = dict(setting)
+        tmp["AccessTable"] = table_or_query
+        return self._run_export_from_setting(tmp)
+
+    def _run_export_from_setting(self, setting: dict[str, Any]) -> tuple[bool, str, Path | None, int]:
+        vbs_path = self.vbs_path.resolve()
+        mdb_path = Path(setting["AccessPath"]).resolve()
+        temp_dir = self.temp_dir.resolve()
+        csv_path = temp_dir / f"{setting['Nombre']}_{setting.get('Id','adhoc')}.csv"
+        log_path = temp_dir / f"{setting['Nombre']}_{setting.get('Id','adhoc')}.log"
+        if not vbs_path.exists() or not mdb_path.exists() or not temp_dir.exists():
+            return False, "Rutas inválidas para exportación", None, 0
+        command = self._build_vbs_command(vbs_path, mdb_path, setting["AccessTable"], csv_path, log_path)
+        result = subprocess.run(command, capture_output=True, text=True, encoding="cp1252", timeout=120)
+        if result.returncode != 0:
+            return False, self._build_export_error_message(result, command, vbs_path, mdb_path, csv_path, log_path), None, 0
+        return True, "Exportación OK", csv_path, self._read_exported_rows(log_path)
+
+    def _import_csv_to_sqlite_append(self, csv_path: Path, sqlite_path: Path, table_name: str) -> tuple[int, bool, bool]:
+        rows = self._read_csv_rows(csv_path)
+        if not rows:
+            return 0, True, False
+        header = self._sanitize_headers(rows[0])
+        data_rows = rows[1:]
+        table = self.quote_identifier(table_name)
+        columns = ", ".join(self.quote_identifier(c) for c in header)
+        placeholders = ",".join(["?"] * len(header))
+        with sqlite3.connect(sqlite_path) as conn:
+            conn.executemany(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", [tuple(r[:len(header)] + [""]*(len(header)-len(r))) for r in data_rows])
+            conn.commit()
+        return len(data_rows), True, False
 
     @staticmethod
     def get_cscript_path() -> str:
