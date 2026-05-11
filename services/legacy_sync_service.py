@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from datetime import datetime
+import logging
 from pathlib import Path
 import re
 import sqlite3
@@ -13,6 +14,7 @@ from db.legacy_sync_repository import LegacySyncRepository
 
 
 VALID_MODES = {"REEMPLAZAR_TABLA"}
+logger = logging.getLogger(__name__)
 
 
 class LegacySyncService:
@@ -115,21 +117,91 @@ class LegacySyncService:
         setting = self.repository.get_setting(setting_id)
         if not setting:
             return False, "Configuración no encontrada", None, 0
-        self.temp_dir.mkdir(parents=True, exist_ok=True)
-        csv_path = self.temp_dir / f"{setting['Nombre']}_{setting_id}.csv"
-        log_path = self.temp_dir / f"{setting['Nombre']}_{setting_id}.log"
-        proc = subprocess.run(
-            ["cscript", "//nologo", str(self.vbs_path), setting["AccessPath"], setting["AccessTable"], str(csv_path), str(log_path)],
+        vbs_path = self.vbs_path.resolve()
+        mdb_path = Path(setting["AccessPath"]).resolve()
+        temp_dir = self.temp_dir.resolve()
+        csv_path = temp_dir / f"{setting['Nombre']}_{setting_id}.csv"
+        log_path = temp_dir / f"{setting['Nombre']}_{setting_id}.log"
+        if not vbs_path.exists():
+            return False, f"Script VBS no existe: {vbs_path}", None, 0
+        if not mdb_path.exists():
+            return False, f"MDB no existe: {mdb_path}", None, 0
+        if not temp_dir.exists():
+            return False, f"Carpeta temporal no existe: {temp_dir}", None, 0
+        command = self._build_vbs_command(vbs_path, mdb_path, setting["AccessTable"], csv_path, log_path)
+        result = subprocess.run(
+            command,
             capture_output=True,
             text=True,
-            timeout=300,
+            encoding="cp1252",
+            timeout=120,
         )
-        if proc.returncode != 0:
-            return False, f"VBS falló ({proc.returncode}): {proc.stderr or proc.stdout}".strip(), None, 0
+        logger.error("Legacy sync command: %s", command)
+        logger.error("Legacy sync returncode: %s", result.returncode)
+        logger.error("Legacy sync stdout: %s", result.stdout)
+        logger.error("Legacy sync stderr: %s", result.stderr)
+        if result.returncode != 0:
+            return False, self._build_export_error_message(result, command, vbs_path, mdb_path, csv_path, log_path), None, 0
         exported = self._read_exported_rows(log_path)
         if not csv_path.exists():
-            return False, "VBS terminó sin generar CSV", None, exported
+            return (
+                False,
+                self._build_export_error_message(result, command, vbs_path, mdb_path, csv_path, log_path, "VBS terminó sin generar CSV"),
+                None,
+                exported,
+            )
         return True, "Exportación OK", csv_path, exported
+
+    @staticmethod
+    def _to_windows_path(path: Path) -> str:
+        return str(path).replace("/", "\\")
+
+    def _build_vbs_command(self, vbs_path: Path, mdb_path: Path, table: str, csv_path: Path, log_path: Path) -> list[str]:
+        return [
+            "cscript",
+            "//nologo",
+            self._to_windows_path(vbs_path),
+            self._to_windows_path(mdb_path),
+            table,
+            self._to_windows_path(csv_path),
+            self._to_windows_path(log_path),
+        ]
+
+    def build_command_preview(self, setting_id: int) -> tuple[bool, str]:
+        setting = self.repository.get_setting(setting_id)
+        if not setting:
+            return False, "Configuración no encontrada"
+        vbs_path = self.vbs_path.resolve()
+        mdb_path = Path(setting["AccessPath"]).resolve()
+        temp_dir = self.temp_dir.resolve()
+        csv_path = temp_dir / f"{setting['Nombre']}_{setting_id}.csv"
+        log_path = temp_dir / f"{setting['Nombre']}_{setting_id}.log"
+        command = self._build_vbs_command(vbs_path, mdb_path, setting["AccessTable"], csv_path, log_path)
+        return True, " ".join(command)
+
+    def _build_export_error_message(
+        self,
+        result: subprocess.CompletedProcess[str],
+        command: list[str],
+        vbs_path: Path,
+        mdb_path: Path,
+        csv_path: Path,
+        log_path: Path,
+        extra: str = "",
+    ) -> str:
+        extra_block = f"{extra}\n\n" if extra else ""
+        return (
+            f"{extra_block}"
+            "VBS falló.\n\n"
+            f"Código retorno: {result.returncode}\n\n"
+            f"Ruta VBS: {vbs_path}\n"
+            f"Ruta MDB: {mdb_path}\n"
+            f"Ruta CSV temporal: {csv_path}\n"
+            f"Ruta LOG: {log_path}\n\n"
+            f"STDOUT:\n{result.stdout}\n\n"
+            f"STDERR:\n{result.stderr}\n\n"
+            f"Comando:\n{' '.join(command)}"
+        )
 
     @staticmethod
     def _read_exported_rows(log_path: Path) -> int:

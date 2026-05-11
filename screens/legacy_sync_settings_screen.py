@@ -31,6 +31,7 @@ class LegacySyncSettingsScreen(ttk.Frame):
         actions = [
             ("Añadir", self._add), ("Editar", self._edit), ("Eliminar", self._delete), ("Probar lectura", self._test),
             ("Actualizar seleccionada", self._sync_selected), ("Actualizar activas", self._sync_active), ("Ver log", self._show_log),
+            ("Copiar comando", self._copy_command),
             ("Crear configuración loteado por defecto", self._create_defaults),
         ]
         for i, (label, cmd) in enumerate(actions):
@@ -136,6 +137,18 @@ class LegacySyncSettingsScreen(ttk.Frame):
         txt.pack(fill="both", expand=True)
         for log in logs:
             txt.insert("end", f"[{log['Inicio']}] {log['Nombre']} OK={log['Ok']} Export={log['FilasExportadas']} Import={log['FilasImportadas']} Msg={log['Mensaje']} Err={log['Error']}\n")
+
+    def _copy_command(self) -> None:
+        sid = self._selected_id()
+        if not sid:
+            return
+        ok, command = self.service.build_command_preview(sid)
+        if not ok:
+            messagebox.showerror("Copiar comando", command, parent=self)
+            return
+        self.clipboard_clear()
+        self.clipboard_append(command)
+        messagebox.showinfo("Copiar comando", "Comando copiado al portapapeles.", parent=self)
 
     def _create_defaults(self) -> None:
         access = filedialog.askopenfilename(filetypes=[("Access MDB", "*.mdb"), ("Todos", "*.*")])
