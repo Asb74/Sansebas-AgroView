@@ -123,11 +123,11 @@ class LegacySyncService:
         csv_path = temp_dir / f"{setting['Nombre']}_{setting_id}.csv"
         log_path = temp_dir / f"{setting['Nombre']}_{setting_id}.log"
         if not vbs_path.exists():
-            return False, f"Script VBS no existe: {vbs_path}", None, 0
+            return False, self._build_missing_path_error("Script VBS no existe", vbs_path, mdb_path, csv_path, log_path), None, 0
         if not mdb_path.exists():
-            return False, f"MDB no existe: {mdb_path}", None, 0
+            return False, self._build_missing_path_error("MDB no existe", vbs_path, mdb_path, csv_path, log_path), None, 0
         if not temp_dir.exists():
-            return False, f"Carpeta temporal no existe: {temp_dir}", None, 0
+            return False, self._build_missing_path_error("Carpeta temporal no existe", vbs_path, mdb_path, csv_path, log_path), None, 0
         command = self._build_vbs_command(vbs_path, mdb_path, setting["AccessTable"], csv_path, log_path)
         result = subprocess.run(
             command,
@@ -201,6 +201,16 @@ class LegacySyncService:
             f"STDOUT:\n{result.stdout}\n\n"
             f"STDERR:\n{result.stderr}\n\n"
             f"Comando:\n{' '.join(command)}"
+        )
+
+    @staticmethod
+    def _build_missing_path_error(reason: str, vbs_path: Path, mdb_path: Path, csv_path: Path, log_path: Path) -> str:
+        return (
+            f"{reason}.\n\n"
+            f"Ruta VBS: {vbs_path}\n"
+            f"Ruta MDB: {mdb_path}\n"
+            f"Ruta CSV temporal: {csv_path}\n"
+            f"Ruta LOG: {log_path}"
         )
 
     @staticmethod
