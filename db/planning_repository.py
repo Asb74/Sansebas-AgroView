@@ -435,6 +435,8 @@ class PlanningRepository:
                 where.append('CAST(COALESCE(p."Semana","") AS TEXT) = strftime("%W","now","localtime")')
             elif fecha_filtrada and modo_pedidos == "todos_futuros":
                 where.append(f'DATE({fecha_expr}) >= DATE("now","localtime")')
+            elif modo_pedidos == "todos":
+                logger.info('Modo pedidos "todos": sin filtro de fecha aplicado')
             elif fecha_filtrada and modo_pedidos == "rango":
                 if str(filters.get("fecha_desde", "")).strip():
                     where.append(f'DATE({fecha_expr}) >= DATE(?)')
@@ -480,21 +482,31 @@ class PlanningRepository:
             """
             total_pedidos = conn.execute('SELECT COUNT(*) FROM "Pedidos"').fetchone()[0]
             min_max = conn.execute(f'SELECT MIN({fecha_expr}), MAX({fecha_expr}) FROM "Pedidos" p').fetchone()
-            query_cc = 'SELECT COUNT(*) FROM "Pedidos" p WHERE 1=1'
+            campanas = [r[0] for r in conn.execute('SELECT DISTINCT "Campaña" FROM "Pedidos" ORDER BY "Campaña"').fetchall()] if "Campaña" in pedidos_cols else []
+            cultivos = [r[0] for r in conn.execute('SELECT DISTINCT Cultivo FROM "Pedidos" ORDER BY Cultivo').fetchall()] if "Cultivo" in pedidos_cols else []
+            empresas = [r[0] for r in conn.execute('SELECT DISTINCT EMPRESA FROM "Pedidos" ORDER BY EMPRESA').fetchall()] if "EMPRESA" in pedidos_cols else []
+
+            query_cc = 'SELECT COUNT(*) FROM "Pedidos" WHERE 1=1'
             params_cc: list[Any] = []
-            for field, column in (("campana", "Campaña"), ("cultivo", "Cultivo")):
-                if column not in pedidos_cols:
-                    continue
-                vals = self._normalize_filter_values(filters.get(field))
-                if vals:
-                    query_cc += f' AND UPPER(TRIM(COALESCE(p."{column}",""))) IN ({",".join(["UPPER(TRIM(?))"] * len(vals))})'
-                    params_cc.extend(vals)
+            campana_vals = self._normalize_filter_values(filters.get("campana"))
+            if campana_vals and "Campaña" in pedidos_cols:
+                query_cc += f' AND UPPER(TRIM(COALESCE("Pedidos"."Campaña",""))) IN ({",".join(["UPPER(TRIM(?))"] * len(campana_vals))})'
+                params_cc.extend(campana_vals)
+            cultivo_vals = self._normalize_filter_values(filters.get("cultivo"))
+            if cultivo_vals and "Cultivo" in pedidos_cols:
+                query_cc += f' AND UPPER(TRIM(COALESCE("Pedidos".Cultivo,""))) IN ({",".join(["UPPER(TRIM(?))"] * len(cultivo_vals))})'
+                params_cc.extend(cultivo_vals)
+            if cancelado_col:
+                query_cc += f" AND UPPER(TRIM(COALESCE(\"Pedidos\".\"{cancelado_col}\",\"\"))) NOT IN ('1','S','SI','SÍ','TRUE','T','X')"
+            query_cc += " AND UPPER(REPLACE(REPLACE(TRIM(COALESCE(\"Pedidos\".\"IdPedidoLora\",\"\")), '/', ''), ' ', '')) NOT IN ('SP','PRECALIBRADO','ESTANDAR','ESTÁNDAR')"
             cc_count = conn.execute(query_cc, params_cc).fetchone()[0]
 
             query_fecha = 'SELECT COUNT(*) FROM "Pedidos" p WHERE 1=1'
             params_fecha: list[Any] = []
             if fecha_filtrada and modo_pedidos == "10_dias":
                 query_fecha += f' AND DATE({fecha_expr}) BETWEEN DATE("now","localtime") AND DATE("now","localtime","+10 day")'
+            elif modo_pedidos == "todos":
+                pass
             elif fecha_filtrada and modo_pedidos == "semana_actual":
                 query_fecha += ' AND CAST(COALESCE(p."Semana","") AS TEXT) = strftime("%W","now","localtime")'
             elif fecha_filtrada and modo_pedidos == "todos_futuros":
@@ -514,11 +526,16 @@ class PlanningRepository:
             fecha_count = conn.execute(query_fecha, params_fecha).fetchone()[0]
             logger.info("COUNT(*) FROM Pedidos: %s", total_pedidos)
             logger.info("MIN(FechaSalida), MAX(FechaSalida): %s, %s", min_max[0], min_max[1])
-            logger.info("COUNT tras filtro campaña/cultivo: %s", cc_count)
-            logger.info("COUNT tras filtro modo fecha: %s", fecha_count)
-            logger.info("SQL final: %s", query)
-            logger.info("Parámetros SQL: %s", params)
+            logger.info("Campañas disponibles: %s", campanas)
+            logger.info("Cultivos disponibles: %s", cultivos)
+            logger.info("Empresas disponibles: %s", empresas)
+            logger.info("COUNT con filtros base (campaña/cultivo/cancelados/técnicos): %s", cc_count)
+            logger.info("COUNT tras filtro modo pedidos (%s): %s", modo_pedidos, fecha_count)
+            logger.info("SQL pedidos pendientes: %s", query)
+            logger.info("Params pedidos pendientes: %s", params)
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+            if not rows:
+                logger.warning("Pedidos pendientes devolvió 0 filas. Revisar filtros y fechas.")
         out: list[dict] = []
         kpi = {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Nº pedidos": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0}
         pedidos_unicos: set[str] = set()
