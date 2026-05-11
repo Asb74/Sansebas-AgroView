@@ -6,6 +6,7 @@ from screens.home_screen import HomeScreen
 from screens.import_forfait_screen import ImportForfaitScreen
 from screens.map_forfait_screen import MapForfaitScreen
 from screens.pedidos_screen import PedidosScreen
+from screens.planificacion_diaria_screen import PlanificacionDiariaScreen
 from screens.precios_orientativos_screen import PreciosOrientativosScreen
 from screens.ranking_cliente_settings_screen import RankingClienteSettingsScreen
 from services.comercial_service import ComercialService
@@ -41,6 +42,7 @@ class MainWindow(tk.Tk):
         herramientas.add_command(label="Importar forfait confección", command=self.show_import_forfait)
         herramientas.add_command(label="Mapear forfait/confecciones", command=self.show_map_forfait)
         herramientas.add_command(label="Configuración ranking clientes", command=self.show_ranking_settings)
+        herramientas.add_command(label="Planificación diaria", command=self.show_planificacion_diaria)
         menubar.add_cascade(label="Herramientas", menu=herramientas)
         self.config(menu=menubar)
 
@@ -71,6 +73,7 @@ class MainWindow(tk.Tk):
                 on_open_pedidos=self.show_pedidos,
                 on_open_boa_comercial=self.show_boa_comercial,
                 on_open_precios_orientativos=self.show_precios_orientativos,
+                on_open_planificacion_diaria=self.show_planificacion_diaria,
             )
         )
 
@@ -91,6 +94,9 @@ class MainWindow(tk.Tk):
 
     def show_ranking_settings(self) -> None:
         self._show_screen(RankingClienteSettingsScreen(self.container, service=self.comercial_service, on_back=self.show_home))
+
+    def show_planificacion_diaria(self) -> None:
+        self._show_screen(PlanificacionDiariaScreen(self.container, on_back=self.show_home))
 
     def _show_screen(self, screen: ttk.Frame) -> None:
         if self.current_screen is not None:
