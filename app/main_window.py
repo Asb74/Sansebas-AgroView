@@ -4,6 +4,7 @@ from tkinter import ttk
 from screens.boa_comercial_screen import BOAComercialScreen
 from screens.home_screen import HomeScreen
 from screens.import_forfait_screen import ImportForfaitScreen
+from screens.legacy_sync_settings_screen import LegacySyncSettingsScreen
 from screens.map_forfait_screen import MapForfaitScreen
 from screens.pedidos_screen import PedidosScreen
 from screens.planificacion_diaria_screen import PlanificacionDiariaScreen
@@ -43,6 +44,7 @@ class MainWindow(tk.Tk):
         herramientas.add_command(label="Mapear forfait/confecciones", command=self.show_map_forfait)
         herramientas.add_command(label="Configuración ranking clientes", command=self.show_ranking_settings)
         herramientas.add_command(label="Planificación diaria", command=self.show_planificacion_diaria)
+        herramientas.add_command(label="Actualización tablas legacy", command=self.show_legacy_sync_settings)
         menubar.add_cascade(label="Herramientas", menu=herramientas)
         self.config(menu=menubar)
 
@@ -97,6 +99,9 @@ class MainWindow(tk.Tk):
 
     def show_planificacion_diaria(self) -> None:
         self._show_screen(PlanificacionDiariaScreen(self.container, on_back=self.show_home))
+
+    def show_legacy_sync_settings(self) -> None:
+        self._show_screen(LegacySyncSettingsScreen(self.container, on_back=self.show_home))
 
     def _show_screen(self, screen: ttk.Frame) -> None:
         if self.current_screen is not None:

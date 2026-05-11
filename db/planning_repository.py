@@ -93,7 +93,7 @@ class PlanningRepository:
             if ldo_table:
                 diagnosis["loteado_columns"] = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
         if not diagnosis["has_lote"]:
-            diagnosis["warning"] = "No existe la tabla Lote en bdloteado.sqlite. No se puede calcular stock almacén con neto real de Lote."
+            diagnosis["warning"] = "No existe la tabla Lote en bdloteado.sqlite. Puedes actualizarla desde Configuración > Actualización tablas legacy."
         logger.info("Diagnóstico de bdloteado.sqlite (%s): %s", path, diagnosis)
         return diagnosis
 
@@ -217,7 +217,7 @@ class PlanningRepository:
             lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
             if not ldo_table or not lote_table:
                 logger.warning("No se encontraron tablas requeridas en %s (Loteado: %s, Lote: %s)", path, bool(ldo_table), bool(lote_table))
-                return [], "Stock almacén no disponible: falta tabla Lote." if ldo_table and not lote_table else None
+                return [], "No existe la tabla Lote en bdloteado.sqlite. Puedes actualizarla desde Configuración > Actualización tablas legacy." if ldo_table and not lote_table else None
             ldo_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
             if not ldo_cols:
                 logger.warning("No existe la tabla %s", ldo_table)
