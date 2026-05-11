@@ -22,6 +22,13 @@ class PlanningRepository:
         return self.base_dir / filename
 
     @staticmethod
+    def _build_neto_correcto(neto_partida: Any, neto: Any) -> float:
+        neto_partida_val = float(neto_partida or 0)
+        if neto_partida_val > 0:
+            return neto_partida_val
+        return float(neto or 0)
+
+    @staticmethod
     def _find_column(table_columns: list[str], candidates: list[str]) -> str | None:
         normalized = {c.upper(): c for c in table_columns}
         for candidate in candidates:
@@ -172,9 +179,7 @@ class PlanningRepository:
                 continue
             if semana_filter and str(semana) not in semana_filter:
                 continue
-            neto_partida = float(r.get("NetoPartida") or 0)
-            neto = float(r.get("Neto") or 0)
-            kg = neto_partida if neto_partida != 0 else neto
+            kg = self._build_neto_correcto(r.get("NetoPartida"), r.get("Neto"))
             data.append(
                 {
                     "Cultivo": r.get("Cultivo", ""),
@@ -286,13 +291,62 @@ class PlanningRepository:
                 {
                     "Campaña": r.get("Campana", ""), "Cultivo": r.get("Cultivo", ""), "IdPalet": r.get("IdPalet", ""),
                     "Pedido": r.get("Pedido", ""), "Fecha almacén": dt.strftime("%Y-%m-%d") if dt else (r.get("FechaAlmacen") or ""),
-                    "Variedad": r.get("Variedad", ""), "Calibre": r.get("Calibre", ""), "Categoría": r.get("Categoria", ""),
+                    "Variedad": r.get("Variedad", ""), "Calibre": r.get("Calibre", ""),
+                    "Agrupado": "Sí" if "/" in str(r.get("Calibre", "")) else "No", "Categoría": r.get("Categoria", ""),
                     "Marca": r.get("Marca", ""), "IdConfeccion": r.get("IdConfeccion", ""), "Confección": r.get("Confeccion", ""),
                     "Cajas": round(float(r.get("Cajas") or 0), 2), "Kg stock": round(float(r.get("KgStock") or 0), 2),
                     "Estado": r.get("Estado", ""), "Semana": semana,
                 }
             )
         return data, None
+
+    def get_correspondencias_calibres(self, cultivo: str) -> list[dict[str, Any]]:
+        calidad_path = self._db_path(DB_CALIDAD)
+        if not calidad_path.exists():
+            raise FileNotFoundError(f"No existe la base: {calidad_path}")
+
+        cultivo_norm = str(cultivo or "").strip().upper()
+        if not cultivo_norm:
+            return []
+
+        with sqlite3.connect(calidad_path) as conn:
+            conn.row_factory = sqlite3.Row
+            table = self._find_table(conn, ["CorrespondenciasCalibres"])
+            if not table:
+                return []
+            table_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()]
+            base_col = self._find_column(table_cols, ["BASE"])
+            cultivo_col = self._find_column(table_cols, [cultivo_norm])
+            if not base_col or not cultivo_col:
+                return []
+
+            rows = [dict(r) for r in conn.execute(f'SELECT "{base_col}" AS BaseCal, "{cultivo_col}" AS CalibreNorm FROM "{table}"').fetchall()]
+
+        result: list[dict[str, Any]] = []
+        for r in rows:
+            base_val = str(r.get("BaseCal") or "").strip().upper()
+            if not base_val.startswith("CAL "):
+                continue
+            idx_raw = base_val.replace("CAL", "", 1).strip()
+            if not idx_raw.isdigit():
+                continue
+
+            calibre_norm = str(r.get("CalibreNorm") or "").strip()
+            if not calibre_norm or calibre_norm.upper() == "(VACÍAS)":
+                continue
+
+            orden = int(idx_raw)
+            result.append(
+                {
+                    "campo_base": f"Cal{orden}",
+                    "campo_pct": f"%Cal{orden}",
+                    "calibre_normalizado": calibre_norm,
+                    "orden": orden,
+                }
+            )
+
+        result.sort(key=lambda x: x["orden"])
+        return result
 
     def get_filter_options(self, key: str) -> list[str]:
         filters = {"campana": [], "cultivo": [], "empresa": [], "semana": [], "var_coop": [], "fecha_desde": "", "fecha_hasta": ""}

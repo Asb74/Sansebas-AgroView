@@ -26,6 +26,9 @@ class PlanningService:
     def get_filter_options(self, key: str) -> list[str]:
         return self.repo.get_filter_options(key)
 
+    def get_correspondencias_calibres(self, cultivo: str) -> list[dict]:
+        return self.repo.get_correspondencias_calibres(cultivo)
+
     def aggregate_stock_campo(self, rows: list[dict]) -> list[dict]:
         agg: dict[tuple, float] = defaultdict(float)
         for r in rows:
