@@ -168,7 +168,10 @@ class PlanningRepository:
             conn.row_factory = sqlite3.Row
             conn.execute(f"ATTACH DATABASE '{calidad_path.as_posix()}' AS bdcalidad")
             db_eepl = self._db_path("DBEEPPL.sqlite")
-            conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepp")
+            conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
+            eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
+            if "MVariedad" not in eepl_tables:
+                logger.warning("No existe tabla MVariedad en DBEEPPL.sqlite")
             query = """
                 SELECT p.CULTIVO as Cultivo, p."CAMPAÑA" as Campana, p.Fcarga as FechaCarga,
                        p.Socio, p.Variedad, p.Boleta, p.Plataforma, p.EMPRESA as Empresa,
@@ -177,7 +180,7 @@ class PlanningRepository:
                 FROM PesosFres p
                 LEFT JOIN MRestricciones m ON m.IdRestricciones = p.Restricciones AND m.CULTIVO = p.CULTIVO
                 LEFT JOIN bdcalidad.PartidasIndex pi ON p.AlbaranDef = pi.IdPartida
-                LEFT JOIN dbeepp.MVariedad mv
+                LEFT JOIN dbeepl.MVariedad mv
                   ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(p.Variedad))
                  AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(p.CULTIVO))
                 WHERE p.AlbaranDef IS NOT NULL AND p.AlbaranDef <> '' AND pi.IdPartida IS NULL
@@ -252,7 +255,10 @@ class PlanningRepository:
             db_pedidos = self._db_path("DBPedidos.sqlite")
             db_eepl = self._db_path("DBEEPPL.sqlite")
             conn.execute(f"ATTACH DATABASE '{db_pedidos.as_posix()}' AS dbpedidos")
-            conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepp")
+            conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
+            eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
+            if "MVariedad" not in eepl_tables:
+                logger.warning("No existe tabla MVariedad en DBEEPPL.sqlite")
             tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
             logger.info("Tablas encontradas: %s", tables)
             ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
@@ -288,7 +294,7 @@ class PlanningRepository:
                 FROM "{ldo_table}" ldo
                 INNER JOIN "{lote_table}" l ON l.IdPalet = ldo.IdPalet
                 LEFT JOIN dbpedidos.MConfecciones mc ON CAST(mc.CODIGO AS TEXT) = CAST(l.IdConfeccion AS TEXT)
-                LEFT JOIN dbeepp.MVariedad mv
+                LEFT JOIN dbeepl.MVariedad mv
                   ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(l.Variedad))
                  AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(ldo.CULTIVO))
                 WHERE UPPER(TRIM(ldo.Estado)) = 'STOCK'
@@ -340,7 +346,10 @@ class PlanningRepository:
             db_pedidos = self._db_path("DBPedidos.sqlite")
             db_eepl = self._db_path("DBEEPPL.sqlite")
             conn.execute(f"ATTACH DATABASE '{db_pedidos.as_posix()}' AS dbpedidos")
-            conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepp")
+            conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
+            eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
+            if "MVariedad" not in eepl_tables:
+                logger.warning("No existe tabla MVariedad en DBEEPPL.sqlite")
             ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
             lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
             if not ldo_table or not lote_table:
@@ -358,7 +367,7 @@ class PlanningRepository:
                 FROM "{ldo_table}" ldo
                 INNER JOIN "{lote_table}" l ON l.IdPalet = ldo.IdPalet
                 LEFT JOIN dbpedidos.MConfecciones mc ON CAST(mc.CODIGO AS TEXT) = CAST(l.IdConfeccion AS TEXT)
-                LEFT JOIN dbeepp.MVariedad mv
+                LEFT JOIN dbeepl.MVariedad mv
                   ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(l.Variedad))
                  AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(ldo.CULTIVO))
                 WHERE UPPER(TRIM(ldo.Estado)) = 'STOCK'
@@ -407,6 +416,13 @@ class PlanningRepository:
 
         with sqlite3.connect(pedidos_path) as conn:
             conn.row_factory = sqlite3.Row
+            db_eepl = self._db_path("DBEEPPL.sqlite")
+            db_loteado = self._db_path("bdloteado.sqlite")
+            conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
+            conn.execute(f"ATTACH DATABASE '{db_loteado.as_posix()}' AS bdloteado")
+            eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
+            if "MVariedad" not in eepl_tables:
+                logger.warning("No existe tabla MVariedad en DBEEPPL.sqlite")
             pedidos_cols = [r["name"] for r in conn.execute('PRAGMA table_info("Pedidos")').fetchall()]
             if not pedidos_cols:
                 logger.warning("No existe la tabla Pedidos en DBPedidos.sqlite")
@@ -498,7 +514,7 @@ class PlanningRepository:
                       ELSE ''
                     END AS "Aviso"
                 FROM "Pedidos" p
-                LEFT JOIN dbeepp.MVariedad mv
+                LEFT JOIN dbeepl.MVariedad mv
                   ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(p."VarCoop"))
                  AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(p."Cultivo"))
                 LEFT JOIN bdloteado.Loteado ldo
@@ -665,7 +681,10 @@ class PlanningRepository:
                 return []
             with sqlite3.connect(path) as conn:
                 db_eepl = self._db_path("DBEEPPL.sqlite")
-                conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepp")
+                conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
+                eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
+                if "MVariedad" not in eepl_tables:
+                    logger.warning("No existe tabla MVariedad en DBEEPPL.sqlite")
                 ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
                 lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
                 if not ldo_table or not lote_table:
@@ -675,7 +694,7 @@ class PlanningRepository:
                     SELECT DISTINCT TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')) AS GrupoVarietal
                     FROM "{ldo_table}" ldo
                     INNER JOIN "{lote_table}" l ON l.IdPalet = ldo.IdPalet
-                    LEFT JOIN dbeepp.MVariedad mv
+                    LEFT JOIN dbeepl.MVariedad mv
                       ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(l.Variedad))
                      AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(ldo.CULTIVO))
                     WHERE UPPER(TRIM(ldo.Estado)) = 'STOCK'
