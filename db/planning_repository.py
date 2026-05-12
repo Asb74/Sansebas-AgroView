@@ -90,17 +90,87 @@ class PlanningRepository:
 
     @staticmethod
     def normalizar_calibre(calibre_texto: Any) -> list[str]:
+        return sorted(PlanningRepository.normalizar_calibre_a_set(calibre_texto))
+
+    @staticmethod
+    def normalizar_calibre_a_set(calibre_texto: Any, calibre_map: dict[str, str] | None = None) -> set[str]:
         text = str(calibre_texto or "").strip().upper()
         if not text:
-            return []
-        text = text.replace("CAL", " ").replace("PZ", " ")
-        parts = re.split(r"[^\d]+", text)
-        return [p for p in parts if p]
+            return set()
+        text = re.sub(r"\bCAL(?:\.)?\b", " ", text)
+        text = re.sub(r"\bPZS?\b|\bPIEZAS?\b", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        mapped = (calibre_map or {}).get(text)
+        if mapped and str(mapped).strip().upper() != text:
+            return PlanningRepository.normalizar_calibre_a_set(mapped, calibre_map=calibre_map)
+
+        es_formato_piezas = bool(re.search(r"\bPZS?\b|\bPIEZAS?\b", str(calibre_texto or "").upper()))
+        if not es_formato_piezas:
+            es_formato_piezas = bool(re.match(r"^\s*\d+\s*/\s*\d+\s*(?:PZS?|PIEZAS?)?\s*$", str(calibre_texto or ""), flags=re.IGNORECASE))
+        if es_formato_piezas:
+            m = re.match(r"^\s*(\d+)\s*/", str(calibre_texto or ""))
+            return {m.group(1)} if m else set()
+
+        if "/" in text:
+            nums = [n for n in re.split(r"\s*/\s*", text) if re.fullmatch(r"\d+", n)]
+            if len(nums) >= 3:
+                return set(nums)
+            if len(nums) == 2:
+                a, b = nums
+                if len(b) >= 2 and int(b) >= 10:
+                    return {a}
+                return {a, b}
+        if "-" in text:
+            nums = [n for n in re.split(r"\s*-\s*", text) if re.fullmatch(r"\d+", n)]
+            if len(nums) >= 2:
+                return set(nums)
+
+        parts = re.findall(r"\d+", text)
+        return set(parts)
+
+    def get_mcalibres_map(self) -> dict[str, str]:
+        path = self._db_path(DB_PEDIDOS)
+        if not path.exists():
+            return {}
+        try:
+            with sqlite3.connect(path) as conn:
+                conn.row_factory = sqlite3.Row
+                table = self._find_table(conn, ["MCalibres", "MCALIBRES"])
+                if not table:
+                    return {}
+                cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()]
+                col_calibre = self._find_column(cols, ["Calibre", "CalibreOriginal", "CalibreTxt"])
+                col_unif = self._find_column(cols, ["CalibreU"])
+                if not col_calibre or not col_unif:
+                    return {}
+                out: dict[str, str] = {}
+                for row in conn.execute(f'SELECT "{col_calibre}" AS calibre, "{col_unif}" AS calibre_u FROM "{table}"').fetchall():
+                    raw = str(row["calibre"] or "").strip().upper()
+                    uni = str(row["calibre_u"] or "").strip().upper()
+                    if raw and uni:
+                        out[raw] = uni
+                return out
+        except Exception:
+            logger.exception("No se pudo cargar mapa MCalibres")
+            return {}
+
+    def comparar_calibres(self, calibre_pedido: Any, calibre_stock: Any, calibre_map: dict[str, str] | None = None) -> str:
+        pedido = self.normalizar_calibre_a_set(calibre_pedido, calibre_map=calibre_map)
+        stock = self.normalizar_calibre_a_set(calibre_stock, calibre_map=calibre_map)
+        if not pedido or not stock:
+            return "SIN_COBERTURA"
+        if pedido == stock:
+            return "EXACTO"
+        if pedido.issubset(stock):
+            return "COBERTURA_COMPLETA"
+        if pedido.intersection(stock):
+            return "SOLAPE_PARCIAL"
+        return "SIN_COBERTURA"
 
     @classmethod
     def calibres_solapan(cls, calibre_pedido: Any, calibre_stock: Any) -> bool:
-        pedido = set(cls.normalizar_calibre(calibre_pedido))
-        stock = set(cls.normalizar_calibre(calibre_stock))
+        pedido = cls.normalizar_calibre_a_set(calibre_pedido)
+        stock = cls.normalizar_calibre_a_set(calibre_stock)
         return bool(pedido and stock and pedido.intersection(stock))
 
     @staticmethod
@@ -740,6 +810,7 @@ class PlanningRepository:
             pedidos_map[key] = pedidos_map.get(key, 0.0) + float(row.get("Kg pendiente", 0) or 0)
 
         keys = set(commercial_map.keys()) | set(pedidos_map.keys())
+        calibre_map = self.get_mcalibres_map()
         data: list[dict] = []
         for key in sorted(keys, key=lambda k: tuple(str(x) for x in k)):
             cultivo, campana, grupo, variedad, calibre, categoria, marca, id_confeccion, confe = key
@@ -763,13 +834,21 @@ class PlanningRepository:
             necesita_cobertura = kg_pendiente > 0 and diff < 0
 
             kg_cobertura_agrupada = 0.0
+            coincidencia = "Sin cobertura"
             if necesita_cobertura and calibre:
                 grouped_stock = 0.0
                 for ind_key, ind_kg in industrial_stock_map.items():
                     if ind_key[:4] == common_key[:4] and ind_key[5] == common_key[5]:
-                        if ind_key[4] != calibre and self.calibres_solapan(calibre, ind_key[4]):
+                        comparacion = self.comparar_calibres(calibre, ind_key[4], calibre_map=calibre_map)
+                        if comparacion == "COBERTURA_COMPLETA":
                             grouped_stock += ind_kg
+                        elif comparacion == "SOLAPE_PARCIAL":
+                            coincidencia = "Solape parcial"
                 kg_cobertura_agrupada = round(grouped_stock, 2)
+                if kg_cobertura_agrupada > 0:
+                    coincidencia = "Cobertura agrupada completa"
+                elif float(kg_industrial_stock or 0) > 0:
+                    coincidencia = "Exacta"
 
             kg_cobertura_exacta = kg_ind_total if necesita_cobertura else 0.0
             kg_cobertura_potencial = round(kg_cobertura_exacta + kg_cobertura_agrupada, 2) if necesita_cobertura else 0.0
@@ -791,7 +870,9 @@ class PlanningRepository:
             elif necesita_cobertura:
                 if kg_cobertura_potencial > 0:
                     if kg_cobertura_agrupada > 0:
-                        aviso = "Faltante con cobertura potencial por calibre agrupado; requiere reparto"
+                        aviso = "Cobertura por calibre agrupado; requiere reparto"
+                    elif coincidencia == "Solape parcial":
+                        aviso = "Solape parcial de calibre; revisar manualmente"
                     else:
                         aviso = "Faltante comercial con base industrial disponible"
                 else:
@@ -825,6 +906,7 @@ class PlanningRepository:
                 "Kg cobertura agrupada": kg_cobertura_agrupada,
                 "Kg cobertura potencial total": kg_cobertura_potencial,
                 "Cobertura posible": cobertura_posible,
+                "Coincidencia": coincidencia,
                 "Estado industrial": estado_ind,
                 "Agrupado": "Sí" if self._is_calibre_agrupado(calibre) else "No",
                 "Aviso": aviso,
