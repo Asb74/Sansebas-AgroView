@@ -130,7 +130,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Label(self.balance_tab, textvariable=self.kpi_balance, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
         self.balance_table = DataTable(
             self.balance_tab,
-            ["Cultivo", "Campaña", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Estado comercial", "Kg stock industrial almacén", "Kg campo estimado", "Kg industrial total", "Kg cobertura exacta", "Kg cobertura agrupada", "Kg cobertura potencial total", "Cobertura posible", "Estado industrial", "Agrupado", "Aviso"],
+            ["Cultivo", "Campaña", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Tipo línea", "Estado comercial", "Kg stock industrial almacén", "Kg campo estimado", "Kg industrial total", "Kg cobertura exacta", "Kg cobertura agrupada", "Kg cobertura potencial total", "Cobertura posible", "Estado industrial", "Agrupado", "Aviso"],
         )
         self.balance_table.pack(fill="both", expand=True)
 
