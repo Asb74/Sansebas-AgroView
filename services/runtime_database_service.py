@@ -34,7 +34,7 @@ class RuntimeDatabaseService:
 
     def copy_database_to_runtime(self, db_name: str) -> bool:
         source = self.central_dir / db_name
-        runtime_path = RuntimeDatabaseService.get_runtime_path(db_name)
+        runtime_path = self.get_runtime_path(db_name)
         tmp_path = runtime_path.with_suffix(runtime_path.suffix + ".tmp")
         try:
             shutil.copy2(source, tmp_path)
@@ -47,9 +47,8 @@ class RuntimeDatabaseService:
                 return False
             raise
 
-    @staticmethod
-    def get_runtime_path(db_name: str) -> Path:
-        return Path(RUNTIME_SQLITE_DIR) / db_name
+    def get_runtime_path(self, db_name: str) -> Path:
+        return self.runtime_dir / db_name
 
     def get_snapshot_info(self) -> dict[str, Any]:
         if not self.snapshot_file.exists():

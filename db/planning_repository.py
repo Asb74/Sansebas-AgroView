@@ -8,8 +8,7 @@ import time
 import traceback
 from typing import Any
 
-from config import CENTRAL_SQLITE_DIR, DB_DIR, DB_EEPPL, DB_FRUTA, DB_LOTEADO, DB_PEDIDOS
-from services.runtime_database_service import RuntimeDatabaseService
+from config import DB_CALIDAD, DB_DIR, DB_EEPPL, DB_FRUTA, DB_LOTEADO, DB_PEDIDOS
 
 
 logger = logging.getLogger(__name__)
@@ -22,13 +21,6 @@ class PlanningRepository:
 
     def _db_path(self, filename: str) -> Path:
         return self.base_dir / filename
-
-    @staticmethod
-    def _log_sqlite_read_path(path: str | Path) -> None:
-        normalized = str(Path(path))
-        logger.info("Abriendo SQLite lectura: %s", normalized)
-        if str(Path(CENTRAL_SQLITE_DIR)) in normalized:
-            logger.warning("LECTURA CENTRAL DETECTADA: debe usarse runtime_db")
 
     @staticmethod
     def _build_neto_correcto(neto_partida: Any, neto: Any) -> float:
@@ -167,19 +159,16 @@ class PlanningRepository:
 
     def get_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
         fruta_path = self._db_path(DB_FRUTA)
-        calidad_path = RuntimeDatabaseService.get_runtime_path("BdCalidad.sqlite")
-        self._log_sqlite_read_path(calidad_path)
+        calidad_path = self._db_path(DB_CALIDAD)
         if not fruta_path.exists():
             raise FileNotFoundError(f"No existe la base: {fruta_path}")
         if not calidad_path.exists():
             raise FileNotFoundError(f"No existe la base: {calidad_path}")
 
-        self._log_sqlite_read_path(fruta_path)
         with sqlite3.connect(fruta_path) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute(f"ATTACH DATABASE '{calidad_path.as_posix()}' AS bdcalidad")
             db_eepl = self._db_path(DB_EEPPL)
-            self._log_sqlite_read_path(db_eepl)
             conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
             eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
             if "MVariedad" not in eepl_tables:
@@ -698,7 +687,6 @@ class PlanningRepository:
         fruta_path = self._db_path(DB_FRUTA)
         if not fruta_path.exists():
             return []
-        self._log_sqlite_read_path(fruta_path)
         with sqlite3.connect(fruta_path) as conn:
             conn.row_factory = sqlite3.Row
             query = """
@@ -726,8 +714,7 @@ class PlanningRepository:
         return rows
 
     def get_correspondencias_calibres(self, cultivo: str) -> list[dict[str, Any]]:
-        calidad_path = RuntimeDatabaseService.get_runtime_path("BdCalidad.sqlite")
-        self._log_sqlite_read_path(calidad_path)
+        calidad_path = self._db_path(DB_CALIDAD)
         if not calidad_path.exists():
             raise FileNotFoundError(f"No existe la base: {calidad_path}")
 
