@@ -167,6 +167,20 @@ class PlanningRepository:
             return "SOLAPE_PARCIAL"
         return "SIN_COBERTURA"
 
+    def comparar_calibres_para_cobertura(self, calibre_pedido: Any, calibre_stock: Any, calibre_map: dict[str, str] | None = None) -> tuple[str, set[str]]:
+        pedido = self.normalizar_calibre_a_set(calibre_pedido, calibre_map=calibre_map)
+        stock = self.normalizar_calibre_a_set(calibre_stock, calibre_map=calibre_map)
+        if not pedido or not stock:
+            return "SIN_COBERTURA", set()
+        coincidentes = pedido.intersection(stock)
+        if pedido == stock:
+            return "EXACTO", coincidentes
+        if not coincidentes:
+            return "SIN_COBERTURA", set()
+        if stock.issuperset(pedido):
+            return "COBERTURA_AGRUPADA", coincidentes
+        return "COBERTURA_ADMITIDA", coincidentes
+
     def _is_stock_industrial(self, pedido: Any, confeccion: Any, id_confeccion: Any = None) -> bool:
         pedido_norm = str(pedido or "").strip().upper().replace("/", "").replace(" ", "")
         confe_norm = str(confeccion or "").strip().upper()
@@ -900,7 +914,7 @@ class PlanningRepository:
                             logger.info("BALANCE DEBUG descarta: categoría distinta")
                         continue
 
-                    comparacion = self.comparar_calibres(calibre, ind_key[4], calibre_map=calibre_map)
+                    comparacion, _coincidentes = self.comparar_calibres_para_cobertura(calibre, ind_key[4], calibre_map=calibre_map)
                     if comparacion == "SIN_COBERTURA":
                         logger.info("BALANCE DEBUG descarta: calibre sin cobertura")
                         continue
@@ -916,10 +930,8 @@ class PlanningRepository:
                     variedades_stock_industrial.add(str(ind_key[3] or "").strip())
                     if comparacion == "EXACTO":
                         kg_cobertura_exacta += ind_kg
-                    elif comparacion == "COBERTURA_COMPLETA":
+                    elif comparacion in {"COBERTURA_AGRUPADA", "COBERTURA_ADMITIDA"}:
                         kg_cobertura_agrupada += ind_kg
-                    elif comparacion == "SOLAPE_PARCIAL":
-                        kg_cobertura_solape_parcial += ind_kg
 
                 kg_cobertura_exacta = round(kg_cobertura_exacta, 2)
                 kg_cobertura_agrupada = round(kg_cobertura_agrupada, 2)
@@ -927,9 +939,7 @@ class PlanningRepository:
                 if kg_cobertura_exacta > 0:
                     coincidencia = "Exacta"
                 elif kg_cobertura_agrupada > 0:
-                    coincidencia = "Cobertura agrupada completa"
-                elif kg_cobertura_solape_parcial > 0:
-                    coincidencia = "Solape parcial"
+                    coincidencia = "Cobertura por calibre admitido"
 
             kg_cobertura_potencial = round(kg_cobertura_exacta + kg_cobertura_agrupada, 2) if necesita_cobertura else 0.0
             faltante = abs(diff) if necesita_cobertura else 0.0
@@ -945,8 +955,6 @@ class PlanningRepository:
 
             if (kg_cobertura_exacta + kg_cobertura_agrupada) > 0:
                 estado_ind = "Disponible"
-            elif kg_cobertura_solape_parcial > 0:
-                estado_ind = "Solape parcial"
             else:
                 estado_ind = "Sin base industrial"
             aviso = ""
@@ -956,9 +964,7 @@ class PlanningRepository:
                 if kg_cobertura_exacta > 0:
                     aviso = "Faltante con cobertura industrial exacta"
                 elif kg_cobertura_agrupada > 0:
-                    aviso = "Faltante con cobertura por calibre agrupado; requiere reparto"
-                elif kg_cobertura_solape_parcial > 0:
-                    aviso = "Solape parcial de calibre; revisar manualmente"
+                    aviso = "Faltante con cobertura por calibre admitido"
                 else:
                     aviso = "Faltante comercial sin base industrial"
                 if kg_entrada_estimada > 0 and not campo_tiene_desglose and not calibre:
@@ -1045,21 +1051,21 @@ class PlanningRepository:
             if stock_categoria.upper() != categoria.upper():
                 continue
 
-            comparacion = self.comparar_calibres(calibre_pedido, row.get("Calibre", ""), calibre_map=calibre_map)
-            if comparacion not in {"EXACTO", "COBERTURA_COMPLETA", "SOLAPE_PARCIAL"}:
+            comparacion, coincidentes = self.comparar_calibres_para_cobertura(calibre_pedido, row.get("Calibre", ""), calibre_map=calibre_map)
+            if comparacion == "SIN_COBERTURA":
                 continue
 
             if comparacion == "EXACTO":
                 tipo = "Industrial exacta"
-                aviso = "Cobertura industrial exacta"
+                aviso = "Cobertura exacta de calibre"
                 orden = 1
-            elif comparacion == "COBERTURA_COMPLETA":
+            elif len(self.normalizar_calibre_a_set(row.get("Calibre", ""), calibre_map=calibre_map)) > 1:
                 tipo = "Industrial agrupada"
-                aviso = "Cobertura por calibre agrupado; requiere reparto"
+                aviso = "Cobertura por calibre admitido; puede requerir reparto"
                 orden = 2
             else:
-                tipo = "Solape parcial"
-                aviso = "Solape parcial; revisar manualmente"
+                tipo = "Industrial admitida"
+                aviso = "Cobertura por calibre admitido"
                 orden = 3
 
             out.append({
@@ -1074,6 +1080,7 @@ class PlanningRepository:
                 "IdConfeccion stock": id_confeccion,
                 "Confección stock": confe,
                 "Kg disponibles": round(float(row.get("Neto", 0) or 0), 2),
+                "Calibres coincidentes": ",".join(sorted(coincidentes, key=lambda x: (float(x) if str(x).replace('.', '', 1).isdigit() else 10_000, x))),
                 "Coincidencia": comparacion,
                 "Aviso": aviso,
             })

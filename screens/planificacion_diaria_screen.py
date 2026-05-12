@@ -321,7 +321,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
         stock_frame = ttk.LabelFrame(popup, text="Stock industrial compatible", padding=8)
         stock_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
-        cols = ["Tipo cobertura", "Cultivo", "Campaña", "Grupo varietal", "Variedad stock", "Calibre stock", "Categoría", "IdConfeccion stock", "Confección stock", "Kg disponibles", "Coincidencia", "Aviso"]
+        cols = ["Tipo cobertura", "Cultivo", "Campaña", "Grupo varietal", "Variedad stock", "Calibre stock", "Categoría", "IdConfeccion stock", "Confección stock", "Kg disponibles", "Calibres coincidentes", "Coincidencia", "Aviso"]
         tbl = DataTable(stock_frame, cols)
         tbl.pack(fill="both", expand=True)
         cobertura_rows = self.service.get_balance_cobertura_detalle(self._filters_payload(), info)
