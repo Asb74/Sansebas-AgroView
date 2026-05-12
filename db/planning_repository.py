@@ -814,6 +814,14 @@ class PlanningRepository:
                     row.get("Pedido"), id_confeccion, confe, tipo_stock, kg, row.get("Calibre"), row.get("Variedad")
                 )
 
+        logger.info(
+            "BALANCE DEBUG industrial_stock_map total claves=%s kg_total=%s",
+            len(industrial_stock_map),
+            sum(industrial_stock_map.values()),
+        )
+        for k, v in list(industrial_stock_map.items())[:20]:
+            logger.info("BALANCE DEBUG INDUSTRIAL key=%s kg=%s", k, v)
+
         campo_tiene_desglose = False
         for row in stock_campo_rows:
             key = (
@@ -834,6 +842,10 @@ class PlanningRepository:
 
         keys = set(commercial_map.keys()) | set(pedidos_map.keys())
         calibre_map = self.get_mcalibres_map()
+        logger.info(
+            "BALANCE TEST calibres CAL 1/2 vs 0/1/2/3 = %s",
+            self.comparar_calibres("CAL 1/2", "0/1/2/3", calibre_map=calibre_map),
+        )
         data: list[dict] = []
         for key in sorted(keys, key=lambda k: tuple(str(x) for x in k)):
             cultivo, campana, grupo, variedad, calibre, categoria, marca, id_confeccion, confe = key
@@ -862,40 +874,34 @@ class PlanningRepository:
             variedades_stock_industrial: set[str] = set()
             coincidencia = "Sin cobertura"
             if necesita_cobertura:
+                logger.info(
+                    "BALANCE DEBUG pedido faltante cultivo=%s campana=%s grupo=%s variedad=%s calibre=%s categoria=%s faltante=%s",
+                    cultivo, campana, grupo, variedad, calibre, categoria, abs(diff)
+                )
                 for ind_key, ind_kg in industrial_stock_map.items():
+                    logger.info(
+                        "BALANCE DEBUG compara pedido grupo=%s calibre=%s categoria=%s CON stock key=%s kg=%s",
+                        grupo, calibre, categoria, ind_key, ind_kg
+                    )
                     mismo_cultivo = str(ind_key[0]).strip().upper() == str(cultivo).strip().upper()
                     misma_campana = str(ind_key[1]).strip() == str(campana).strip()
                     mismo_grupo = str(ind_key[2]).strip().upper() == str(grupo).strip().upper()
                     misma_categoria = str(ind_key[5]).strip().upper() == str(categoria).strip().upper()
 
                     if not (mismo_cultivo and misma_campana and mismo_grupo and misma_categoria):
-                        if logger.isEnabledFor(logging.INFO):
-                            if mismo_cultivo and misma_campana and (mismo_grupo or str(ind_key[2]).strip().upper() == str(grupo).strip().upper()):
-                                motivo = ""
-                                if not mismo_cultivo:
-                                    motivo = "distinto cultivo"
-                                elif not misma_campana:
-                                    motivo = "distinta campaña"
-                                elif not mismo_grupo:
-                                    motivo = "distinto grupo varietal"
-                                elif not misma_categoria:
-                                    motivo = "distinta categoría"
-                                if motivo:
-                                    logger.info(
-                                        "Cobertura industrial descartada: motivo=%s | pedido_grupo=%s pedido_variedad=%s pedido_calibre=%s pedido_cat=%s | stock_grupo=%s stock_variedad=%s stock_calibre=%s stock_cat=%s kg=%s",
-                                        motivo, grupo, variedad, calibre, categoria,
-                                        ind_key[2], ind_key[3], ind_key[4], ind_key[5], ind_kg
-                                    )
+                        if not mismo_cultivo:
+                            logger.info("BALANCE DEBUG descarta: cultivo distinto")
+                        elif not misma_campana:
+                            logger.info("BALANCE DEBUG descarta: campaña distinta")
+                        elif not mismo_grupo:
+                            logger.info("BALANCE DEBUG descarta: grupo distinto")
+                        elif not misma_categoria:
+                            logger.info("BALANCE DEBUG descarta: categoría distinta")
                         continue
 
                     comparacion = self.comparar_calibres(calibre, ind_key[4], calibre_map=calibre_map)
                     if comparacion == "SIN_COBERTURA":
-                        if logger.isEnabledFor(logging.INFO) and (mismo_grupo or (mismo_cultivo and misma_campana)):
-                            logger.info(
-                                "Cobertura industrial descartada: motivo=sin cobertura de calibre | pedido_grupo=%s pedido_variedad=%s pedido_calibre=%s pedido_cat=%s | stock_grupo=%s stock_variedad=%s stock_calibre=%s stock_cat=%s kg=%s comparacion=%s",
-                                grupo, variedad, calibre, categoria,
-                                ind_key[2], ind_key[3], ind_key[4], ind_key[5], ind_kg, comparacion
-                            )
+                        logger.info("BALANCE DEBUG descarta: calibre sin cobertura")
                         continue
 
                     if logger.isEnabledFor(logging.INFO) and (mismo_grupo or (mismo_cultivo and misma_campana)):

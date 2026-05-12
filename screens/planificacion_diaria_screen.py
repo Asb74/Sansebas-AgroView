@@ -306,10 +306,14 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 popup,
                 text=(
                     f"Confección: {info.get('Confección', '')} | Cobertura posible: {info.get('Cobertura posible', '')} | "
+                    f"Kg stock industrial almacén: {float(info.get('Kg stock industrial almacén', 0) or 0):,.2f} | "
                     f"Kg cobertura exacta: {float(info.get('Kg cobertura exacta', 0) or 0):,.2f} | "
                     f"Kg cobertura agrupada: {float(info.get('Kg cobertura agrupada', 0) or 0):,.2f} | "
+                    f"Kg cobertura solape parcial: {float(info.get('Kg cobertura solape parcial', 0) or 0):,.2f} | "
                     f"Kg cobertura potencial total: {float(info.get('Kg cobertura potencial total', 0) or 0):,.2f} | "
-                    f"Estado industrial: {info.get('Estado industrial', '')} | Agrupado: {info.get('Agrupado', '')} | Aviso: {info.get('Aviso', '')}"
+                    f"Coincidencia: {info.get('Coincidencia', '')} | "
+                    f"Variedad stock: {info.get('Variedad stock', '')} | "
+                    f"Aviso: {info.get('Aviso', '')}"
                 ),
                 wraplength=1150,
             ).pack(anchor="w", padx=8, pady=(8, 6))
