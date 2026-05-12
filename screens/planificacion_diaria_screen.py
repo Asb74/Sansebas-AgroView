@@ -32,6 +32,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.stock_almacen_detalle_rows: list[dict] = []
         self.pedidos_pendientes_rows: list[dict] = []
         self.balance_rows: list[dict] = []
+        self.balance_rows_all: list[dict] = []
         self._build_ui()
         self._load_filter_options()
         self._load_filters()
@@ -127,12 +128,20 @@ class PlanificacionDiariaScreen(ttk.Frame):
         )
         self.pedidos_table.pack(fill="both", expand=True)
 
-        ttk.Label(self.balance_tab, textvariable=self.kpi_balance, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
+        balance_header = ttk.Frame(self.balance_tab)
+        balance_header.pack(fill="x", pady=(0, 6))
+        ttk.Label(balance_header, textvariable=self.kpi_balance, style="KPI.TLabel").pack(side="left", anchor="w")
+        ttk.Button(balance_header, text="Ver cobertura (pedidos)", command=self._open_selected_balance_coverage).pack(side="right")
         self.balance_table = DataTable(
             self.balance_tab,
-            ["Cultivo", "Campaña", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Tipo línea", "Estado comercial", "Kg stock industrial almacén", "Kg campo estimado", "Kg industrial total", "Kg cobertura exacta", "Kg cobertura agrupada", "Kg cobertura potencial total", "Cobertura posible", "Estado industrial", "Agrupado", "Aviso"],
+            ["Cultivo", "Campaña", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Tipo línea", "Estado comercial", "Cobertura posible"],
         )
         self.balance_table.pack(fill="both", expand=True)
+        self.balance_table.tree.bind("<Double-1>", self._on_balance_double_click)
+        self.balance_table.tree.tag_configure("tipo_venta", foreground="#0d47a1")
+        self.balance_table.tree.tag_configure("tipo_industria", foreground="#6a1b9a")
+        self.balance_table.tree.tag_configure("estado_faltante", foreground="#b71c1c")
+        self.balance_table.tree.tag_configure("estado_sobrante", foreground="#1b5e20")
 
     def _build_date_field(self, parent: ttk.Frame, row: int, col: int, var: tk.StringVar) -> None:
         frame = ttk.Frame(parent)
@@ -190,8 +199,10 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 messagebox.showwarning("Pedidos pendientes", f"No se pudo cargar pedidos pendientes: {exc}")
         elif tab_activa == "Balance":
             try:
-                self.balance_rows = self.service.load_balance_planificacion(payload)
+                self.balance_rows_all = self.service.load_balance_planificacion(payload)
+                self.balance_rows = self._build_balance_view_rows(self.balance_rows_all)
             except Exception as exc:
+                self.balance_rows_all = []
                 self.balance_rows = []
                 logging.getLogger(__name__).warning("No se pudo cargar balance: %s", exc)
                 messagebox.showwarning("Balance", f"No se pudo cargar balance: {exc}")
@@ -221,28 +232,83 @@ class PlanificacionDiariaScreen(ttk.Frame):
             f"Nº líneas sin datos: {int(pedidos_kpi.get('Nº líneas sin datos', 0) or 0)} | "
             f"Nº líneas parciales: {int(pedidos_kpi.get('Nº líneas parciales', 0) or 0)}"
         )
-        self.kpi_balance.set(
-            f"Kg stock comercial: {sum(float(r.get('Kg stock comercial', 0) or 0) for r in self.balance_rows):,.2f} | "
-            f"Kg pedidos pendientes: {sum(float(r.get('Kg pedidos pendientes', 0) or 0) for r in self.balance_rows):,.2f} | "
-            f"Diferencia comercial: {sum(float(r.get('Diferencia comercial', 0) or 0) for r in self.balance_rows):,.2f} | "
-            f"Kg stock industrial almacén: {sum(float(r.get('Kg stock industrial almacén', 0) or 0) for r in self.balance_rows):,.2f} | "
-            f"Kg campo estimado: {sum(float(r.get('Kg campo estimado', 0) or 0) for r in self.balance_rows):,.2f} | "
-            f"Kg industrial total: {sum(float(r.get('Kg industrial total', 0) or 0) for r in self.balance_rows):,.2f} | "
-            f"Kg cobertura exacta: {sum(float(r.get('Kg cobertura exacta', 0) or 0) for r in self.balance_rows):,.2f} | "
-            f"Kg cobertura agrupada: {sum(float(r.get('Kg cobertura agrupada', 0) or 0) for r in self.balance_rows):,.2f} | "
-            f"Kg cobertura potencial total: {sum(float(r.get('Kg cobertura potencial total', 0) or 0) for r in self.balance_rows):,.2f} | "
-            f"Nº faltantes comerciales: {sum(1 for r in self.balance_rows if str(r.get('Estado comercial', '')).strip() == 'Faltante comercial')} | "
-            f"Nº faltantes con cobertura agrupada: {sum(1 for r in self.balance_rows if str(r.get('Estado comercial', '')).strip() == 'Faltante comercial' and float(r.get('Kg cobertura agrupada', 0) or 0) > 0)} | "
-            f"Nº faltantes con cobertura: {sum(1 for r in self.balance_rows if str(r.get('Estado comercial', '')).strip() == 'Faltante comercial' and str(r.get('Cobertura posible', '')).strip() in ('Sí', 'Parcial'))} | "
-            f"Nº faltantes sin cobertura: {sum(1 for r in self.balance_rows if str(r.get('Estado comercial', '')).strip() == 'Faltante comercial' and str(r.get('Cobertura posible', '')).strip() == 'No')} | "
-            f"Nº sobrantes comerciales: {sum(1 for r in self.balance_rows if str(r.get('Estado comercial', '')).strip() == 'Sobrante comercial')}"
-        )
+        self.kpi_balance.set(self._format_balance_summary(self.balance_rows_all))
         if update_warning:
             messagebox.showwarning("Planificación diaria", "No se pudo leer un archivo auxiliar de actualización. Se continuará sin ese dato.")
         if save_filters:
             self._save_filters(payload)
         self.filters_status_var.set(self._format_filters_status(payload))
         self._refresh_snapshot_info_label()
+
+    def _build_balance_view_rows(self, rows: list[dict]) -> list[dict]:
+        out: list[dict] = []
+        for row in rows:
+            estado = str(row.get("Estado comercial", "")).strip()
+            if estado not in ("Faltante comercial", "Sobrante comercial"):
+                continue
+            item = dict(row)
+            tags = []
+            tipo = str(row.get("Tipo línea", "")).strip().lower()
+            if "venta" in tipo:
+                tags.append("tipo_venta")
+            else:
+                tags.append("tipo_industria")
+            if estado == "Faltante comercial":
+                tags.append("estado_faltante")
+            elif estado == "Sobrante comercial":
+                tags.append("estado_sobrante")
+            item["__tags__"] = tuple(tags)
+            out.append(item)
+        return out
+
+    def _format_balance_summary(self, rows: list[dict]) -> str:
+        faltantes = [r for r in rows if str(r.get("Estado comercial", "")).strip() == "Faltante comercial"]
+        sobrantes = [r for r in rows if str(r.get("Estado comercial", "")).strip() == "Sobrante comercial"]
+        return (
+            f"Nº faltantes: {len(faltantes)} | "
+            f"Kg faltantes: {sum(max(0.0, -float(r.get('Diferencia comercial', 0) or 0)) for r in faltantes):,.2f} | "
+            f"Nº sobrantes: {len(sobrantes)} | "
+            f"Kg disponibles para venta: {sum(max(0.0, float(r.get('Diferencia comercial', 0) or 0)) for r in sobrantes):,.2f}"
+        )
+
+    def _on_balance_double_click(self, _event=None) -> None:
+        self._open_selected_balance_coverage()
+
+    def _open_selected_balance_coverage(self) -> None:
+        sel = self.balance_table.tree.selection()
+        if not sel:
+            return
+        values = self.balance_table.tree.item(sel[0], "values")
+        id_conf = str(values[7]) if len(values) > 7 else ""
+        variedad = str(values[3]) if len(values) > 3 else ""
+        calibre = str(values[4]) if len(values) > 4 else ""
+        categoria = str(values[5]) if len(values) > 5 else ""
+        marca = str(values[6]) if len(values) > 6 else ""
+        pedidos = [
+            r for r in self.pedidos_pendientes_rows
+            if str(r.get("IdConfeccion", "")) == id_conf and str(r.get("Variedad Coop", "")) == variedad
+            and str(r.get("Calibre", "")) == calibre and str(r.get("Categoría", "")) == categoria and str(r.get("Marca", "")) == marca
+        ]
+        popup = tk.Toplevel(self)
+        popup.title("Cobertura por pedidos")
+        popup.geometry("1200x520")
+        info = next((r for r in self.balance_rows_all if str(r.get("IdConfeccion", "")) == id_conf and str(r.get("Variedad", "")) == variedad and str(r.get("Calibre", "")) == calibre and str(r.get("Categoría", "")) == categoria and str(r.get("Marca", "")) == marca), None)
+        if info:
+            ttk.Label(
+                popup,
+                text=(
+                    f"Confección: {info.get('Confección', '')} | Cobertura posible: {info.get('Cobertura posible', '')} | "
+                    f"Kg cobertura exacta: {float(info.get('Kg cobertura exacta', 0) or 0):,.2f} | "
+                    f"Kg cobertura agrupada: {float(info.get('Kg cobertura agrupada', 0) or 0):,.2f} | "
+                    f"Kg cobertura potencial total: {float(info.get('Kg cobertura potencial total', 0) or 0):,.2f} | "
+                    f"Estado industrial: {info.get('Estado industrial', '')} | Agrupado: {info.get('Agrupado', '')} | Aviso: {info.get('Aviso', '')}"
+                ),
+                wraplength=1150,
+            ).pack(anchor="w", padx=8, pady=(8, 6))
+        cols = ["Semana", "Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Confección", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Estado", "Aviso"]
+        tbl = DataTable(popup, cols)
+        tbl.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        tbl.set_rows(pedidos)
 
     def _refresh_snapshot_info_label(self) -> None:
         info = self.runtime_db_service.get_snapshot_info()
