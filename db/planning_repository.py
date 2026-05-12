@@ -179,7 +179,7 @@ class PlanningRepository:
         industrial_ids = {"1308"}
         return id_conf_norm in industrial_ids
 
-    def _is_stock_comercial(self, pedido: Any, confeccion: Any, id_confeccion: Any = None) -> bool:
+    def _is_stock_sp_comercial(self, pedido: Any, confeccion: Any, id_confeccion: Any = None) -> bool:
         pedido_norm = str(pedido or "").strip().upper().replace("/", "").replace(" ", "")
         return pedido_norm == "SP" and not self._is_stock_industrial(pedido, confeccion, id_confeccion)
 
@@ -804,7 +804,7 @@ class PlanningRepository:
             if self._is_stock_industrial(row.get("Pedido"), confe, id_confeccion):
                 industrial_stock_map[common_key] = industrial_stock_map.get(common_key, 0.0) + kg
                 tipo_stock = "industrial"
-            elif self._is_stock_comercial(row.get("Pedido"), confe, id_confeccion):
+            elif self._is_stock_sp_comercial(row.get("Pedido"), confe, id_confeccion):
                 ckey = common_key + (marca, id_confeccion, confe)
                 commercial_map[ckey] = commercial_map.get(ckey, 0.0) + kg
                 tipo_stock = "comercial"
@@ -852,8 +852,8 @@ class PlanningRepository:
                 estado_com = "Cubierto comercialmente"
 
             kg_industrial_stock = round(industrial_stock_map.get(common_key, 0.0), 2)
-            kg_campo = round(campo_map.get(common_key, campo_map.get(base_key, 0.0)), 2)
-            kg_ind_total = round(kg_industrial_stock + kg_campo, 2)
+            kg_entrada_estimada = round(campo_map.get(common_key, campo_map.get(base_key, 0.0)), 2)
+            kg_base_total_estimada = round(kg_industrial_stock + kg_entrada_estimada, 2)
             necesita_cobertura = kg_pendiente > 0 and diff < 0
 
             kg_cobertura_exacta = 0.0
@@ -911,12 +911,20 @@ class PlanningRepository:
                     aviso = "Solape parcial de calibre; revisar manualmente"
                 else:
                     aviso = "Faltante comercial sin base industrial"
-                if kg_campo > 0 and not campo_tiene_desglose and not calibre:
-                    aviso = (aviso + " | " if aviso else "") + "Campo sin desglose por calibre"
+                if kg_entrada_estimada > 0 and not campo_tiene_desglose and not calibre:
+                    aviso = (aviso + " | " if aviso else "") + "Entrada estimada sin desglose por calibre"
             if kg_pendiente <= 0:
                 tipo_linea = "Sobrante comercial" if diff > 0 else "Industrial disponible"
             else:
                 tipo_linea = "Pedido"
+            if tipo_linea == "Sobrante comercial":
+                aviso = "Disponible para venta"
+                cobertura_posible = ""
+                kg_cobertura_exacta = 0.0
+                kg_cobertura_agrupada = 0.0
+                kg_cobertura_solape_parcial = 0.0
+                kg_cobertura_potencial = 0.0
+                coincidencia = "No aplica"
 
             data.append({
                 "Cultivo": cultivo,
@@ -934,8 +942,8 @@ class PlanningRepository:
                 "Tipo línea": tipo_linea,
                 "Estado comercial": estado_com,
                 "Kg stock industrial almacén": kg_industrial_stock,
-                "Kg campo estimado": kg_campo,
-                "Kg industrial total": kg_ind_total,
+                "Kg entrada estimada": kg_entrada_estimada,
+                "Kg base total estimada": kg_base_total_estimada,
                 "Kg cobertura exacta": kg_cobertura_exacta,
                 "Kg cobertura agrupada": kg_cobertura_agrupada,
                 "Kg cobertura solape parcial": kg_cobertura_solape_parcial,
