@@ -1,11 +1,18 @@
 from pathlib import Path
 import logging
 
-DB_DIR = r"\\Personal\C\BasesSQLite"
+CENTRAL_SQLITE_DIR = r"\\Personal\C\BasesSQLite"
+RUNTIME_SQLITE_DIR = r"C:\Sansebas AgroView\runtime_db"
+RUNTIME_SNAPSHOT_FILE = str(Path(RUNTIME_SQLITE_DIR) / "snapshot_info.txt")
+
 DB_PEDIDOS = "DBPedidos.sqlite"
 DB_FRUTA = "DBfruta.sqlite"
 DB_CALIDAD = "BdCalidad.sqlite"
-DB_LOTEADO = r"\\Personal\C\BasesSQLite\bdloteado.sqlite"
+DB_LOTEADO = "bdloteado.sqlite"
+DB_EEPPL = "DBEEPPL.sqlite"
+SQLITE_DATABASES = [DB_LOTEADO, DB_PEDIDOS, DB_FRUTA, DB_CALIDAD, DB_EEPPL]
+
+DB_DIR = RUNTIME_SQLITE_DIR
 
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"

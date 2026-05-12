@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from services.planning_service import PlanningService
+from services.runtime_database_service import RuntimeDatabaseService
 from widgets.data_table import DataTable
 from widgets.screen_header import ScreenHeader
 from widgets.date_picker import DatePickerPopup
@@ -20,6 +21,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         super().__init__(master, padding=16)
         self.on_back = on_back
         self.service = PlanningService()
+        self.runtime_db_service = RuntimeDatabaseService()
         self.fecha_desde_var = tk.StringVar()
         self.fecha_hasta_var = tk.StringVar()
         self.filter_widgets: dict[str, MultiSelectFilter] = {}
@@ -71,7 +73,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Button(btns, text="Reaplicar filtros", command=lambda: self.load_data(save_filters=True)).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Exportar Excel", command=self.export_excel).pack(side="left", padx=(0, 8))
         self._btn_actualizar_planificacion = ttk.Button(btns, text="Actualizar planificación", command=self._actualizar_planificacion)
-        self._btn_actualizar_planificacion.pack(side="left")
+        self._btn_actualizar_planificacion.pack(side="left", padx=(0, 8))
+        self._btn_actualizar_foto = ttk.Button(btns, text="Actualizar foto local", command=self._actualizar_foto_local)
+        self._btn_actualizar_foto.pack(side="left")
         ttk.Label(filters_frame, textvariable=self.filters_status_var).grid(row=3, column=0, columnspan=9, sticky="w", padx=4, pady=(6, 0))
 
         self.tabs = ttk.Notebook(self)
@@ -88,10 +92,12 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.kpi_campo = tk.StringVar(value="Kg campo total: 0 | Nº partidas: 0 | Nº variedades: 0")
         self.kpi_almacen = tk.StringVar(value="Kg stock almacén: 0 | Nº grupos: 0 | Nº variedades: 0 | Nº calibres: 0")
         self.last_update = tk.StringVar(value="")
+        self.snapshot_info_var = tk.StringVar(value="Foto de datos: No disponible")
         self.kpi_pedidos = tk.StringVar(value="Kg pedido teórico total: 0 | Kg hecho real total: 0 | Kg pendiente total: 0 | Merma kg total: 0 | % merma total: 0 | Nº pedidos: 0 | Nº líneas: 0 | Nº líneas sin datos: 0 | Nº líneas parciales: 0")
 
         ttk.Label(self.campo_tab, textvariable=self.kpi_campo, style="KPI.TLabel").pack(anchor="w", pady=(0, 2))
-        ttk.Label(self.campo_tab, textvariable=self.last_update).pack(anchor="w", pady=(0, 6))
+        ttk.Label(self.campo_tab, textvariable=self.last_update).pack(anchor="w", pady=(0, 2))
+        ttk.Label(self.campo_tab, textvariable=self.snapshot_info_var).pack(anchor="w", pady=(0, 6))
         self.campo_table = DataTable(self.campo_tab, ["Cultivo", "Campaña", "Fecha carga", "Semana", "Socio", "Variedad", "Grupo varietal", "Boleta", "Plataforma", "Empresa", "Restricciones", "Color", "Kg campo"])
         self.campo_table.pack(fill="both", expand=True)
 
@@ -201,6 +207,19 @@ class PlanificacionDiariaScreen(ttk.Frame):
         if save_filters:
             self._save_filters(payload)
         self.filters_status_var.set(self._format_filters_status(payload))
+        self._refresh_snapshot_info_label()
+
+    def _refresh_snapshot_info_label(self) -> None:
+        info = self.runtime_db_service.get_snapshot_info()
+        self.snapshot_info_var.set(info.get("label", "Foto de datos: No disponible"))
+
+    def _actualizar_foto_local(self) -> None:
+        ok, errors = self.runtime_db_service.prepare_runtime_databases(force=True)
+        if not ok:
+            messagebox.showwarning("Planificación diaria", self.runtime_db_service.WARNING_MESSAGE, parent=self)
+            logging.getLogger(__name__).warning("No se pudo actualizar foto local en: %s", errors)
+        self._refresh_snapshot_info_label()
+        self.load_data(save_filters=True)
 
     def _on_tab_changed(self, _event=None) -> None:
         self.load_data(save_filters=False)

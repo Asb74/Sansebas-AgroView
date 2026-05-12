@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from screens.boa_comercial_screen import BOAComercialScreen
 from screens.home_screen import HomeScreen
@@ -11,6 +11,7 @@ from screens.planificacion_diaria_screen import PlanificacionDiariaScreen
 from screens.precios_orientativos_screen import PreciosOrientativosScreen
 from screens.ranking_cliente_settings_screen import RankingClienteSettingsScreen
 from services.comercial_service import ComercialService
+from services.runtime_database_service import RuntimeDatabaseService
 from utils.ui_assets import get_logo
 
 
@@ -35,6 +36,10 @@ class MainWindow(tk.Tk):
 
         self.current_screen = None
         self.comercial_service = ComercialService()
+        self.runtime_db_service = RuntimeDatabaseService()
+        ok, errors = self.runtime_db_service.prepare_runtime_databases()
+        if not ok:
+            messagebox.showwarning("AgroView", self.runtime_db_service.WARNING_MESSAGE)
         self.show_home()
 
     def _setup_menu(self) -> None:

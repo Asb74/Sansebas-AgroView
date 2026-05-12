@@ -9,8 +9,9 @@ import sqlite3
 import subprocess
 from typing import Any
 
-from config import DB_LOTEADO
+from config import CENTRAL_SQLITE_DIR, DB_LOTEADO
 from db.legacy_sync_repository import LegacySyncRepository
+from services.runtime_database_service import RuntimeDatabaseService
 
 
 VALID_MODES = {"REEMPLAZAR_TABLA", "CREAR_O_REEMPLAZAR", "PLANIFICACION_HOY_EN_ADELANTE"}
@@ -23,6 +24,7 @@ class LegacySyncService:
         self.temp_dir = Path("temp") / "legacy_sync"
         self.vbs_path = Path("legacy_scripts") / "export_access_table.vbs"
         self._sync_running = False
+        self.runtime_db = RuntimeDatabaseService()
 
     def get_settings(self) -> list[dict[str, Any]]:
         return self.repository.get_settings()
@@ -124,6 +126,10 @@ class LegacySyncService:
                 f"Lote: {lote} | PesosFres: {pesos}"
             )
             logger.info("%s | tiempo=%.2fs", msg, elapsed)
+            runtime_ok, runtime_errors = self.runtime_db.prepare_runtime_databases(force=True)
+            if not runtime_ok:
+                logger.warning("No se pudo refrescar totalmente runtime_db tras actualización legacy. Errores en: %s", runtime_errors)
+                msg = f"{msg}. {self.runtime_db.WARNING_MESSAGE}"
             if setting_id:
                 self.repository.update_sync_result(setting_id, True, msg, None)
             return True, msg
@@ -513,4 +519,4 @@ class LegacySyncService:
 
     @staticmethod
     def default_sqlite_path() -> str:
-        return str(DB_LOTEADO)
+        return str(Path(CENTRAL_SQLITE_DIR) / DB_LOTEADO)
