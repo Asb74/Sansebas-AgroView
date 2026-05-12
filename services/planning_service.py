@@ -62,7 +62,12 @@ class PlanningService:
     def export_rows_to_excel(self, rows: list[dict], tab_name: str, cultivos: list[str], campanas: list[str]) -> str | None:
         if not rows:
             return None
-        suffix = "Stock_campo" if tab_name == "Stock campo" else "Stock_almacen"
+        if tab_name == "Stock campo":
+            suffix = "Stock_campo"
+        elif tab_name == "Stock almacén":
+            suffix = "Stock_almacen"
+        else:
+            suffix = "Pedidos_pendientes"
         fecha = datetime.now().strftime("%Y%m%d")
         cultivo_txt = "_".join(cultivos) if cultivos else "TODOS"
         campana_txt = "_".join(campanas) if campanas else "TODOS"
@@ -86,13 +91,13 @@ class PlanningService:
         for col in ws.columns:
             width = max(len(str(cell.value or "")) for cell in col) + 2
             ws.column_dimensions[col[0].column_letter].width = min(width, 30)
-        kg_col_idx = None
         for i, h in enumerate(headers, start=1):
-            if h in ("Kg campo", "Kg stock"):
-                kg_col_idx = i
-        if kg_col_idx:
-            for r in range(2, ws.max_row + 1):
-                ws.cell(r, kg_col_idx).number_format = "#,##0.00"
+            if h in ("Kg campo", "Kg stock", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Merma kg"):
+                for r in range(2, ws.max_row + 1):
+                    ws.cell(r, i).number_format = "#,##0.00"
+            elif h in ("% hecho", "% merma"):
+                for r in range(2, ws.max_row + 1):
+                    ws.cell(r, i).number_format = "0.00"
         wb.save(Path(target))
         return target
 

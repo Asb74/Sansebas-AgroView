@@ -88,7 +88,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.kpi_campo = tk.StringVar(value="Kg campo total: 0 | Nº partidas: 0 | Nº variedades: 0")
         self.kpi_almacen = tk.StringVar(value="Kg stock almacén: 0 | Nº grupos: 0 | Nº variedades: 0 | Nº calibres: 0")
         self.last_update = tk.StringVar(value="")
-        self.kpi_pedidos = tk.StringVar(value="Kg pedido teórico total: 0 | Kg hecho real total: 0 | Kg pendiente total: 0 | Nº pedidos: 0 | Nº líneas: 0 | Nº líneas sin datos: 0 | Nº líneas parciales: 0")
+        self.kpi_pedidos = tk.StringVar(value="Kg pedido teórico total: 0 | Kg hecho real total: 0 | Kg pendiente total: 0 | Merma kg total: 0 | % merma total: 0 | Nº pedidos: 0 | Nº líneas: 0 | Nº líneas sin datos: 0 | Nº líneas parciales: 0")
 
         ttk.Label(self.campo_tab, textvariable=self.kpi_campo, style="KPI.TLabel").pack(anchor="w", pady=(0, 2))
         ttk.Label(self.campo_tab, textvariable=self.last_update).pack(anchor="w", pady=(0, 6))
@@ -113,7 +113,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Label(self.pedidos_tab, textvariable=self.kpi_pedidos, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
         self.pedidos_table = DataTable(
             self.pedidos_tab,
-            ["Semana", "Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Cultivo", "Campaña", "Variedad Coop", "Grupo varietal", "Calibre", "Categoría", "Marca", "Confección", "Palets pedido", "Palets hechos", "Palets pendientes", "Cajas/palet", "Cajas pedido", "Cajas hechas", "Cajas pendientes", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "% hecho", "Estado", "Aviso"],
+            ["Semana", "Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Cultivo", "Campaña", "Variedad Coop", "Grupo varietal", "Calibre", "Categoría", "Marca", "Confección", "Palets pedido", "Palets hechos", "Palets pendientes", "Cajas/palet", "Cajas pedido", "Cajas hechas", "Cajas pendientes", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Merma kg", "% hecho", "% merma", "Estado", "Aviso"],
         )
         self.pedidos_table.pack(fill="both", expand=True)
 
@@ -189,6 +189,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
             f"Kg pedido teórico total: {float(pedidos_kpi.get('Kg pedido teórico total', 0) or 0):,.2f} | "
             f"Kg hecho real total: {float(pedidos_kpi.get('Kg hecho real total', 0) or 0):,.2f} | "
             f"Kg pendiente total: {float(pedidos_kpi.get('Kg pendiente total', 0) or 0):,.2f} | "
+            f"Merma kg total: {float(pedidos_kpi.get('Merma kg total', 0) or 0):,.2f} | "
+            f"% merma total: {float(pedidos_kpi.get('% merma total', 0) or 0):,.2f}% | "
             f"Nº pedidos: {int(pedidos_kpi.get('Nº pedidos', 0) or 0)} | "
             f"Nº líneas: {int(pedidos_kpi.get('Nº líneas', 0) or 0)} | "
             f"Nº líneas sin datos: {int(pedidos_kpi.get('Nº líneas sin datos', 0) or 0)} | "
@@ -215,7 +217,12 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
     def export_excel(self) -> None:
         tab = self.tabs.tab(self.tabs.select(), "text")
-        rows = self.stock_campo_rows if tab == "Stock campo" else self.stock_almacen_rows
+        if tab == "Stock campo":
+            rows = self.stock_campo_rows
+        elif tab == "Stock almacén":
+            rows = self.stock_almacen_rows
+        else:
+            rows = self.pedidos_pendientes_rows
         cultivos = self.filter_widgets["cultivo"].get_selected()
         campanas = self.filter_widgets["campana"].get_selected()
         path = self.service.export_rows_to_excel(rows, tab, cultivos, campanas)
