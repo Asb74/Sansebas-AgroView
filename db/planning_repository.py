@@ -1016,6 +1016,73 @@ class PlanningRepository:
         )
         return data
 
+    def get_balance_cobertura_detalle(self, filters: dict, balance_row: dict) -> list[dict]:
+        detalle_rows = self.get_stock_almacen_detalle_palets(filters)
+        cultivo = str(balance_row.get("Cultivo", "") or "").strip()
+        campana = str(balance_row.get("Campaña", "") or "").strip()
+        grupo = str(balance_row.get("Grupo varietal", "") or "").strip()
+        calibre_pedido = str(balance_row.get("Calibre", "") or "").strip()
+        categoria = str(balance_row.get("Categoría", "") or "").strip()
+        calibre_map = self.get_mcalibres_map()
+
+        out: list[dict] = []
+        for row in detalle_rows:
+            confe = str(row.get("Confeccion", "") or "").strip()
+            id_confeccion = str(row.get("IdConfeccion", "") or "").strip()
+            if not self._is_stock_industrial(row.get("Pedido"), confe, id_confeccion):
+                continue
+
+            stock_cultivo = str(row.get("Cultivo", "") or "").strip()
+            stock_campana = str(row.get("Campaña", row.get("Campana", "")) or "").strip()
+            stock_grupo = str(row.get("GrupoVarietal", "") or "").strip()
+            stock_categoria = str(row.get("Categoria", "") or "").strip()
+            if stock_cultivo.upper() != cultivo.upper():
+                continue
+            if stock_campana != campana:
+                continue
+            if stock_grupo.upper() != grupo.upper():
+                continue
+            if stock_categoria.upper() != categoria.upper():
+                continue
+
+            comparacion = self.comparar_calibres(calibre_pedido, row.get("Calibre", ""), calibre_map=calibre_map)
+            if comparacion not in {"EXACTO", "COBERTURA_COMPLETA", "SOLAPE_PARCIAL"}:
+                continue
+
+            if comparacion == "EXACTO":
+                tipo = "Industrial exacta"
+                aviso = "Cobertura industrial exacta"
+                orden = 1
+            elif comparacion == "COBERTURA_COMPLETA":
+                tipo = "Industrial agrupada"
+                aviso = "Cobertura por calibre agrupado; requiere reparto"
+                orden = 2
+            else:
+                tipo = "Solape parcial"
+                aviso = "Solape parcial; revisar manualmente"
+                orden = 3
+
+            out.append({
+                "__orden": orden,
+                "Tipo cobertura": tipo,
+                "Cultivo": stock_cultivo,
+                "Campaña": stock_campana,
+                "Grupo varietal": stock_grupo,
+                "Variedad stock": str(row.get("Variedad", "") or "").strip(),
+                "Calibre stock": str(row.get("Calibre", "") or "").strip(),
+                "Categoría": stock_categoria,
+                "IdConfeccion stock": id_confeccion,
+                "Confección stock": confe,
+                "Kg disponibles": round(float(row.get("Neto", 0) or 0), 2),
+                "Coincidencia": comparacion,
+                "Aviso": aviso,
+            })
+
+        out.sort(key=lambda r: (int(r.get("__orden", 9)), -float(r.get("Kg disponibles", 0) or 0)))
+        for row in out:
+            row.pop("__orden", None)
+        return out
+
     @staticmethod
     def _ensure_planning_indexes(conn: sqlite3.Connection) -> None:
         conn.execute('CREATE INDEX IF NOT EXISTS bdloteado.idx_loteado_pedido_linea ON Loteado(Pedido, Linea)')
