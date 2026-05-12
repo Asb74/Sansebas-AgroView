@@ -288,45 +288,44 @@ class PlanificacionDiariaScreen(ttk.Frame):
         calibre = str(values[4]) if len(values) > 4 else ""
         categoria = str(values[5]) if len(values) > 5 else ""
         marca = str(values[6]) if len(values) > 6 else ""
-        pedidos = [
-            r for r in self.pedidos_pendientes_rows
-            if str(r.get("IdConfeccion", "")) == id_conf and str(r.get("Variedad Coop", "")) == variedad
-            and str(r.get("Calibre", "")) == calibre and str(r.get("Categoría", "")) == categoria and str(r.get("Marca", "")) == marca
-        ]
         popup = tk.Toplevel(self)
         popup.title("Cobertura por pedidos")
-        popup.geometry("1200x520")
+        popup.geometry("1380x700")
         info = next((r for r in self.balance_rows_all if str(r.get("IdConfeccion", "")) == id_conf and str(r.get("Variedad", "")) == variedad and str(r.get("Calibre", "")) == calibre and str(r.get("Categoría", "")) == categoria and str(r.get("Marca", "")) == marca), None)
         if info:
             if str(info.get("Tipo línea", "")).strip() == "Sobrante comercial":
                 messagebox.showinfo("Cobertura", "Esta línea es stock comercial disponible para venta. No requiere cobertura.", parent=popup)
                 popup.destroy()
                 return
-            ttk.Label(
-                popup,
-                text=(
-                    f"Confección: {info.get('Confección', '')} | Cobertura posible: {info.get('Cobertura posible', '')} | "
-                    f"Kg stock industrial almacén: {float(info.get('Kg stock industrial almacén', 0) or 0):,.2f} | "
-                    f"Kg cobertura exacta: {float(info.get('Kg cobertura exacta', 0) or 0):,.2f} | "
-                    f"Kg cobertura agrupada: {float(info.get('Kg cobertura agrupada', 0) or 0):,.2f} | "
-                    f"Kg cobertura solape parcial: {float(info.get('Kg cobertura solape parcial', 0) or 0):,.2f} | "
-                    f"Kg cobertura potencial total: {float(info.get('Kg cobertura potencial total', 0) or 0):,.2f} | "
-                    f"Coincidencia: {info.get('Coincidencia', '')} | "
-                    f"Variedad stock: {info.get('Variedad stock', '')} | "
-                    f"Aviso: {info.get('Aviso', '')}"
-                ),
-                wraplength=1150,
-            ).pack(anchor="w", padx=8, pady=(8, 6))
-        coincidencia = str((info or {}).get("Coincidencia", "Sin cobertura"))
-        pedidos_detalle = []
-        for r in pedidos:
-            item = dict(r)
-            item["Coincidencia"] = coincidencia
-            pedidos_detalle.append(item)
-        cols = ["Semana", "Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Confección", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Estado", "Coincidencia", "Aviso"]
-        tbl = DataTable(popup, cols)
-        tbl.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-        tbl.set_rows(pedidos_detalle)
+        if not info:
+            messagebox.showinfo("Cobertura", "No se pudo localizar la línea de balance seleccionada.", parent=popup)
+            popup.destroy()
+            return
+
+        detalle_frame = ttk.LabelFrame(popup, text="Pedido seleccionado", padding=8)
+        detalle_frame.pack(fill="x", padx=8, pady=(8, 4))
+        ttk.Label(
+            detalle_frame,
+            text=(
+                f"Variedad: {info.get('Variedad', '')} | Grupo varietal: {info.get('Grupo varietal', '')} | "
+                f"Calibre pedido: {info.get('Calibre', '')} | Categoría: {info.get('Categoría', '')} | "
+                f"Kg pendiente: {float(info.get('Kg pedidos pendientes', 0) or 0):,.2f} | "
+                f"Cobertura posible: {info.get('Cobertura posible', '')} | "
+                f"Kg cobertura exacta: {float(info.get('Kg cobertura exacta', 0) or 0):,.2f} | "
+                f"Kg cobertura agrupada: {float(info.get('Kg cobertura agrupada', 0) or 0):,.2f} | "
+                f"Kg cobertura potencial total: {float(info.get('Kg cobertura potencial total', 0) or 0):,.2f} | "
+                f"Aviso: {info.get('Aviso', '')}"
+            ),
+            wraplength=1340,
+        ).pack(anchor="w")
+
+        stock_frame = ttk.LabelFrame(popup, text="Stock industrial compatible", padding=8)
+        stock_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+        cols = ["Tipo cobertura", "Cultivo", "Campaña", "Grupo varietal", "Variedad stock", "Calibre stock", "Categoría", "IdConfeccion stock", "Confección stock", "Kg disponibles", "Coincidencia", "Aviso"]
+        tbl = DataTable(stock_frame, cols)
+        tbl.pack(fill="both", expand=True)
+        cobertura_rows = self.service.get_balance_cobertura_detalle(self._filters_payload(), info)
+        tbl.set_rows(cobertura_rows)
 
     def _refresh_snapshot_info_label(self) -> None:
         info = self.runtime_db_service.get_snapshot_info()
