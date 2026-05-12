@@ -100,7 +100,7 @@ class PlanningService:
             width = max(len(str(cell.value or "")) for cell in col) + 2
             ws.column_dimensions[col[0].column_letter].width = min(width, 30)
         for i, h in enumerate(headers, start=1):
-            if h in ("Kg campo", "Kg stock", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Merma kg", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Kg stock industrial almacén", "Kg campo estimado", "Kg industrial total"):
+            if h in ("Kg campo", "Kg stock", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Merma kg", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Kg stock industrial almacén", "Kg campo estimado", "Kg industrial total", "Kg cobertura potencial"):
                 for r in range(2, ws.max_row + 1):
                     ws.cell(r, i).number_format = "#,##0.00"
             elif h in ("% hecho", "% merma"):
