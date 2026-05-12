@@ -859,17 +859,60 @@ class PlanningRepository:
             kg_cobertura_exacta = 0.0
             kg_cobertura_agrupada = 0.0
             kg_cobertura_solape_parcial = 0.0
+            variedades_stock_industrial: set[str] = set()
             coincidencia = "Sin cobertura"
             if necesita_cobertura:
                 for ind_key, ind_kg in industrial_stock_map.items():
-                    if ind_key[:4] == common_key[:4] and ind_key[5] == common_key[5]:
-                        comparacion = self.comparar_calibres(calibre, ind_key[4], calibre_map=calibre_map)
-                        if comparacion == "EXACTO":
-                            kg_cobertura_exacta += ind_kg
-                        elif comparacion == "COBERTURA_COMPLETA":
-                            kg_cobertura_agrupada += ind_kg
-                        elif comparacion == "SOLAPE_PARCIAL":
-                            kg_cobertura_solape_parcial += ind_kg
+                    mismo_cultivo = str(ind_key[0]).strip().upper() == str(cultivo).strip().upper()
+                    misma_campana = str(ind_key[1]).strip() == str(campana).strip()
+                    mismo_grupo = str(ind_key[2]).strip().upper() == str(grupo).strip().upper()
+                    misma_categoria = str(ind_key[5]).strip().upper() == str(categoria).strip().upper()
+
+                    if not (mismo_cultivo and misma_campana and mismo_grupo and misma_categoria):
+                        if logger.isEnabledFor(logging.INFO):
+                            if mismo_cultivo and misma_campana and (mismo_grupo or str(ind_key[2]).strip().upper() == str(grupo).strip().upper()):
+                                motivo = ""
+                                if not mismo_cultivo:
+                                    motivo = "distinto cultivo"
+                                elif not misma_campana:
+                                    motivo = "distinta campaña"
+                                elif not mismo_grupo:
+                                    motivo = "distinto grupo varietal"
+                                elif not misma_categoria:
+                                    motivo = "distinta categoría"
+                                if motivo:
+                                    logger.info(
+                                        "Cobertura industrial descartada: motivo=%s | pedido_grupo=%s pedido_variedad=%s pedido_calibre=%s pedido_cat=%s | stock_grupo=%s stock_variedad=%s stock_calibre=%s stock_cat=%s kg=%s",
+                                        motivo, grupo, variedad, calibre, categoria,
+                                        ind_key[2], ind_key[3], ind_key[4], ind_key[5], ind_kg
+                                    )
+                        continue
+
+                    comparacion = self.comparar_calibres(calibre, ind_key[4], calibre_map=calibre_map)
+                    if comparacion == "SIN_COBERTURA":
+                        if logger.isEnabledFor(logging.INFO) and (mismo_grupo or (mismo_cultivo and misma_campana)):
+                            logger.info(
+                                "Cobertura industrial descartada: motivo=sin cobertura de calibre | pedido_grupo=%s pedido_variedad=%s pedido_calibre=%s pedido_cat=%s | stock_grupo=%s stock_variedad=%s stock_calibre=%s stock_cat=%s kg=%s comparacion=%s",
+                                grupo, variedad, calibre, categoria,
+                                ind_key[2], ind_key[3], ind_key[4], ind_key[5], ind_kg, comparacion
+                            )
+                        continue
+
+                    if logger.isEnabledFor(logging.INFO) and (mismo_grupo or (mismo_cultivo and misma_campana)):
+                        logger.info(
+                            "Cobertura industrial candidato: pedido_grupo=%s pedido_variedad=%s pedido_calibre=%s pedido_cat=%s | stock_grupo=%s stock_variedad=%s stock_calibre=%s stock_cat=%s kg=%s comparacion=%s",
+                            grupo, variedad, calibre, categoria,
+                            ind_key[2], ind_key[3], ind_key[4], ind_key[5],
+                            ind_kg, comparacion
+                        )
+
+                    variedades_stock_industrial.add(str(ind_key[3] or "").strip())
+                    if comparacion == "EXACTO":
+                        kg_cobertura_exacta += ind_kg
+                    elif comparacion == "COBERTURA_COMPLETA":
+                        kg_cobertura_agrupada += ind_kg
+                    elif comparacion == "SOLAPE_PARCIAL":
+                        kg_cobertura_solape_parcial += ind_kg
 
                 kg_cobertura_exacta = round(kg_cobertura_exacta, 2)
                 kg_cobertura_agrupada = round(kg_cobertura_agrupada, 2)
@@ -953,6 +996,7 @@ class PlanningRepository:
                 "Estado industrial": estado_ind,
                 "Agrupado": "Sí" if self._is_calibre_agrupado(calibre) else "No",
                 "Aviso": aviso,
+                "Variedad stock": " | ".join(sorted(v for v in variedades_stock_industrial if v)),
             })
         tipo_prioridad = {"Pedido": 0, "Sobrante comercial": 2, "Industrial disponible": 3}
         estado_pedido_prioridad = {"Faltante comercial": 0, "Ajustado": 1, "Cubierto comercialmente": 1, "Sobrante comercial": 1}
