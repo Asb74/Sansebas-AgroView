@@ -30,6 +30,9 @@ class PlanningService:
     def load_pedidos_pendientes(self, filters: dict, modo_pedidos: str = "10_dias") -> tuple[list[dict], dict]:
         return self.repo.get_pedidos_pendientes(filters, modo_pedidos=modo_pedidos)
 
+    def load_balance_planificacion(self, filters: dict) -> list[dict]:
+        return self.repo.get_balance_planificacion(filters)
+
     def get_pedidos_pendientes(self, filters: dict, modo: str = "10_dias") -> tuple[list[dict], dict]:
         return self.load_pedidos_pendientes(filters, modo_pedidos=modo)
 
@@ -66,12 +69,17 @@ class PlanningService:
             suffix = "Stock_campo"
         elif tab_name == "Stock almacén":
             suffix = "Stock_almacen"
+        elif tab_name == "Balance":
+            suffix = "Balance"
         else:
             suffix = "Pedidos_pendientes"
         fecha = datetime.now().strftime("%Y%m%d")
         cultivo_txt = "_".join(cultivos) if cultivos else "TODOS"
         campana_txt = "_".join(campanas) if campanas else "TODOS"
-        base = f"{fecha} {suffix}_{cultivo_txt}_{campana_txt} hechos disponibles"
+        if tab_name == "Balance":
+            base = f"{fecha} Balance_{cultivo_txt}_{campana_txt} disponibilidad"
+        else:
+            base = f"{fecha} {suffix}_{cultivo_txt}_{campana_txt} hechos disponibles"
         safe_base = re.sub(r'[\\/:*?"<>|]', "_", base)
         default_name = f"{safe_base}.xlsx"
         target = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile=default_name, filetypes=[("Excel", "*.xlsx")])
@@ -92,7 +100,7 @@ class PlanningService:
             width = max(len(str(cell.value or "")) for cell in col) + 2
             ws.column_dimensions[col[0].column_letter].width = min(width, 30)
         for i, h in enumerate(headers, start=1):
-            if h in ("Kg campo", "Kg stock", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Merma kg"):
+            if h in ("Kg campo", "Kg stock", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Merma kg", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Kg stock industrial almacén", "Kg campo estimado", "Kg industrial total"):
                 for r in range(2, ws.max_row + 1):
                     ws.cell(r, i).number_format = "#,##0.00"
             elif h in ("% hecho", "% merma"):

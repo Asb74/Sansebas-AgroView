@@ -676,6 +676,122 @@ class PlanningRepository:
         kpi["% merma total"] = round((float(kpi.get("Merma kg total", 0) or 0) / pedido_total) * 100, 2) if pedido_total > 0 else 0.0
         return rows, kpi
 
+
+
+    def get_balance_planificacion(self, filters: dict) -> list[dict]:
+        stock_almacen_rows, _ = self.get_stock_almacen(filters)
+        pedidos_rows, _ = self.get_pedidos_pendientes(filters, modo_pedidos=str(filters.get("pedidos_modo") or "10_dias"))
+        aprovechamientos_rows = self.get_aprovechamientos_reales(filters)
+
+        commercial_map: dict[tuple, float] = {}
+        industrial_stock_map: dict[tuple, float] = {}
+        campo_map: dict[tuple, float] = {}
+        pedidos_map: dict[tuple, float] = {}
+
+        for row in stock_almacen_rows:
+            pedido = str(row.get("Pedido", "")).strip().upper()
+            # get_stock_almacen ya aplica pedidos válidos (S/P, PRECALIBRADO, ESTANDAR).
+            common_key = (
+                row.get("Cultivo", ""), row.get("Campaña", ""), row.get("Grupo varietal", ""),
+                row.get("Variedad", ""), row.get("Calibre", ""), row.get("Categoría", ""),
+            )
+            kg = float(row.get("Kg stock", 0) or 0)
+            if str(row.get("Marca", "")).strip() or str(row.get("Confección", "")).strip() or True:
+                pass
+            marca = row.get("Marca", "")
+            confe = row.get("Confección", "")
+            idc = str(row.get("IdConfeccion", "") or "").strip()
+            # Separar stock comercial de industrial por marca/confección.
+            # En stock almacén actual ya viene agregado incluyendo S/P + PRECALIBRADO + ESTANDAR,
+            # por lo que detectamos industrial por ausencia real de marca/confección no es fiable.
+            # Reagregamos usando Pedido desde detalle de palets.
+        
+        detalle_rows = self.get_stock_almacen_detalle_palets(filters)
+        for row in detalle_rows:
+            pedido_norm = str(row.get("Pedido", "")).strip().upper().replace("/", "").replace(" ", "")
+            common_key = (
+                row.get("Cultivo", ""), row.get("Campaña", ""), row.get("GrupoVarietal", ""),
+                row.get("Variedad", ""), row.get("Calibre", ""), row.get("Categoria", ""),
+            )
+            kg = float(row.get("Neto", 0) or 0)
+            if pedido_norm == "SP":
+                ckey = common_key + (row.get("Marca", ""), str(row.get("IdConfeccion", "") or ""), row.get("Confeccion", ""))
+                commercial_map[ckey] = commercial_map.get(ckey, 0.0) + kg
+            elif pedido_norm in ("PRECALIBRADO", "ESTANDAR", "ESTÁNDAR"):
+                industrial_stock_map[common_key] = industrial_stock_map.get(common_key, 0.0) + kg
+
+        corr_cache: dict[str, list[dict[str, Any]]] = {}
+        for row in aprovechamientos_rows:
+            cultivo = str(row.get("CULTIVO", "") or row.get("Cultivo", "")).strip()
+            campana = row.get("Campana", "")
+            variedad = str(row.get("Variedad", "")).strip()
+            empresa = str(row.get("EMPRESA", "") or row.get("Empresa", "")).strip()
+            _ = empresa
+            if cultivo not in corr_cache:
+                corr_cache[cultivo] = self.get_correspondencias_calibres(cultivo) if cultivo else []
+            neto = float(row.get("NetoCalculado", 0) or 0)
+            for corr in corr_cache.get(cultivo, []):
+                pct = float(row.get(corr.get("campo_pct", ""), 0) or 0)
+                if pct <= 0:
+                    continue
+                kg_cal = neto * (pct / 100.0)
+                key = (cultivo, campana, "", variedad, corr.get("calibre_normalizado", ""), "")
+                campo_map[key] = campo_map.get(key, 0.0) + kg_cal
+
+        for row in pedidos_rows:
+            key = (
+                row.get("Cultivo", ""), row.get("Campaña", ""), row.get("Grupo varietal", ""),
+                row.get("Variedad Coop", ""), row.get("Calibre", ""), row.get("Categoría", ""),
+                row.get("Marca", ""), str(row.get("Confección", "") or ""),
+            )
+            pedidos_map[key] = pedidos_map.get(key, 0.0) + float(row.get("Kg pendiente", 0) or 0)
+
+        keys = set(commercial_map.keys()) | set(pedidos_map.keys())
+        data: list[dict] = []
+        for key in sorted(keys, key=lambda k: tuple(str(x) for x in k)):
+            cultivo, campana, grupo, variedad, calibre, categoria, marca, idconf, confe = key if len(key)==9 else (*key, "")
+            # pedidos_map usa 8-tuple (sin id confección)
+            if len(key) == 8:
+                cultivo, campana, grupo, variedad, calibre, categoria, marca, confe = key
+                idconf = ""
+            common_key = (cultivo, campana, grupo, variedad, calibre, categoria)
+            kg_stock_comercial = round(commercial_map.get((cultivo, campana, grupo, variedad, calibre, categoria, marca, idconf, confe), 0.0), 2)
+            kg_pendiente = round(pedidos_map.get((cultivo, campana, grupo, variedad, calibre, categoria, marca, confe), 0.0), 2)
+            diff = round(kg_stock_comercial - kg_pendiente, 2)
+            if -500 <= diff <= 500:
+                estado_com = "Ajustado"
+            elif diff > 0:
+                estado_com = "Sobrante comercial"
+            else:
+                estado_com = "Faltante comercial"
+            kg_industrial_stock = round(industrial_stock_map.get(common_key, 0.0), 2)
+            kg_campo = round(campo_map.get(common_key, 0.0), 2)
+            kg_ind_total = round(kg_industrial_stock + kg_campo, 2)
+            estado_ind = "Disponible" if kg_ind_total > 0 else "Sin base industrial"
+            aviso = "Faltante comercial con base industrial disponible" if diff < 0 and kg_ind_total > 0 else ""
+            data.append({
+                "Cultivo": cultivo,
+                "Campaña": campana,
+                "Grupo varietal": grupo,
+                "Variedad": variedad,
+                "Calibre": calibre,
+                "Categoría": categoria,
+                "Marca": marca,
+                "Confección": confe,
+                "Kg stock comercial": kg_stock_comercial,
+                "Kg pedidos pendientes": kg_pendiente,
+                "Diferencia comercial": diff,
+                "Estado comercial": estado_com,
+                "Kg stock industrial almacén": kg_industrial_stock,
+                "Kg campo estimado": kg_campo,
+                "Kg industrial total": kg_ind_total,
+                "Estado industrial": estado_ind,
+                "Agrupado": "Sí" if self._is_calibre_agrupado(calibre) else "No",
+                "Aviso": aviso,
+            })
+
+        return data
+
     @staticmethod
     def _ensure_planning_indexes(conn: sqlite3.Connection) -> None:
         conn.execute('CREATE INDEX IF NOT EXISTS bdloteado.idx_loteado_pedido_linea ON Loteado(Pedido, Linea)')

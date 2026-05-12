@@ -31,6 +31,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.stock_almacen_rows: list[dict] = []
         self.stock_almacen_detalle_rows: list[dict] = []
         self.pedidos_pendientes_rows: list[dict] = []
+        self.balance_rows: list[dict] = []
         self._build_ui()
         self._load_filter_options()
         self._load_filters()
@@ -87,6 +88,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.tabs.add(self.almacen_tab, text="Stock almacén")
         self.pedidos_tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(self.pedidos_tab, text="Pedidos pendientes")
+        self.balance_tab = ttk.Frame(self.tabs, padding=8)
+        self.tabs.add(self.balance_tab, text="Balance")
         self.tabs.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self.kpi_campo = tk.StringVar(value="Kg campo total: 0 | Nº partidas: 0 | Nº variedades: 0")
@@ -94,6 +97,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.last_update = tk.StringVar(value="")
         self.snapshot_info_var = tk.StringVar(value="Foto de datos: No disponible")
         self.kpi_pedidos = tk.StringVar(value="Kg pedido teórico total: 0 | Kg hecho real total: 0 | Kg pendiente total: 0 | Merma kg total: 0 | % merma total: 0 | Nº pedidos: 0 | Nº líneas: 0 | Nº líneas sin datos: 0 | Nº líneas parciales: 0")
+        self.kpi_balance = tk.StringVar(value="Kg stock comercial: 0 | Kg pedidos pendientes: 0 | Diferencia comercial: 0 | Kg stock industrial almacén: 0 | Kg campo estimado: 0 | Kg industrial total: 0 | Nº faltantes comerciales: 0 | Nº sobrantes comerciales: 0")
 
         ttk.Label(self.campo_tab, textvariable=self.kpi_campo, style="KPI.TLabel").pack(anchor="w", pady=(0, 2))
         ttk.Label(self.campo_tab, textvariable=self.last_update).pack(anchor="w", pady=(0, 2))
@@ -122,6 +126,13 @@ class PlanificacionDiariaScreen(ttk.Frame):
             ["Semana", "Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Cultivo", "Campaña", "Variedad Coop", "Grupo varietal", "Calibre", "Categoría", "Marca", "Confección", "Palets pedido", "Palets hechos", "Palets pendientes", "Cajas/palet", "Cajas pedido", "Cajas hechas", "Cajas pendientes", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Merma kg", "% hecho", "% merma", "Estado", "Aviso"],
         )
         self.pedidos_table.pack(fill="both", expand=True)
+
+        ttk.Label(self.balance_tab, textvariable=self.kpi_balance, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
+        self.balance_table = DataTable(
+            self.balance_tab,
+            ["Cultivo", "Campaña", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "Confección", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Estado comercial", "Kg stock industrial almacén", "Kg campo estimado", "Kg industrial total", "Estado industrial", "Agrupado", "Aviso"],
+        )
+        self.balance_table.pack(fill="both", expand=True)
 
     def _build_date_field(self, parent: ttk.Frame, row: int, col: int, var: tk.StringVar) -> None:
         frame = ttk.Frame(parent)
@@ -177,9 +188,17 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 self.pedidos_pendientes_rows = []
                 logging.getLogger(__name__).warning("No se pudo cargar pedidos pendientes: %s", exc)
                 messagebox.showwarning("Pedidos pendientes", f"No se pudo cargar pedidos pendientes: {exc}")
+        elif tab_activa == "Balance":
+            try:
+                self.balance_rows = self.service.load_balance_planificacion(payload)
+            except Exception as exc:
+                self.balance_rows = []
+                logging.getLogger(__name__).warning("No se pudo cargar balance: %s", exc)
+                messagebox.showwarning("Balance", f"No se pudo cargar balance: {exc}")
         self.campo_table.set_rows(self.stock_campo_rows)
         self.almacen_table.set_rows(self.stock_almacen_rows)
         self.pedidos_table.set_rows(self.pedidos_pendientes_rows)
+        self.balance_table.set_rows(self.balance_rows)
         self.kpi_campo.set(
             f"Kg campo total: {sum(float(r.get('Kg campo', 0) or 0) for r in self.stock_campo_rows):,.2f} | "
             f"Nº partidas: {len(self.stock_campo_rows)} | Nº variedades: {len({r.get('Variedad') for r in self.stock_campo_rows})}"
@@ -201,6 +220,16 @@ class PlanificacionDiariaScreen(ttk.Frame):
             f"Nº líneas: {int(pedidos_kpi.get('Nº líneas', 0) or 0)} | "
             f"Nº líneas sin datos: {int(pedidos_kpi.get('Nº líneas sin datos', 0) or 0)} | "
             f"Nº líneas parciales: {int(pedidos_kpi.get('Nº líneas parciales', 0) or 0)}"
+        )
+        self.kpi_balance.set(
+            f"Kg stock comercial: {sum(float(r.get('Kg stock comercial', 0) or 0) for r in self.balance_rows):,.2f} | "
+            f"Kg pedidos pendientes: {sum(float(r.get('Kg pedidos pendientes', 0) or 0) for r in self.balance_rows):,.2f} | "
+            f"Diferencia comercial: {sum(float(r.get('Diferencia comercial', 0) or 0) for r in self.balance_rows):,.2f} | "
+            f"Kg stock industrial almacén: {sum(float(r.get('Kg stock industrial almacén', 0) or 0) for r in self.balance_rows):,.2f} | "
+            f"Kg campo estimado: {sum(float(r.get('Kg campo estimado', 0) or 0) for r in self.balance_rows):,.2f} | "
+            f"Kg industrial total: {sum(float(r.get('Kg industrial total', 0) or 0) for r in self.balance_rows):,.2f} | "
+            f"Nº faltantes comerciales: {sum(1 for r in self.balance_rows if str(r.get('Estado comercial', '')).strip() == 'Faltante comercial')} | "
+            f"Nº sobrantes comerciales: {sum(1 for r in self.balance_rows if str(r.get('Estado comercial', '')).strip() == 'Sobrante comercial')}"
         )
         if update_warning:
             messagebox.showwarning("Planificación diaria", "No se pudo leer un archivo auxiliar de actualización. Se continuará sin ese dato.")
@@ -241,7 +270,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         elif tab == "Stock almacén":
             rows = self.stock_almacen_rows
         else:
-            rows = self.pedidos_pendientes_rows
+            rows = self.pedidos_pendientes_rows if tab == "Pedidos pendientes" else self.balance_rows
         cultivos = self.filter_widgets["cultivo"].get_selected()
         campanas = self.filter_widgets["campana"].get_selected()
         path = self.service.export_rows_to_excel(rows, tab, cultivos, campanas)
