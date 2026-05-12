@@ -758,20 +758,23 @@ class PlanningRepository:
                 estado_com = "Cubierto comercialmente"
 
             kg_industrial_stock = round(industrial_stock_map.get(common_key, 0.0), 2)
+            kg_campo = round(campo_map.get(common_key, campo_map.get(base_key, 0.0)), 2)
+            kg_ind_total = round(kg_industrial_stock + kg_campo, 2)
+            necesita_cobertura = kg_pendiente > 0 and diff < 0
+
             kg_cobertura_agrupada = 0.0
-            if kg_pendiente > 0 and calibre:
+            if necesita_cobertura and calibre:
                 grouped_stock = 0.0
                 for ind_key, ind_kg in industrial_stock_map.items():
                     if ind_key[:4] == common_key[:4] and ind_key[5] == common_key[5]:
                         if ind_key[4] != calibre and self.calibres_solapan(calibre, ind_key[4]):
                             grouped_stock += ind_kg
                 kg_cobertura_agrupada = round(grouped_stock, 2)
-            kg_campo = round(campo_map.get(common_key, campo_map.get(base_key, 0.0)), 2)
-            kg_ind_total = round(kg_industrial_stock + kg_campo, 2)
-            kg_cobertura_exacta = kg_ind_total if kg_pendiente > 0 else 0.0
-            kg_cobertura_potencial = round(kg_cobertura_exacta + kg_cobertura_agrupada, 2) if kg_pendiente > 0 else 0.0
-            faltante = abs(diff) if diff < 0 and kg_pendiente > 0 else 0.0
-            if diff < 0 and kg_pendiente > 0:
+
+            kg_cobertura_exacta = kg_ind_total if necesita_cobertura else 0.0
+            kg_cobertura_potencial = round(kg_cobertura_exacta + kg_cobertura_agrupada, 2) if necesita_cobertura else 0.0
+            faltante = abs(diff) if necesita_cobertura else 0.0
+            if necesita_cobertura:
                 if kg_cobertura_potencial >= faltante and faltante > 0:
                     cobertura_posible = "Sí"
                 elif 0 < kg_cobertura_potencial < faltante:
@@ -783,9 +786,9 @@ class PlanningRepository:
 
             estado_ind = "Disponible" if kg_ind_total > 0 else "Sin base industrial"
             aviso = ""
-            if kg_pendiente <= 0:
-                aviso = "Disponible para venta" if diff > 0 else ""
-            elif diff < 0:
+            if kg_pendiente <= 0 and estado_com == "Sobrante comercial":
+                aviso = "Disponible para venta"
+            elif necesita_cobertura:
                 if kg_cobertura_potencial > 0:
                     if kg_cobertura_agrupada > 0:
                         aviso = "Faltante con cobertura potencial por calibre agrupado; requiere reparto"
@@ -793,8 +796,8 @@ class PlanningRepository:
                         aviso = "Faltante comercial con base industrial disponible"
                 else:
                     aviso = "Faltante comercial sin base industrial"
-            if kg_pendiente > 0 and diff < 0 and kg_campo > 0 and not campo_tiene_desglose and not calibre:
-                aviso = (aviso + " | " if aviso else "") + "Campo sin desglose por calibre"
+                if kg_campo > 0 and not campo_tiene_desglose and not calibre:
+                    aviso = (aviso + " | " if aviso else "") + "Campo sin desglose por calibre"
             if kg_pendiente <= 0:
                 tipo_linea = "Sobrante comercial" if diff > 0 else "Industrial disponible"
             else:
