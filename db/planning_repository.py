@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 import sqlite3
@@ -86,6 +87,21 @@ class PlanningRepository:
             return True
         tokens = [t.strip() for t in text.replace(",", " ").split() if t.strip()]
         return len(tokens) > 1
+
+    @staticmethod
+    def normalizar_calibre(calibre_texto: Any) -> list[str]:
+        text = str(calibre_texto or "").strip().upper()
+        if not text:
+            return []
+        text = text.replace("CAL", " ").replace("PZ", " ")
+        parts = re.split(r"[^\d]+", text)
+        return [p for p in parts if p]
+
+    @classmethod
+    def calibres_solapan(cls, calibre_pedido: Any, calibre_stock: Any) -> bool:
+        pedido = set(cls.normalizar_calibre(calibre_pedido))
+        stock = set(cls.normalizar_calibre(calibre_stock))
+        return bool(pedido and stock and pedido.intersection(stock))
 
     @staticmethod
     def _find_table(conn: sqlite3.Connection, candidates: list[str]) -> str | None:
@@ -539,7 +555,8 @@ class PlanningRepository:
                     p."Calibre" AS "Calibre",
                     p."Categoria" AS "Categoría",
                     p."Marca" AS "Marca",
-                    p."Confeccion" AS "Confección",
+                    p."Confeccion" AS "IdConfeccion",
+                    COALESCE(NULLIF(mc."NOMBRE", ''), CAST(p."Confeccion" AS TEXT)) AS "Confección",
                     COALESCE(p."NPalet", 0) AS "Palets pedido",
                     COALESCE(h.PaletsHechos, 0) AS "Palets hechos",
                     MAX(0, COALESCE(p."NPalet", 0) - COALESCE(h.PaletsHechos, 0)) AS "Palets pendientes",
@@ -696,9 +713,10 @@ class PlanningRepository:
             )
             kg = float(row.get("Neto", 0) or 0)
             marca = row.get("Marca", "")
-            confe = row.get("Confeccion", "")
+            id_confeccion = str(row.get("IdConfeccion", "") or "").strip()
+            confe = str(row.get("Confeccion", "") or "").strip()
             if pedido_norm == "SP":
-                ckey = common_key + (marca, confe)
+                ckey = common_key + (marca, id_confeccion, confe)
                 commercial_map[ckey] = commercial_map.get(ckey, 0.0) + kg
             elif pedido_norm in ("PRECALIBRADO", "ESTANDAR", "ESTÁNDAR"):
                 industrial_stock_map[common_key] = industrial_stock_map.get(common_key, 0.0) + kg
@@ -712,17 +730,19 @@ class PlanningRepository:
             campo_map[key] = campo_map.get(key, 0.0) + float(row.get("Kg campo", 0) or 0)
 
         for row in pedidos_rows:
+            id_confeccion = str(row.get("IdConfeccion", "") or "").strip()
+            confeccion = str(row.get("Confección", "") or "").strip()
             key = (
                 row.get("Cultivo", ""), row.get("Campaña", ""), row.get("Grupo varietal", ""),
                 row.get("Variedad Coop", ""), row.get("Calibre", ""), row.get("Categoría", ""),
-                row.get("Marca", ""), str(row.get("Confección", "") or ""),
+                row.get("Marca", ""), id_confeccion, confeccion,
             )
             pedidos_map[key] = pedidos_map.get(key, 0.0) + float(row.get("Kg pendiente", 0) or 0)
 
         keys = set(commercial_map.keys()) | set(pedidos_map.keys())
         data: list[dict] = []
         for key in sorted(keys, key=lambda k: tuple(str(x) for x in k)):
-            cultivo, campana, grupo, variedad, calibre, categoria, marca, confe = key
+            cultivo, campana, grupo, variedad, calibre, categoria, marca, id_confeccion, confe = key
             common_key = (cultivo, campana, grupo, variedad, calibre, categoria)
             base_key = (cultivo, campana, grupo, variedad, "", "")
             kg_stock_comercial = round(commercial_map.get(key, 0.0), 2)
@@ -736,9 +756,18 @@ class PlanningRepository:
                 estado_com = "Faltante comercial"
 
             kg_industrial_stock = round(industrial_stock_map.get(common_key, 0.0), 2)
+            kg_cobertura_agrupada = 0.0
+            if calibre:
+                grouped_stock = 0.0
+                for ind_key, ind_kg in industrial_stock_map.items():
+                    if ind_key[:4] == common_key[:4] and ind_key[5] == common_key[5]:
+                        if ind_key[4] != calibre and self.calibres_solapan(calibre, ind_key[4]):
+                            grouped_stock += ind_kg
+                kg_cobertura_agrupada = round(grouped_stock, 2)
             kg_campo = round(campo_map.get(common_key, campo_map.get(base_key, 0.0)), 2)
             kg_ind_total = round(kg_industrial_stock + kg_campo, 2)
-            kg_cobertura_potencial = kg_ind_total
+            kg_cobertura_exacta = kg_ind_total
+            kg_cobertura_potencial = round(kg_cobertura_exacta + kg_cobertura_agrupada, 2)
             faltante = abs(diff) if diff < 0 else 0.0
             if diff < 0:
                 if kg_cobertura_potencial >= faltante and faltante > 0:
@@ -758,6 +787,8 @@ class PlanningRepository:
                 aviso = "Faltante comercial sin base industrial"
             if diff < 0 and kg_campo > 0 and not campo_tiene_desglose and not calibre:
                 aviso = (aviso + " | " if aviso else "") + "Campo sin desglose por calibre"
+            if kg_cobertura_agrupada > 0:
+                aviso = (aviso + " | " if aviso else "") + "Cobertura potencial por calibre agrupado; requiere reparto"
 
             data.append({
                 "Cultivo": cultivo,
@@ -767,6 +798,7 @@ class PlanningRepository:
                 "Calibre": calibre,
                 "Categoría": categoria,
                 "Marca": marca,
+                "IdConfeccion": id_confeccion,
                 "Confección": confe,
                 "Kg stock comercial": kg_stock_comercial,
                 "Kg pedidos pendientes": kg_pendiente,
@@ -775,7 +807,9 @@ class PlanningRepository:
                 "Kg stock industrial almacén": kg_industrial_stock,
                 "Kg campo estimado": kg_campo,
                 "Kg industrial total": kg_ind_total,
-                "Kg cobertura potencial": kg_cobertura_potencial,
+                "Kg cobertura exacta": kg_cobertura_exacta,
+                "Kg cobertura agrupada": kg_cobertura_agrupada,
+                "Kg cobertura potencial total": kg_cobertura_potencial,
                 "Cobertura posible": cobertura_posible,
                 "Estado industrial": estado_ind,
                 "Agrupado": "Sí" if self._is_calibre_agrupado(calibre) else "No",

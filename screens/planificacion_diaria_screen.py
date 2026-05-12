@@ -97,7 +97,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.last_update = tk.StringVar(value="")
         self.snapshot_info_var = tk.StringVar(value="Foto de datos: No disponible")
         self.kpi_pedidos = tk.StringVar(value="Kg pedido teórico total: 0 | Kg hecho real total: 0 | Kg pendiente total: 0 | Merma kg total: 0 | % merma total: 0 | Nº pedidos: 0 | Nº líneas: 0 | Nº líneas sin datos: 0 | Nº líneas parciales: 0")
-        self.kpi_balance = tk.StringVar(value="Kg stock comercial: 0 | Kg pedidos pendientes: 0 | Diferencia comercial: 0 | Kg stock industrial almacén: 0 | Kg campo estimado: 0 | Kg industrial total: 0 | Nº faltantes comerciales: 0 | Nº faltantes con cobertura: 0 | Nº faltantes sin cobertura: 0 | Nº sobrantes comerciales: 0")
+        self.kpi_balance = tk.StringVar(value="Kg stock comercial: 0 | Kg pedidos pendientes: 0 | Diferencia comercial: 0 | Kg stock industrial almacén: 0 | Kg campo estimado: 0 | Kg industrial total: 0 | Kg cobertura exacta: 0 | Kg cobertura agrupada: 0 | Kg cobertura potencial total: 0 | Nº faltantes comerciales: 0 | Nº faltantes con cobertura agrupada: 0 | Nº faltantes con cobertura: 0 | Nº faltantes sin cobertura: 0 | Nº sobrantes comerciales: 0")
 
         ttk.Label(self.campo_tab, textvariable=self.kpi_campo, style="KPI.TLabel").pack(anchor="w", pady=(0, 2))
         ttk.Label(self.campo_tab, textvariable=self.last_update).pack(anchor="w", pady=(0, 2))
@@ -123,14 +123,14 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Label(self.pedidos_tab, textvariable=self.kpi_pedidos, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
         self.pedidos_table = DataTable(
             self.pedidos_tab,
-            ["Semana", "Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Cultivo", "Campaña", "Variedad Coop", "Grupo varietal", "Calibre", "Categoría", "Marca", "Confección", "Palets pedido", "Palets hechos", "Palets pendientes", "Cajas/palet", "Cajas pedido", "Cajas hechas", "Cajas pendientes", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Merma kg", "% hecho", "% merma", "Estado", "Aviso"],
+            ["Semana", "Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Cultivo", "Campaña", "Variedad Coop", "Grupo varietal", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Palets pedido", "Palets hechos", "Palets pendientes", "Cajas/palet", "Cajas pedido", "Cajas hechas", "Cajas pendientes", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Merma kg", "% hecho", "% merma", "Estado", "Aviso"],
         )
         self.pedidos_table.pack(fill="both", expand=True)
 
         ttk.Label(self.balance_tab, textvariable=self.kpi_balance, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
         self.balance_table = DataTable(
             self.balance_tab,
-            ["Cultivo", "Campaña", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "Confección", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Estado comercial", "Kg stock industrial almacén", "Kg campo estimado", "Kg industrial total", "Kg cobertura potencial", "Cobertura posible", "Estado industrial", "Agrupado", "Aviso"],
+            ["Cultivo", "Campaña", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Estado comercial", "Kg stock industrial almacén", "Kg campo estimado", "Kg industrial total", "Kg cobertura exacta", "Kg cobertura agrupada", "Kg cobertura potencial total", "Cobertura posible", "Estado industrial", "Agrupado", "Aviso"],
         )
         self.balance_table.pack(fill="both", expand=True)
 
@@ -228,8 +228,11 @@ class PlanificacionDiariaScreen(ttk.Frame):
             f"Kg stock industrial almacén: {sum(float(r.get('Kg stock industrial almacén', 0) or 0) for r in self.balance_rows):,.2f} | "
             f"Kg campo estimado: {sum(float(r.get('Kg campo estimado', 0) or 0) for r in self.balance_rows):,.2f} | "
             f"Kg industrial total: {sum(float(r.get('Kg industrial total', 0) or 0) for r in self.balance_rows):,.2f} | "
-            f"Kg cobertura potencial: {sum(float(r.get('Kg cobertura potencial', 0) or 0) for r in self.balance_rows):,.2f} | "
+            f"Kg cobertura exacta: {sum(float(r.get('Kg cobertura exacta', 0) or 0) for r in self.balance_rows):,.2f} | "
+            f"Kg cobertura agrupada: {sum(float(r.get('Kg cobertura agrupada', 0) or 0) for r in self.balance_rows):,.2f} | "
+            f"Kg cobertura potencial total: {sum(float(r.get('Kg cobertura potencial total', 0) or 0) for r in self.balance_rows):,.2f} | "
             f"Nº faltantes comerciales: {sum(1 for r in self.balance_rows if str(r.get('Estado comercial', '')).strip() == 'Faltante comercial')} | "
+            f"Nº faltantes con cobertura agrupada: {sum(1 for r in self.balance_rows if str(r.get('Estado comercial', '')).strip() == 'Faltante comercial' and float(r.get('Kg cobertura agrupada', 0) or 0) > 0)} | "
             f"Nº faltantes con cobertura: {sum(1 for r in self.balance_rows if str(r.get('Estado comercial', '')).strip() == 'Faltante comercial' and str(r.get('Cobertura posible', '')).strip() in ('Sí', 'Parcial'))} | "
             f"Nº faltantes sin cobertura: {sum(1 for r in self.balance_rows if str(r.get('Estado comercial', '')).strip() == 'Faltante comercial' and str(r.get('Cobertura posible', '')).strip() == 'No')} | "
             f"Nº sobrantes comerciales: {sum(1 for r in self.balance_rows if str(r.get('Estado comercial', '')).strip() == 'Sobrante comercial')}"
