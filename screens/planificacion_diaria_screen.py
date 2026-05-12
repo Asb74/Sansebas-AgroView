@@ -98,7 +98,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.last_update = tk.StringVar(value="")
         self.snapshot_info_var = tk.StringVar(value="Foto de datos: No disponible")
         self.kpi_pedidos = tk.StringVar(value="Kg pedido teórico total: 0 | Kg hecho real total: 0 | Kg pendiente total: 0 | Merma kg total: 0 | % merma total: 0 | Nº pedidos: 0 | Nº líneas: 0 | Nº líneas sin datos: 0 | Nº líneas parciales: 0")
-        self.kpi_balance = tk.StringVar(value="Kg stock comercial: 0 | Kg pedidos pendientes: 0 | Diferencia comercial: 0 | Kg stock industrial almacén: 0 | Kg campo estimado: 0 | Kg industrial total: 0 | Kg cobertura exacta: 0 | Kg cobertura agrupada: 0 | Kg cobertura potencial total: 0 | Nº faltantes comerciales: 0 | Nº faltantes con cobertura agrupada: 0 | Nº faltantes con cobertura: 0 | Nº faltantes sin cobertura: 0 | Nº sobrantes comerciales: 0")
+        self.kpi_balance = tk.StringVar(value="Kg stock comercial: 0 | Kg pedidos pendientes: 0 | Diferencia comercial: 0 | Kg stock industrial almacén: 0 | Kg entrada estimada: 0 | Kg base total estimada: 0 | Kg cobertura exacta: 0 | Kg cobertura agrupada: 0 | Kg cobertura potencial total: 0 | Nº faltantes comerciales: 0 | Nº faltantes con cobertura agrupada: 0 | Nº faltantes con cobertura: 0 | Nº faltantes sin cobertura: 0 | Nº sobrantes comerciales: 0")
 
         ttk.Label(self.campo_tab, textvariable=self.kpi_campo, style="KPI.TLabel").pack(anchor="w", pady=(0, 2))
         ttk.Label(self.campo_tab, textvariable=self.last_update).pack(anchor="w", pady=(0, 2))
@@ -268,7 +268,11 @@ class PlanificacionDiariaScreen(ttk.Frame):
             f"Nº faltantes: {len(faltantes)} | "
             f"Kg faltantes: {sum(max(0.0, -float(r.get('Diferencia comercial', 0) or 0)) for r in faltantes):,.2f} | "
             f"Nº sobrantes: {len(sobrantes)} | "
-            f"Kg disponibles para venta: {sum(max(0.0, float(r.get('Diferencia comercial', 0) or 0)) for r in sobrantes):,.2f}"
+            f"Kg disponibles para venta: {sum(max(0.0, float(r.get('Diferencia comercial', 0) or 0)) for r in sobrantes):,.2f} | "
+            f"Kg stock industrial almacén: {sum(float(r.get('Kg stock industrial almacén', 0) or 0) for r in rows if str(r.get('Tipo línea', '')) == 'Pedido'):,.2f} | "
+            f"Kg entrada estimada: {sum(float(r.get('Kg entrada estimada', 0) or 0) for r in rows if str(r.get('Tipo línea', '')) == 'Pedido'):,.2f} | "
+            f"Kg base total estimada: {sum(float(r.get('Kg base total estimada', 0) or 0) for r in rows if str(r.get('Tipo línea', '')) == 'Pedido'):,.2f} | "
+            f"Kg cobertura potencial total: {sum(float(r.get('Kg cobertura potencial total', 0) or 0) for r in rows if str(r.get('Tipo línea', '')) == 'Pedido'):,.2f}"
         )
 
     def _on_balance_double_click(self, _event=None) -> None:
@@ -294,6 +298,10 @@ class PlanificacionDiariaScreen(ttk.Frame):
         popup.geometry("1200x520")
         info = next((r for r in self.balance_rows_all if str(r.get("IdConfeccion", "")) == id_conf and str(r.get("Variedad", "")) == variedad and str(r.get("Calibre", "")) == calibre and str(r.get("Categoría", "")) == categoria and str(r.get("Marca", "")) == marca), None)
         if info:
+            if str(info.get("Tipo línea", "")).strip() == "Sobrante comercial":
+                messagebox.showinfo("Cobertura", "Esta línea es stock comercial disponible para venta. No requiere cobertura.", parent=popup)
+                popup.destroy()
+                return
             ttk.Label(
                 popup,
                 text=(
