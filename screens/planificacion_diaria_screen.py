@@ -305,10 +305,16 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 ),
                 wraplength=1150,
             ).pack(anchor="w", padx=8, pady=(8, 6))
-        cols = ["Semana", "Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Confección", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Estado", "Aviso"]
+        coincidencia = str((info or {}).get("Coincidencia", "Sin cobertura"))
+        pedidos_detalle = []
+        for r in pedidos:
+            item = dict(r)
+            item["Coincidencia"] = coincidencia
+            pedidos_detalle.append(item)
+        cols = ["Semana", "Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Confección", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Estado", "Coincidencia", "Aviso"]
         tbl = DataTable(popup, cols)
         tbl.pack(fill="both", expand=True, padx=8, pady=(0, 8))
-        tbl.set_rows(pedidos)
+        tbl.set_rows(pedidos_detalle)
 
     def _refresh_snapshot_info_label(self) -> None:
         info = self.runtime_db_service.get_snapshot_info()
