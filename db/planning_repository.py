@@ -748,16 +748,18 @@ class PlanningRepository:
             kg_stock_comercial = round(commercial_map.get(key, 0.0), 2)
             kg_pendiente = round(pedidos_map.get(key, 0.0), 2)
             diff = round(kg_stock_comercial - kg_pendiente, 2)
-            if -500 <= diff <= 500:
-                estado_com = "Ajustado"
+            if kg_pendiente <= 0:
+                estado_com = "Sobrante comercial" if diff > 0 else "Cubierto comercialmente"
+            elif diff < 0:
+                estado_com = "Faltante comercial"
             elif diff > 0:
                 estado_com = "Sobrante comercial"
             else:
-                estado_com = "Faltante comercial"
+                estado_com = "Cubierto comercialmente"
 
             kg_industrial_stock = round(industrial_stock_map.get(common_key, 0.0), 2)
             kg_cobertura_agrupada = 0.0
-            if calibre:
+            if kg_pendiente > 0 and calibre:
                 grouped_stock = 0.0
                 for ind_key, ind_kg in industrial_stock_map.items():
                     if ind_key[:4] == common_key[:4] and ind_key[5] == common_key[5]:
@@ -766,10 +768,10 @@ class PlanningRepository:
                 kg_cobertura_agrupada = round(grouped_stock, 2)
             kg_campo = round(campo_map.get(common_key, campo_map.get(base_key, 0.0)), 2)
             kg_ind_total = round(kg_industrial_stock + kg_campo, 2)
-            kg_cobertura_exacta = kg_ind_total
-            kg_cobertura_potencial = round(kg_cobertura_exacta + kg_cobertura_agrupada, 2)
-            faltante = abs(diff) if diff < 0 else 0.0
-            if diff < 0:
+            kg_cobertura_exacta = kg_ind_total if kg_pendiente > 0 else 0.0
+            kg_cobertura_potencial = round(kg_cobertura_exacta + kg_cobertura_agrupada, 2) if kg_pendiente > 0 else 0.0
+            faltante = abs(diff) if diff < 0 and kg_pendiente > 0 else 0.0
+            if diff < 0 and kg_pendiente > 0:
                 if kg_cobertura_potencial >= faltante and faltante > 0:
                     cobertura_posible = "Sí"
                 elif 0 < kg_cobertura_potencial < faltante:
@@ -781,14 +783,22 @@ class PlanningRepository:
 
             estado_ind = "Disponible" if kg_ind_total > 0 else "Sin base industrial"
             aviso = ""
-            if diff < 0 and kg_cobertura_potencial > 0:
-                aviso = "Faltante comercial con base industrial disponible"
+            if kg_pendiente <= 0:
+                aviso = "Disponible para venta" if diff > 0 else ""
             elif diff < 0:
-                aviso = "Faltante comercial sin base industrial"
-            if diff < 0 and kg_campo > 0 and not campo_tiene_desglose and not calibre:
+                if kg_cobertura_potencial > 0:
+                    if kg_cobertura_agrupada > 0:
+                        aviso = "Faltante con cobertura potencial por calibre agrupado; requiere reparto"
+                    else:
+                        aviso = "Faltante comercial con base industrial disponible"
+                else:
+                    aviso = "Faltante comercial sin base industrial"
+            if kg_pendiente > 0 and diff < 0 and kg_campo > 0 and not campo_tiene_desglose and not calibre:
                 aviso = (aviso + " | " if aviso else "") + "Campo sin desglose por calibre"
-            if kg_cobertura_agrupada > 0:
-                aviso = (aviso + " | " if aviso else "") + "Cobertura potencial por calibre agrupado; requiere reparto"
+            if kg_pendiente <= 0:
+                tipo_linea = "Sobrante comercial" if diff > 0 else "Industrial disponible"
+            else:
+                tipo_linea = "Pedido"
 
             data.append({
                 "Cultivo": cultivo,
@@ -803,6 +813,7 @@ class PlanningRepository:
                 "Kg stock comercial": kg_stock_comercial,
                 "Kg pedidos pendientes": kg_pendiente,
                 "Diferencia comercial": diff,
+                "Tipo línea": tipo_linea,
                 "Estado comercial": estado_com,
                 "Kg stock industrial almacén": kg_industrial_stock,
                 "Kg campo estimado": kg_campo,
@@ -815,6 +826,15 @@ class PlanningRepository:
                 "Agrupado": "Sí" if self._is_calibre_agrupado(calibre) else "No",
                 "Aviso": aviso,
             })
+        tipo_prioridad = {"Pedido": 0, "Sobrante comercial": 2, "Industrial disponible": 3}
+        estado_pedido_prioridad = {"Faltante comercial": 0, "Ajustado": 1, "Cubierto comercialmente": 1, "Sobrante comercial": 1}
+        data.sort(
+            key=lambda r: (
+                tipo_prioridad.get(str(r.get("Tipo línea", "")), 9),
+                estado_pedido_prioridad.get(str(r.get("Estado comercial", "")), 9),
+                tuple(str(r.get(k, "")) for k in ("Cultivo", "Campaña", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección")),
+            )
+        )
         return data
 
     @staticmethod
