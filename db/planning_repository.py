@@ -412,7 +412,7 @@ class PlanningRepository:
         pedidos_path = self._db_path("DBPedidos.sqlite")
         logger.info("Ruta DBPedidos.sqlite usada: %s", pedidos_path)
         logger.info("DBPedidos.sqlite existe: %s", pedidos_path.exists())
-        kpi_vacio = {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Nº pedidos": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0}
+        kpi_vacio = {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Merma kg total": 0.0, "% merma total": 0.0, "Nº pedidos": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0}
         if not pedidos_path.exists():
             logger.warning("No existe DBPedidos.sqlite en la ruta esperada")
             return [], kpi_vacio
@@ -568,14 +568,37 @@ class PlanningRepository:
                           ELSE 0
                         END
                       ), 0) IS NULL THEN 0
-                      ELSE ROUND((COALESCE(h.KgHechoReal, 0) / NULLIF((
+                      ELSE ROUND(MIN(100, (COALESCE(h.KgHechoReal, 0) / NULLIF((
                         CASE
                           WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
                           WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
-                      ), 0)) * 100, 2)
+                      ), 0)) * 100), 2)
                     END AS "% hecho",
+                    MAX(0, COALESCE(h.KgHechoReal, 0) - (
+                      CASE
+                        WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
+                        WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
+                        ELSE 0
+                      END
+                    )) AS "Merma kg",
+                    CASE
+                      WHEN NULLIF((
+                        CASE
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          ELSE 0
+                        END
+                      ), 0) IS NULL THEN 0
+                      ELSE ROUND(MAX(0, ((COALESCE(h.KgHechoReal, 0) / NULLIF((
+                        CASE
+                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
+                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
+                          ELSE 0
+                        END
+                      ), 0)) * 100) - 100), 2)
+                    END AS "% merma",
                     CASE
                       WHEN (
                         CASE
@@ -585,20 +608,13 @@ class PlanningRepository:
                         END
                       ) = 0 THEN 'Sin datos'
                       WHEN COALESCE(h.KgHechoReal, 0) = 0 THEN 'Pendiente'
-                      WHEN COALESCE(h.KgHechoReal, 0) > (
-                        CASE
-                          WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
-                          WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
-                          ELSE 0
-                        END
-                      ) * 1.02 THEN 'Excedido'
                       WHEN COALESCE(h.KgHechoReal, 0) >= (
                         CASE
                           WHEN COALESCE(mc."NETO", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * mc."NETO"
                           WHEN COALESCE(p."ExigePeso", 0) > 0 THEN COALESCE(p."NPalet", 0) * COALESCE(p."Cajas", 0) * p."ExigePeso"
                           ELSE 0
                         END
-                      ) * 0.98 THEN 'Completo'
+                      ) THEN 'Completo'
                       WHEN COALESCE(h.KgHechoReal, 0) > 0
                        AND COALESCE(h.KgHechoReal, 0) < (
                         CASE
@@ -650,11 +666,14 @@ class PlanningRepository:
             "Kg pedido teórico total": sum(float(r.get("Kg pedido teórico", 0) or 0) for r in rows),
             "Kg hecho real total": sum(float(r.get("Kg hecho real", 0) or 0) for r in rows),
             "Kg pendiente total": sum(float(r.get("Kg pendiente", 0) or 0) for r in rows),
+            "Merma kg total": sum(float(r.get("Merma kg", 0) or 0) for r in rows),
             "Nº pedidos": len(pedidos_unicos),
             "Nº líneas": len(rows),
             "Nº líneas sin datos": sum(1 for r in rows if str(r.get("Estado", "")).strip().lower() == "sin datos"),
             "Nº líneas parciales": sum(1 for r in rows if str(r.get("Estado", "")).strip().lower() == "parcial"),
         }
+        pedido_total = float(kpi.get("Kg pedido teórico total", 0) or 0)
+        kpi["% merma total"] = round((float(kpi.get("Merma kg total", 0) or 0) / pedido_total) * 100, 2) if pedido_total > 0 else 0.0
         return rows, kpi
 
     @staticmethod
