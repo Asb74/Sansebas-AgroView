@@ -8,7 +8,7 @@ import time
 import traceback
 from typing import Any
 
-from config import DB_CALIDAD, DB_DIR, DB_FRUTA, DB_LOTEADO
+from config import DB_CALIDAD, DB_DIR, DB_EEPPL, DB_FRUTA, DB_LOTEADO, DB_PEDIDOS
 
 
 logger = logging.getLogger(__name__)
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class PlanningRepository:
     def __init__(self, base_dir: str | Path = DB_DIR) -> None:
         self.base_dir = Path(base_dir)
-        self.db_loteado = Path(DB_LOTEADO)
+        self.db_loteado = self._db_path(DB_LOTEADO)
 
     def _db_path(self, filename: str) -> Path:
         return self.base_dir / filename
@@ -168,7 +168,7 @@ class PlanningRepository:
         with sqlite3.connect(fruta_path) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute(f"ATTACH DATABASE '{calidad_path.as_posix()}' AS bdcalidad")
-            db_eepl = self._db_path("DBEEPPL.sqlite")
+            db_eepl = self._db_path(DB_EEPPL)
             conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
             eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
             if "MVariedad" not in eepl_tables:
@@ -253,8 +253,8 @@ class PlanningRepository:
             return [], None
         with sqlite3.connect(path) as conn:
             conn.row_factory = sqlite3.Row
-            db_pedidos = self._db_path("DBPedidos.sqlite")
-            db_eepl = self._db_path("DBEEPPL.sqlite")
+            db_pedidos = self._db_path(DB_PEDIDOS)
+            db_eepl = self._db_path(DB_EEPPL)
             conn.execute(f"ATTACH DATABASE '{db_pedidos.as_posix()}' AS dbpedidos")
             conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
             eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
@@ -344,8 +344,8 @@ class PlanningRepository:
             return []
         with sqlite3.connect(path) as conn:
             conn.row_factory = sqlite3.Row
-            db_pedidos = self._db_path("DBPedidos.sqlite")
-            db_eepl = self._db_path("DBEEPPL.sqlite")
+            db_pedidos = self._db_path(DB_PEDIDOS)
+            db_eepl = self._db_path(DB_EEPPL)
             conn.execute(f"ATTACH DATABASE '{db_pedidos.as_posix()}' AS dbpedidos")
             conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
             eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
@@ -409,7 +409,7 @@ class PlanningRepository:
         logger.info("Cargando pedidos pendientes. Modo=%s Filters=%s", modo_pedidos, filters)
         t0_total = time.perf_counter()
         logger.info("get_pedidos_pendientes: inicio")
-        pedidos_path = self._db_path("DBPedidos.sqlite")
+        pedidos_path = self._db_path(DB_PEDIDOS)
         logger.info("Ruta DBPedidos.sqlite usada: %s", pedidos_path)
         logger.info("DBPedidos.sqlite existe: %s", pedidos_path.exists())
         kpi_vacio = {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Merma kg total": 0.0, "% merma total": 0.0, "Nº pedidos": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0}
@@ -419,8 +419,8 @@ class PlanningRepository:
 
         with sqlite3.connect(pedidos_path) as conn:
             conn.row_factory = sqlite3.Row
-            db_eepl = self._db_path("DBEEPPL.sqlite")
-            db_loteado = self._db_path("bdloteado.sqlite")
+            db_eepl = self._db_path(DB_EEPPL)
+            db_loteado = self._db_path(DB_LOTEADO)
             conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
             conn.execute(f"ATTACH DATABASE '{db_loteado.as_posix()}' AS bdloteado")
             eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
@@ -767,7 +767,7 @@ class PlanningRepository:
             if not path.exists():
                 return []
             with sqlite3.connect(path) as conn:
-                db_eepl = self._db_path("DBEEPPL.sqlite")
+                db_eepl = self._db_path(DB_EEPPL)
                 conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
                 eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
                 if "MVariedad" not in eepl_tables:
