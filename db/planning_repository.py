@@ -792,8 +792,9 @@ class PlanningRepository:
         pedidos_map: dict[tuple, float] = {}
 
         for row in detalle_rows:
+            campana_stock = row.get("Campaña", row.get("Campana", ""))
             common_key = (
-                row.get("Cultivo", ""), row.get("Campaña", ""), row.get("GrupoVarietal", ""),
+                row.get("Cultivo", ""), campana_stock, row.get("GrupoVarietal", ""),
                 row.get("Variedad", ""), row.get("Calibre", ""), row.get("Categoria", ""),
             )
             kg = float(row.get("Neto", 0) or 0)
