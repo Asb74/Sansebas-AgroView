@@ -181,6 +181,20 @@ class PlanningRepository:
             return "COBERTURA_AGRUPADA", coincidentes
         return "COBERTURA_ADMITIDA", coincidentes
 
+    @staticmethod
+    def calibres_coincidentes(calibre_pedido: Any, calibre_stock: Any, calibre_map: dict[str, str] | None = None) -> str:
+        pedido = PlanningRepository.normalizar_calibre_a_set(calibre_pedido, calibre_map=calibre_map)
+        stock = PlanningRepository.normalizar_calibre_a_set(calibre_stock, calibre_map=calibre_map)
+        coincidentes = pedido.intersection(stock)
+        if not coincidentes:
+            return ""
+        return ",".join(
+            sorted(
+                coincidentes,
+                key=lambda x: (float(x) if str(x).replace(".", "", 1).isdigit() else 10_000, x),
+            )
+        )
+
     def _is_stock_industrial(self, pedido: Any, confeccion: Any, id_confeccion: Any = None) -> bool:
         pedido_norm = str(pedido or "").strip().upper().replace("/", "").replace(" ", "")
         confe_norm = str(confeccion or "").strip().upper()
@@ -1031,7 +1045,7 @@ class PlanningRepository:
         categoria = str(balance_row.get("Categoría", "") or "").strip()
         calibre_map = self.get_mcalibres_map()
 
-        out: list[dict] = []
+        agrupado: dict[tuple[Any, ...], dict[str, Any]] = {}
         for row in detalle_rows:
             confe = str(row.get("Confeccion", "") or "").strip()
             id_confeccion = str(row.get("IdConfeccion", "") or "").strip()
@@ -1057,34 +1071,56 @@ class PlanningRepository:
 
             if comparacion == "EXACTO":
                 tipo = "Industrial exacta"
-                aviso = "Cobertura exacta de calibre"
+                aviso = ""
                 orden = 1
             elif len(self.normalizar_calibre_a_set(row.get("Calibre", ""), calibre_map=calibre_map)) > 1:
                 tipo = "Industrial agrupada"
-                aviso = "Cobertura por calibre admitido; puede requerir reparto"
-                orden = 2
-            else:
-                tipo = "Industrial admitida"
-                aviso = "Cobertura por calibre admitido"
+                aviso = "Cobertura por calibre agrupado; puede requerir reparto"
                 orden = 3
+            else:
+                tipo = "Industrial por calibre admitido"
+                aviso = "Cobertura por calibre admitido"
+                orden = 2
 
-            out.append({
-                "__orden": orden,
-                "Tipo cobertura": tipo,
-                "Cultivo": stock_cultivo,
-                "Campaña": stock_campana,
-                "Grupo varietal": stock_grupo,
-                "Variedad stock": str(row.get("Variedad", "") or "").strip(),
-                "Calibre stock": str(row.get("Calibre", "") or "").strip(),
-                "Categoría": stock_categoria,
-                "IdConfeccion stock": id_confeccion,
-                "Confección stock": confe,
-                "Kg disponibles": round(float(row.get("Neto", 0) or 0), 2),
-                "Calibres coincidentes": ",".join(sorted(coincidentes, key=lambda x: (float(x) if str(x).replace('.', '', 1).isdigit() else 10_000, x))),
-                "Coincidencia": comparacion,
-                "Aviso": aviso,
-            })
+            coincidencia_label = "Exacta" if comparacion == "EXACTO" else ("Calibre agrupado" if len(self.normalizar_calibre_a_set(row.get("Calibre", ""), calibre_map=calibre_map)) > 1 else "Calibre admitido")
+            calibre_stock = str(row.get("Calibre", "") or "").strip()
+            coincidentes_txt = self.calibres_coincidentes(calibre_pedido, calibre_stock, calibre_map=calibre_map)
+            key = (
+                stock_cultivo, stock_campana, stock_grupo, str(row.get("Variedad", "") or "").strip(), calibre_stock,
+                stock_categoria, id_confeccion, confe, tipo, coincidencia_label, coincidentes_txt, aviso, orden,
+            )
+            acc = agrupado.get(key)
+            if not acc:
+                acc = {
+                    "__orden": orden,
+                    "Tipo cobertura": tipo,
+                    "Cultivo": stock_cultivo,
+                    "Campaña": stock_campana,
+                    "Grupo varietal": stock_grupo,
+                    "Variedad stock": str(row.get("Variedad", "") or "").strip(),
+                    "Calibre stock": calibre_stock,
+                    "Calibres coincidentes": coincidentes_txt,
+                    "Categoría": stock_categoria,
+                    "IdConfeccion stock": id_confeccion,
+                    "Confección stock": confe,
+                    "Palets": set(),
+                    "Cajas": 0.0,
+                    "Kg disponibles": 0.0,
+                    "Coincidencia": coincidencia_label,
+                    "Aviso": aviso,
+                }
+                agrupado[key] = acc
+            id_palet = str(row.get("IdPalet", "") or "").strip()
+            if id_palet:
+                acc["Palets"].add(id_palet)
+            acc["Cajas"] += float(row.get("Cajas", 0) or 0)
+            acc["Kg disponibles"] += float(row.get("Neto", 0) or 0)
 
+        out = list(agrupado.values())
+        for row in out:
+            row["Palets"] = len(row["Palets"])
+            row["Cajas"] = round(float(row.get("Cajas", 0) or 0), 2)
+            row["Kg disponibles"] = round(float(row.get("Kg disponibles", 0) or 0), 2)
         out.sort(key=lambda r: (int(r.get("__orden", 9)), -float(r.get("Kg disponibles", 0) or 0)))
         for row in out:
             row.pop("__orden", None)
