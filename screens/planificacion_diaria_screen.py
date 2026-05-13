@@ -133,7 +133,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
         sim_frame = ttk.LabelFrame(self.balance_tab, text="Simulación / flexibilidad", padding=8)
         sim_frame.pack(fill="x", pady=(0, 6))
-        sim_defaults = [("mismo_grupo_varietal","Mismo grupo varietal", True),("permitir_variedad_alternativa","Permitir variedad alternativa dentro del grupo", True),("permitir_calibre_admitido","Permitir calibre admitido", True),("permitir_calibre_agrupado","Permitir calibre agrupado", True),("permitir_solape_parcial","Permitir solape parcial de calibre", False),("permitir_categoria_inferior","Permitir categoría inferior", False),("permitir_categoria_superior","Permitir categoría superior", False),("usar_stock_industrial","Usar stock industrial", True),("usar_stock_comercial","Usar stock comercial S/P", False),("usar_entrada_estimada","Usar entrada estimada / campo", False),("usar_reservas_amplias","Usar reservas amplias", False)]
+        sim_defaults = [("mismo_grupo_varietal","Mismo grupo varietal", True),("permitir_variedad_alternativa","Permitir variedad alternativa dentro del grupo", True),("permitir_grupo_varietal_alternativo","Permitir grupo varietal alternativo", False),("permitir_calibre_admitido","Permitir calibre admitido", True),("permitir_calibre_agrupado","Permitir calibre agrupado", True),("permitir_solape_parcial","Permitir solape parcial de calibre", False),("permitir_categoria_inferior","Permitir categoría inferior", False),("permitir_categoria_superior","Permitir categoría superior", False),("usar_stock_industrial","Usar stock industrial", True),("usar_stock_comercial","Usar stock comercial S/P", False),("usar_entrada_estimada","Usar entrada estimada / campo", False),("usar_reservas_amplias","Usar reservas amplias", False)]
         for i,(k,lbl,dv) in enumerate(sim_defaults):
             self.sim_policy_vars[k] = tk.BooleanVar(value=dv)
             ttk.Checkbutton(sim_frame, text=lbl, variable=self.sim_policy_vars[k]).grid(row=i//3, column=i%3, sticky="w", padx=4, pady=2)
@@ -333,7 +333,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
         stock_frame = ttk.LabelFrame(popup, text="Stock industrial compatible", padding=8)
         stock_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
-        cols = ["Origen", "Tipo cobertura", "Cultivo", "Campaña", "Grupo varietal", "Variedad stock", "Calibre stock", "Calibres coincidentes", "Categoría", "IdConfeccion stock", "Confección stock", "Palets", "Cajas", "Kg disponibles", "Score", "Flexibilidad aplicada", "Aviso", "Explicación"]
+        cols = ["Origen", "Tipo cobertura", "Cultivo", "Campaña", "Grupo varietal", "Variedad stock", "Marca stock", "Calibre stock", "Calibres coincidentes", "Categoría", "IdConfeccion stock", "Confección stock", "Palets", "Cajas", "Kg disponibles", "Score", "Flexibilidad aplicada", "Aviso", "Explicación"]
         tbl = DataTable(stock_frame, cols)
         tbl.pack(fill="both", expand=True)
         cobertura_rows = self.service.get_balance_cobertura_detalle(self._filters_payload(), info, policy=self._build_sim_policy())
