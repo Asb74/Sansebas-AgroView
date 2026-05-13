@@ -209,6 +209,7 @@ class PlanningRepository:
     def default_politica_compatibilidad() -> dict[str, bool]:
         return {
             "mismo_grupo_varietal": True,
+            "permitir_grupo_varietal_alternativo": False,
             "permitir_variedad_alternativa": True,
             "permitir_calibre_admitido": True,
             "permitir_calibre_agrupado": True,
@@ -996,17 +997,18 @@ class PlanningRepository:
                     mismo_cultivo = str(ind_key[0]).strip().upper() == str(cultivo).strip().upper()
                     misma_campana = str(ind_key[1]).strip() == str(campana).strip()
                     mismo_grupo = str(ind_key[2]).strip().upper() == str(grupo).strip().upper()
+                    grupo_ok = mismo_grupo or policy_cfg["permitir_grupo_varietal_alternativo"]
                     categoria_stock = str(ind_key[5]).strip().upper()
                     categoria_pedido = str(categoria).strip().upper()
                     misma_categoria = categoria_stock == categoria_pedido
                     cat_ok = misma_categoria or (policy_cfg["permitir_categoria_inferior"] and categoria_stock < categoria_pedido) or (policy_cfg["permitir_categoria_superior"] and categoria_stock > categoria_pedido)
 
-                    if not (mismo_cultivo and misma_campana and mismo_grupo and cat_ok):
+                    if not (mismo_cultivo and misma_campana and grupo_ok and cat_ok):
                         if not mismo_cultivo:
                             logger.info("BALANCE DEBUG descarta: cultivo distinto")
                         elif not misma_campana:
                             logger.info("BALANCE DEBUG descarta: campaña distinta")
-                        elif not mismo_grupo:
+                        elif not grupo_ok:
                             logger.info("BALANCE DEBUG descarta: grupo distinto")
                         elif not misma_categoria:
                             logger.info("BALANCE DEBUG descarta: categoría distinta")
@@ -1048,6 +1050,37 @@ class PlanningRepository:
                     coincidencia = "Exacta"
                 elif kg_cobertura_agrupada > 0:
                     coincidencia = "Cobertura por calibre admitido"
+                elif kg_cobertura_solape_parcial > 0:
+                    coincidencia = "Cobertura por solape parcial"
+
+                if policy_cfg["usar_stock_comercial"] and necesita_cobertura:
+                    for ckey, ckg in commercial_map.items():
+                        c_cultivo, c_campana, c_grupo, c_var, c_calibre, _cat, c_marca, c_id_conf, c_conf = ckey
+                        if str(c_cultivo).strip().upper() != str(cultivo).strip().upper():
+                            continue
+                        if str(c_campana).strip() != str(campana).strip():
+                            continue
+                        if (not policy_cfg["permitir_grupo_varietal_alternativo"]) and str(c_grupo).strip().upper() != str(grupo).strip().upper():
+                            continue
+                        if (not policy_cfg["permitir_variedad_alternativa"]) and str(c_var).strip().upper() != str(variedad).strip().upper():
+                            continue
+                        if str(marca or "").strip() and str(c_marca or "").strip() and str(marca).strip().upper() != str(c_marca).strip().upper():
+                            continue
+                        cmp_result = self.comparar_calibres_para_cobertura(calibre, c_calibre, calibre_map=calibre_map)
+                        if cmp_result["tipo"] == "SIN_COBERTURA":
+                            continue
+                        if cmp_result["tipo"] == "CALIBRE_ADMITIDO" and not policy_cfg["permitir_calibre_admitido"]:
+                            continue
+                        if cmp_result["tipo"] == "AGRUPADA" and not policy_cfg["permitir_calibre_agrupado"]:
+                            continue
+                        if cmp_result["tipo"] == "SOLAPE_PARCIAL" and not policy_cfg["permitir_solape_parcial"]:
+                            continue
+                        if cmp_result["tipo"] == "EXACTA":
+                            kg_cobertura_exacta += ckg
+                        elif cmp_result["tipo"] in {"AGRUPADA", "CALIBRE_ADMITIDO"}:
+                            kg_cobertura_agrupada += ckg
+                        elif cmp_result["tipo"] == "SOLAPE_PARCIAL":
+                            kg_cobertura_solape_parcial += ckg
 
             kg_cobertura_potencial = round(kg_cobertura_exacta + kg_cobertura_agrupada + kg_cobertura_solape_parcial, 2) if necesita_cobertura else 0.0
             faltante = abs(diff) if necesita_cobertura else 0.0
@@ -1098,7 +1131,7 @@ class PlanningRepository:
             if policy_cfg["usar_entrada_estimada"] and kg_entrada_estimada > 0: score -= 10
             if policy_cfg["usar_stock_comercial"] and kg_stock_comercial > 0: score -= 20
             if not (str(categoria).strip()): score -= 15
-            explicacion = "Sin cobertura con la política actual" if (necesita_cobertura and kg_cobertura_potencial <= 0) else ("Stock industrial compatible por calibre admitido" if kg_cobertura_agrupada > 0 else "Stock industrial compatible por calibre exacto")
+            explicacion = "Sin cobertura con la política actual" if (necesita_cobertura and kg_cobertura_potencial <= 0) else ("Stock compatible por calibre admitido" if kg_cobertura_agrupada > 0 else "Stock compatible por calibre exacto")
             data.append({
                 "Cultivo": cultivo,
                 "Campaña": campana,
@@ -1172,7 +1205,7 @@ class PlanningRepository:
                 continue
             if stock_campana != campana:
                 continue
-            if policy_cfg["mismo_grupo_varietal"] and stock_grupo.upper() != grupo.upper():
+            if policy_cfg["mismo_grupo_varietal"] and (not policy_cfg["permitir_grupo_varietal_alternativo"]) and stock_grupo.upper() != grupo.upper():
                 continue
             if stock_categoria.upper() != categoria.upper() and not policy_cfg["permitir_categoria_inferior"] and not policy_cfg["permitir_categoria_superior"]:
                 continue
@@ -1187,17 +1220,18 @@ class PlanningRepository:
             if cmp_result["tipo"] == "SOLAPE_PARCIAL" and not policy_cfg["permitir_solape_parcial"]:
                 continue
 
+            is_sp = self._is_stock_sp_comercial(row.get("Pedido"), confe, id_confeccion)
             if cmp_result["tipo"] == "EXACTA":
-                tipo = "Industrial exacta"
+                tipo = "Comercial S/P" if is_sp else "Industrial exacta"
                 aviso = ""
                 orden = 1
             elif len(self.normalizar_calibre_a_set(row.get("Calibre", ""), calibre_map=calibre_map)) > 1:
-                tipo = "Industrial agrupada"
-                aviso = "Cobertura por calibre agrupado; puede requerir reparto"
+                tipo = "Comercial S/P" if is_sp else "Industrial agrupada"
+                aviso = "Stock comercial S/P compatible por marca y calibre admitido" if is_sp else "Cobertura por calibre agrupado; puede requerir reparto"
                 orden = 3
             else:
-                tipo = "Industrial por calibre admitido"
-                aviso = "Cobertura por calibre admitido"
+                tipo = "Comercial S/P" if is_sp else "Industrial por calibre admitido"
+                aviso = "Stock comercial S/P compatible por marca y calibre admitido" if is_sp else "Cobertura por calibre admitido"
                 orden = 2
 
             coincidencia_label = "Exacta" if cmp_result["tipo"] == "EXACTA" else ("Calibre agrupado" if len(self.normalizar_calibre_a_set(row.get("Calibre", ""), calibre_map=calibre_map)) > 1 else "Calibre admitido")
@@ -1212,12 +1246,14 @@ class PlanningRepository:
                 acc = {
                     "__orden": orden,
                     "Tipo cobertura": tipo,
+                    "Origen": "ALMACEN_COMERCIAL" if is_sp else "ALMACEN_INDUSTRIAL",
                     "Cultivo": stock_cultivo,
                     "Campaña": stock_campana,
                     "Grupo varietal": stock_grupo,
                     "Variedad stock": str(row.get("Variedad", "") or "").strip(),
                     "Calibre stock": calibre_stock,
                     "Calibres coincidentes": coincidentes_txt,
+                    "Marca stock": str(row.get("Marca", "") or "").strip(),
                     "Categoría": stock_categoria,
                     "IdConfeccion stock": id_confeccion,
                     "Confección stock": confe,
@@ -1225,7 +1261,7 @@ class PlanningRepository:
                     "Cajas": 0.0,
                     "Kg disponibles": 0.0,
                     "Coincidencia": coincidencia_label,
-                    "Score": 100 if cmp_result["tipo"]=="EXACTA" else (85 if cmp_result["tipo"]=="CALIBRE_ADMITIDO" else (70 if cmp_result["tipo"]=="AGRUPADA" else 40)),
+                    "Score": 95 if (is_sp and cmp_result["tipo"]=="EXACTA") else (80 if (is_sp and cmp_result["tipo"]=="CALIBRE_ADMITIDO") else (70 if (is_sp and cmp_result["tipo"]=="AGRUPADA") else (100 if cmp_result["tipo"]=="EXACTA" else (85 if cmp_result["tipo"]=="CALIBRE_ADMITIDO" else (70 if cmp_result["tipo"]=="AGRUPADA" else 40))))),
                     "Flexibilidad aplicada": cmp_result["tipo"],
                     "Explicación": aviso or "Stock compatible por política de simulación",
                     "Aviso": aviso,

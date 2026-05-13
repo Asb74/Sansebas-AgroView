@@ -7,6 +7,9 @@ def test_normalizar_calibre_a_set():
     assert PlanningRepository.normalizar_calibre_a_set("0/1/2/3") == {"0", "1", "2", "3"}
     assert PlanningRepository.normalizar_calibre_a_set("1/36 pz") == {"1"}
     assert PlanningRepository.normalizar_calibre_a_set("1/36") == {"1"}
+    assert PlanningRepository.normalizar_calibre_a_set("1/20 pz") == {"1"}
+    assert PlanningRepository.normalizar_calibre_a_set("1/22 pz") == {"1"}
+    assert PlanningRepository.normalizar_calibre_a_set("1/2") == {"1", "2"}
 
 
 def test_comparar_calibres_para_cobertura():
@@ -19,6 +22,10 @@ def test_comparar_calibres_para_cobertura():
     assert r["tipo"] == "AGRUPADA" and r["coincidentes"] == ["1", "2"]
     r = repo.comparar_calibres_para_cobertura("CAL 1/2", "CAL 3")
     assert r["tipo"] == "SIN_COBERTURA"
+    r = repo.comparar_calibres_para_cobertura("1/2", "1/20 pz")
+    assert r["tipo"] == "CALIBRE_ADMITIDO" and r["coincidentes"] == ["1"]
+    r = repo.comparar_calibres_para_cobertura("1/2", "1/22 pz")
+    assert r["tipo"] == "CALIBRE_ADMITIDO" and r["coincidentes"] == ["1"]
 
 
 def test_canonical_get():
