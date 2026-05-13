@@ -32,3 +32,9 @@ def test_canonical_get():
     assert canonical_get({"Campaña": 2026}, "campana") == "2026"
     assert canonical_get({"Campana": "2026"}, "campana") == "2026"
     assert canonical_get({"Categoría": "I"}, "categoria") == "I"
+
+
+def test_normalizar_calibre_compuesto_con_rangos():
+    assert PlanningRepository.normalizar_calibre_a_set("3/4-4/5") == {"3", "4", "5"}
+    assert PlanningRepository.normalizar_calibre_a_set("1/2-2/3") == {"1", "2", "3"}
+    assert PlanningRepository.normalizar_calibre_a_set("CAL 3/4-4/5") == {"3", "4", "5"}
