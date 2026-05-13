@@ -106,8 +106,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Label(self.campo_tab, textvariable=self.kpi_campo, style="KPI.TLabel").pack(anchor="w", pady=(0, 2))
         ttk.Label(self.campo_tab, textvariable=self.last_update).pack(anchor="w", pady=(0, 2))
         ttk.Label(self.campo_tab, textvariable=self.snapshot_info_var).pack(anchor="w", pady=(0, 6))
-        self.campo_table = DataTable(self.campo_tab, ["Cultivo", "Campaña", "Fecha carga", "Semana", "Socio", "Variedad", "Grupo varietal", "Boleta", "Plataforma", "Empresa", "Restricciones", "Color", "Kg campo"])
+        self.campo_table = DataTable(self.campo_tab, ["Cultivo", "Campaña", "Fecha carga", "Semana", "Socio", "Variedad", "Grupo varietal", "Boleta", "Plataforma", "Empresa", "Restricciones", "Color", "Kg campo", "Estado aprovechamiento", "Nº calibres aprovechamiento", "Kg estimados calculados"])
         self.campo_table.pack(fill="both", expand=True)
+        ttk.Button(self.campo_tab, text="Ver aprovechamiento", command=self._ver_aprovechamiento_campo).pack(anchor="e", pady=(6, 0))
 
         header_almacen = ttk.Frame(self.almacen_tab)
         header_almacen.pack(fill="x", pady=(0, 6))
@@ -338,6 +339,83 @@ class PlanificacionDiariaScreen(ttk.Frame):
         tbl.pack(fill="both", expand=True)
         cobertura_rows = self.service.get_balance_cobertura_detalle(self._filters_payload(), info, policy=self._build_sim_policy())
         tbl.set_rows(cobertura_rows)
+
+
+    def _ver_aprovechamiento_campo(self) -> None:
+        sel = self.campo_table.tree.selection()
+        if not sel:
+            messagebox.showwarning("Stock campo", "Selecciona una partida de stock campo.", parent=self)
+            return
+        values = self.campo_table.tree.item(sel[0], "values")
+        boleta = str(values[7]) if len(values) > 7 else ""
+        partida = next((r for r in self.stock_campo_rows if str(r.get("Boleta", "")) == boleta), None)
+        if not partida:
+            messagebox.showwarning("Stock campo", "No se pudo localizar la partida seleccionada.", parent=self)
+            return
+
+        _resumen, detalle_map = self.service.get_aprovechamiento_stock_campo(self.stock_campo_rows, self._filters_payload())
+        rows_real = detalle_map.get(boleta, [])
+
+        popup = tk.Toplevel(self)
+        popup.title(f"Aprovechamiento boleta {boleta}")
+        popup.geometry("1200x650")
+        view_mode = tk.StringVar(value="partida")
+
+        header = ttk.LabelFrame(popup, text="Partida seleccionada", padding=8)
+        header.pack(fill="x", padx=8, pady=(8, 4))
+
+        ttk.Label(header, text=(f"Cultivo: {partida.get('Cultivo', '')} | Campaña: {partida.get('Campaña', '')} | Fecha carga: {partida.get('Fecha carga', '')} | "
+                                f"Semana: {partida.get('Semana', '')} | Socio: {partida.get('Socio', '')} | Variedad: {partida.get('Variedad', '')} | "
+                                f"Grupo varietal: {partida.get('Grupo varietal', '')} | Boleta: {partida.get('Boleta', '')} | Kg campo: {float(partida.get('Kg campo', 0) or 0):,.2f} | "
+                                f"Estado aprovechamiento: {partida.get('Estado aprovechamiento', 'Sin aprovechamiento')}"), wraplength=1150).pack(anchor="w")
+
+        body = ttk.LabelFrame(popup, text="Detalle", padding=8)
+        body.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+        msg = ttk.Label(body, text="")
+        msg.pack(anchor="w", pady=(0, 6))
+        cols = ["Boleta", "Calibre", "Categoría", "Kg real", "% aprovechamiento", "Kg campo aplicado", "Kg estimado", "Origen"]
+        tbl = DataTable(body, cols)
+        tbl.pack(fill="both", expand=True)
+
+        def render() -> None:
+            if view_mode.get() == "partida":
+                body.configure(text="Vista por partida")
+                if not rows_real:
+                    msg.configure(text="Esta partida no tiene aprovechamiento real en PesosFres")
+                    tbl.set_rows([])
+                    return
+                msg.configure(text="")
+                rows = []
+                for r in rows_real:
+                    rows.append({
+                        "Boleta": boleta,
+                        "Calibre": r.get("Calibre", ""),
+                        "Categoría": r.get("Categoría", ""),
+                        "Kg real": r.get("Kg disponibles", 0),
+                        "% aprovechamiento": r.get("% aprovechamiento", 0),
+                        "Kg campo aplicado": r.get("Kg campo origen", 0),
+                        "Kg estimado": r.get("Kg disponibles", 0),
+                        "Origen": "REAL",
+                    })
+                tbl.set_rows(rows)
+            else:
+                body.configure(text="Vista aprovechamiento medio")
+                if not rows_real:
+                    msg.configure(text="Esta partida no tiene aprovechamiento real en PesosFres")
+                    tbl.set_rows([])
+                    return
+                msg.configure(text="")
+                rows = []
+                for r in rows_real:
+                    rows.append({
+                        "Boleta": boleta, "Calibre": r.get("Calibre", ""), "Categoría": r.get("Categoría", ""),
+                        "Kg real": r.get("Kg disponibles", 0), "% aprovechamiento": r.get("% aprovechamiento", 0),
+                        "Kg campo aplicado": r.get("Kg campo origen", 0), "Kg estimado": r.get("Kg disponibles", 0), "Origen": "REAL"
+                    })
+                tbl.set_rows(rows)
+
+        ttk.Button(popup, text="Alternar vista", command=lambda: (view_mode.set("media" if view_mode.get()=="partida" else "partida"), render())).pack(anchor="e", padx=8, pady=(0, 8))
+        render()
 
     def _refresh_snapshot_info_label(self) -> None:
         info = self.runtime_db_service.get_snapshot_info()

@@ -161,6 +161,17 @@ class PlanningRepository:
             m = re.match(r"^\s*(\d+)\s*/", raw_text)
             return {m.group(1)} if m else set()
 
+        if "-" in text:
+            resultado: set[str] = set()
+            for bloque in re.split(r"\s*-\s*", text):
+                bloque = bloque.strip()
+                if not bloque:
+                    continue
+                resultado.update(PlanningRepository.normalizar_calibre_a_set(bloque, calibre_map=calibre_map))
+            if resultado:
+                logger.info("CALIBRE normalizado compuesto original=%s set=%s", calibre_texto, sorted(resultado))
+                return resultado
+
         if "/" in text:
             nums = [n for n in re.split(r"\s*/\s*", text) if re.fullmatch(r"\d+", n)]
             if len(nums) >= 3:
@@ -170,11 +181,6 @@ class PlanningRepository:
                 if len(b) >= 2 and int(b) >= 10:
                     return {a}
                 return {a, b}
-        if "-" in text:
-            nums = [n for n in re.split(r"\s*-\s*", text) if re.fullmatch(r"\d+", n)]
-            if len(nums) >= 2:
-                return set(nums)
-
         parts = re.findall(r"\d+", text)
         return set(parts)
 
@@ -482,6 +488,32 @@ class PlanningRepository:
             data.append({"Campaña": r.get("Campana", ""), "Cultivo": r.get("Cultivo", ""), "Empresa": r.get("Empresa", ""), "Variedad": r.get("Variedad", ""), "Semana": dt.isocalendar().week if dt else "", "Fecha": dt.strftime("%Y-%m-%d") if dt else (r.get("FechaAlmacen") or "")})
         return data
 
+
+    def build_aprovechamiento_stock_campo(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+        real_rows, _ = self._get_pesosfres_campo_disponibilidad_real(stock_campo_rows, filters)
+        by_boleta: dict[str, list[dict[str, Any]]] = {}
+        for row in real_rows:
+            boleta = str(row.get("Boleta", "") or "").strip()
+            by_boleta.setdefault(boleta, []).append(row)
+
+        resumen: dict[str, dict[str, Any]] = {}
+        detalle: dict[str, list[dict[str, Any]]] = {}
+        for partida in stock_campo_rows:
+            boleta = str(partida.get("Boleta", "") or "").strip()
+            rows = by_boleta.get(boleta, [])
+            if rows:
+                estado = "Real PesosFres"
+                n_cal = len({str(r.get("Calibre", "")) for r in rows if str(r.get("Calibre", "")).strip()})
+                kg_est = round(sum(float(r.get("Kg disponibles", 0) or 0) for r in rows), 2)
+            else:
+                estado = "Sin aprovechamiento"
+                n_cal = 0
+                kg_est = 0.0
+            logger.info("APROVECHAMIENTO partida boleta=%s estado=%s calibres=%s kg_estimados=%s", boleta, estado, n_cal, kg_est)
+            resumen[boleta] = {"Estado aprovechamiento": estado, "Nº calibres aprovechamiento": n_cal, "Kg estimados calculados": kg_est}
+            detalle[boleta] = rows
+        return resumen, detalle
+
     def get_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
         fruta_path = self._db_path(DB_FRUTA)
         calidad_path = self._db_path(DB_CALIDAD)
@@ -558,6 +590,11 @@ class PlanningRepository:
                     "Kg campo": round(kg, 2),
                 }
             )
+
+        resumen_aprov, _ = self.build_aprovechamiento_stock_campo(data, filters)
+        for row in data:
+            boleta = str(row.get("Boleta", "") or "").strip()
+            row.update(resumen_aprov.get(boleta, {"Estado aprovechamiento": "Sin aprovechamiento", "Nº calibres aprovechamiento": 0, "Kg estimados calculados": 0.0}))
 
         update_file = self.base_dir / "ultima_actualizacion.txt"
         last_update = None

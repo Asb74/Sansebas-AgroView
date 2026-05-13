@@ -42,6 +42,9 @@ class PlanningService:
     def get_aprovechamientos_reales(self, filters: dict) -> list[dict]:
         return self.repo.get_aprovechamientos_reales(filters)
 
+    def get_aprovechamiento_stock_campo(self, stock_campo_rows: list[dict], filters: dict) -> tuple[dict[str, dict], dict[str, list[dict]]]:
+        return self.repo.build_aprovechamiento_stock_campo(stock_campo_rows, filters)
+
     def diagnose_loteado_tables(self) -> dict:
         return self.repo.diagnose_loteado_tables()
 
