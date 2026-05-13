@@ -104,11 +104,17 @@ class PlanningRepository:
         if mapped and str(mapped).strip().upper() != text:
             return PlanningRepository.normalizar_calibre_a_set(mapped, calibre_map=calibre_map)
 
-        es_formato_piezas = bool(re.search(r"\bPZS?\b|\bPIEZAS?\b", str(calibre_texto or "").upper()))
+        raw_text = str(calibre_texto or "")
+        raw_upper = raw_text.upper()
+
+        es_formato_piezas = bool(re.search(r"\bPZS?\b|\bPIEZA(?:S)?\b", raw_upper))
         if not es_formato_piezas:
-            es_formato_piezas = bool(re.match(r"^\s*\d+\s*/\s*\d+\s*(?:PZS?|PIEZAS?)?\s*$", str(calibre_texto or ""), flags=re.IGNORECASE))
+            m_formato_simple = re.match(r"^\s*(\d+)\s*/\s*(\d+)\s*$", raw_text)
+            if m_formato_simple:
+                es_formato_piezas = int(m_formato_simple.group(2)) >= 10
+
         if es_formato_piezas:
-            m = re.match(r"^\s*(\d+)\s*/", str(calibre_texto or ""))
+            m = re.match(r"^\s*(\d+)\s*/", raw_text)
             return {m.group(1)} if m else set()
 
         if "/" in text:
