@@ -403,19 +403,27 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
 
     simulaciones: list[dict] = []
     resumen_rows: list[dict] = []
+    def _grupo_pedido(p: dict) -> str:
+        return _norm_text(p.get("grupo_confeccion") or p.get("GrupoConfeccion") or p.get("GRUPO") or p.get("grupo")) or "DESCONOCIDO"
+
+    def _perfil_pedido(p: dict, grupo: str) -> str:
+        return _norm_text(p.get("perfil_confeccion")) or detectar_perfil_confeccion_desde_grupo(grupo) or "DESCONOCIDO"
+
     for pedido in pedidos:
         candidatos = get_candidatos_cb(pedido) or []
         simulacion = simular_asignacion_pedido(pedido, candidatos, scoring=scoring)
         simulaciones.append(simulacion)
         estado = simulacion["estado"]
         tag_estado = "estado_total" if estado == "TOTAL" else "estado_parcial" if estado == "PARCIAL" else "estado_insuf"
+        grupo_conf = _grupo_pedido(pedido)
+        perfil_conf = _perfil_pedido(pedido, grupo_conf)
         resumen_rows.append({
             "Cliente": pedido.get("Cliente", ""),
             "Variedad": pedido.get("Variedad", ""),
             "Calibre": pedido.get("Calibre", ""),
             "Categoría": pedido.get("Categoría", ""),
-            "Grupo confección": pedido.get("grupo_confeccion", "DESCONOCIDO"),
-            "Perfil confección": pedido.get("perfil_confeccion", "DESCONOCIDO"),
+            "Grupo confección": grupo_conf,
+            "Perfil confección": perfil_conf,
             "Kg pendientes": formatear_kg(simulacion["kg_pendientes"]),
             "Estado simulación": estado,
             "Kg cobertura simulada": formatear_kg(simulacion["kg_cobertura_simulada"]),
@@ -462,16 +470,17 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             })
         cand_tbl.set_rows(rows)
         sim = simulaciones[index]
+        grupo_conf = _grupo_pedido(sim.get("pedido", {}))
+        perfil_conf = _perfil_pedido(sim.get("pedido", {}), grupo_conf)
         detalle.configure(
             text=(
                 f"Id confección: {sim.get('pedido', {}).get('id_confeccion', '')} · "
                 f"Nombre confección: {sim.get('pedido', {}).get('nombre_confeccion', '')} · "
-                f"Grupo confección: {sim.get('pedido', {}).get('grupo_confeccion', 'DESCONOCIDO')} · "
                 f"Pedido seleccionado · Kg pendientes: {formatear_kg(sim['kg_pendientes'])} · "
                 f"Kg cobertura simulada: {formatear_kg(sim['kg_cobertura_simulada'])} · "
                 f"Kg potencial físico: {formatear_kg(sim['kg_potencial_fisico'])} · "
                 f"Kg potencial útil: {formatear_kg(sim['kg_potencial_util'])} · "
-                f"Estado: {sim['estado']} · Perfil confección: {sim.get('perfil_confeccion', 'DESCONOCIDO')}"
+                f"Estado: {sim['estado']} · Grupo confección: {grupo_conf} · Perfil confección: {perfil_conf}"
             )
         )
 

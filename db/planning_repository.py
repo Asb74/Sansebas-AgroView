@@ -104,6 +104,66 @@ class PlanningRepository:
         return out
 
     @staticmethod
+    def enriquecer_pedido_con_confeccion(pedido: dict[str, Any], mconfecciones: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        codigo_raw = (
+            pedido.get("Confeccion")
+            or pedido.get("confeccion")
+            or pedido.get("IdConfeccion")
+            or pedido.get("id_confeccion")
+            or ""
+        )
+        id_confeccion = normalizar_codigo_confeccion(codigo_raw)
+        mconf = mconfecciones.get(id_confeccion)
+
+        nombre_confeccion = normalizar_texto(pedido.get("Confección") or pedido.get("nombre_confeccion") or codigo_raw)
+        grupo_confeccion = normalizar_texto(
+            pedido.get("grupo_confeccion")
+            or pedido.get("GrupoConfeccion")
+            or pedido.get("GRUPO")
+            or pedido.get("grupo")
+        )
+        perfil_confeccion = normalizar_texto(pedido.get("perfil_confeccion"))
+        if mconf:
+            nombre_confeccion = normalizar_texto(mconf.get("NOMBRE")) or nombre_confeccion
+            grupo_confeccion = normalizar_texto(mconf.get("GRUPO")) or grupo_confeccion
+            pedido["merma_confeccion"] = mconf.get("MERMA")
+            pedido["neto_confeccion"] = mconf.get("NETO")
+            pedido["articulo_confeccion"] = normalizar_texto(mconf.get("ARTICULO"))
+            pedido["codcaja_confeccion"] = normalizar_texto(mconf.get("CODCAJA"))
+            pedido["descripcion_corta_confeccion"] = normalizar_texto(mconf.get("DESCRIPCORTA"))
+        else:
+            pedido.setdefault("merma_confeccion", None)
+            pedido.setdefault("neto_confeccion", None)
+            pedido.setdefault("articulo_confeccion", "")
+            pedido.setdefault("codcaja_confeccion", "")
+            pedido.setdefault("descripcion_corta_confeccion", "")
+            if id_confeccion:
+                logger.debug("Confección %s no encontrada en MConfecciones para pedido pendiente.", id_confeccion)
+        if not grupo_confeccion:
+            grupo_confeccion = "DESCONOCIDO"
+        if not perfil_confeccion:
+            perfil_confeccion = detectar_perfil_confeccion_desde_grupo(grupo_confeccion)
+        if perfil_confeccion == "DESCONOCIDO":
+            texto_fallback = " ".join(
+                normalizar_texto(pedido.get(c))
+                for c in ("Confeccion", "Confección", "nombre_confeccion", "descripcion_corta_confeccion", "articulo_confeccion", "producto", "descripcion")
+            ).upper()
+            if any(t in texto_fallback for t in ("MALLA", "MALLAS", "RED", "BOLSA")):
+                perfil_confeccion = "MALLA"
+            elif any(t in texto_fallback for t in ("ENCAJADO", "CAJA", "CAJAS", "GRANEL", "ALVEOLO", "ALVÉOLO", "ALVEOLADO")):
+                perfil_confeccion = "EXIGENTE"
+        if not perfil_confeccion:
+            perfil_confeccion = "DESCONOCIDO"
+
+        pedido["id_confeccion"] = id_confeccion
+        pedido["nombre_confeccion"] = nombre_confeccion or id_confeccion
+        pedido["grupo_confeccion"] = grupo_confeccion
+        pedido["perfil_confeccion"] = perfil_confeccion
+        pedido["Grupo confección"] = grupo_confeccion
+        pedido["Perfil confección"] = perfil_confeccion
+        return pedido
+
+    @staticmethod
     def _build_neto_correcto(neto_partida: Any, neto: Any) -> float:
         neto_partida_val = float(neto_partida or 0)
         if neto_partida_val > 0:
@@ -594,6 +654,8 @@ class PlanningRepository:
                 query += f" AND UPPER(TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,''))) IN ({placeholders})"
                 params.extend(grupo_varietal_values)
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+            mconfecciones = self.cargar_mconfecciones(conn)
+            rows = [self.enriquecer_pedido_con_confeccion(row, mconfecciones) for row in rows]
 
         data: list[dict] = []
         f_desde = self._parse_date(filters.get("fecha_desde"))
