@@ -204,6 +204,31 @@ class PlanningRepository:
             logger.exception("No se pudo cargar mapa MCalibres")
             return {}
 
+
+    @staticmethod
+    def default_politica_compatibilidad() -> dict[str, bool]:
+        return {
+            "mismo_grupo_varietal": True,
+            "permitir_variedad_alternativa": True,
+            "permitir_calibre_admitido": True,
+            "permitir_calibre_agrupado": True,
+            "permitir_solape_parcial": False,
+            "permitir_categoria_inferior": False,
+            "permitir_categoria_superior": False,
+            "usar_stock_industrial": True,
+            "usar_stock_comercial": False,
+            "usar_entrada_estimada": False,
+            "usar_reservas_amplias": False,
+        }
+
+    def _merge_policy(self, policy: dict[str, Any] | None) -> dict[str, bool]:
+        out = self.default_politica_compatibilidad()
+        if isinstance(policy, dict):
+            for k in out:
+                if k in policy:
+                    out[k] = bool(policy.get(k))
+        return out
+
     def comparar_calibres(self, calibre_pedido: Any, calibre_stock: Any, calibre_map: dict[str, str] | None = None) -> str:
         result = self.comparar_calibres_para_cobertura(calibre_pedido, calibre_stock, calibre_map=calibre_map)
         legacy = {"EXACTA": "EXACTO", "CALIBRE_ADMITIDO": "COBERTURA_ADMITIDA", "AGRUPADA": "COBERTURA_AGRUPADA", "SOLAPE_PARCIAL": "SOLAPE_PARCIAL", "SIN_COBERTURA": "SIN_COBERTURA"}
@@ -330,6 +355,15 @@ class PlanningRepository:
         data: list[dict] = []
         for r in rows:
             dt = self._parse_date(r.get("FechaAlmacen"))
+            score = 0
+            flex = []
+            if kg_cobertura_exacta > 0: score = 100
+            elif kg_cobertura_agrupada > 0: score = 85 if "admitido" in coincidencia.lower() else 70
+            elif kg_cobertura_solape_parcial > 0: score = 40
+            if policy_cfg["usar_entrada_estimada"] and kg_entrada_estimada > 0: score -= 10
+            if policy_cfg["usar_stock_comercial"] and kg_stock_comercial > 0: score -= 20
+            if not (str(categoria).strip()): score -= 15
+            explicacion = "Sin cobertura con la política actual" if (necesita_cobertura and kg_cobertura_potencial <= 0) else ("Stock industrial compatible por calibre admitido" if kg_cobertura_agrupada > 0 else "Stock industrial compatible por calibre exacto")
             data.append({"Campaña": r.get("Campana", ""), "Cultivo": r.get("Cultivo", ""), "Empresa": r.get("Empresa", ""), "Variedad": r.get("Variedad", ""), "Semana": dt.isocalendar().week if dt else "", "Fecha": dt.strftime("%Y-%m-%d") if dt else (r.get("FechaAlmacen") or "")})
         return data
 
@@ -855,7 +889,8 @@ class PlanningRepository:
 
 
 
-    def get_balance_planificacion(self, filters: dict) -> list[dict]:
+    def get_balance_planificacion(self, filters: dict, policy: dict | None = None) -> list[dict]:
+        policy_cfg = self._merge_policy(policy)
         detalle_rows = self.get_stock_almacen_detalle_palets(filters)
         pedidos_rows, _ = self.get_pedidos_pendientes(filters, modo_pedidos=str(filters.get("pedidos_modo") or "10_dias"))
         stock_campo_rows, _, _ = self.get_stock_campo(filters)
@@ -876,10 +911,10 @@ class PlanningRepository:
             id_confeccion = str(row.get("IdConfeccion", "") or "").strip()
             confe = str(row.get("Confeccion", "") or "").strip()
             tipo_stock = "omitido"
-            if self._is_stock_industrial(row.get("Pedido"), confe, id_confeccion):
+            if policy_cfg["usar_stock_industrial"] and self._is_stock_industrial(row.get("Pedido"), confe, id_confeccion):
                 industrial_stock_map[common_key] = industrial_stock_map.get(common_key, 0.0) + kg
                 tipo_stock = "industrial"
-            elif self._is_stock_sp_comercial(row.get("Pedido"), confe, id_confeccion):
+            elif policy_cfg["usar_stock_comercial"] and self._is_stock_sp_comercial(row.get("Pedido"), confe, id_confeccion):
                 ckey = common_key + (marca, id_confeccion, confe)
                 commercial_map[ckey] = commercial_map.get(ckey, 0.0) + kg
                 tipo_stock = "comercial"
@@ -939,7 +974,7 @@ class PlanningRepository:
                 estado_com = "Cubierto comercialmente"
 
             kg_industrial_stock = round(industrial_stock_map.get(common_key, 0.0), 2)
-            kg_entrada_estimada = round(campo_map.get(common_key, campo_map.get(base_key, 0.0)), 2)
+            kg_entrada_estimada = round(campo_map.get(common_key, campo_map.get(base_key, 0.0)), 2) if policy_cfg["usar_entrada_estimada"] else 0.0
             kg_base_total_estimada = round(kg_industrial_stock + kg_entrada_estimada, 2)
             necesita_cobertura = kg_pendiente > 0 and diff < 0
 
@@ -961,9 +996,12 @@ class PlanningRepository:
                     mismo_cultivo = str(ind_key[0]).strip().upper() == str(cultivo).strip().upper()
                     misma_campana = str(ind_key[1]).strip() == str(campana).strip()
                     mismo_grupo = str(ind_key[2]).strip().upper() == str(grupo).strip().upper()
-                    misma_categoria = str(ind_key[5]).strip().upper() == str(categoria).strip().upper()
+                    categoria_stock = str(ind_key[5]).strip().upper()
+                    categoria_pedido = str(categoria).strip().upper()
+                    misma_categoria = categoria_stock == categoria_pedido
+                    cat_ok = misma_categoria or (policy_cfg["permitir_categoria_inferior"] and categoria_stock < categoria_pedido) or (policy_cfg["permitir_categoria_superior"] and categoria_stock > categoria_pedido)
 
-                    if not (mismo_cultivo and misma_campana and mismo_grupo and misma_categoria):
+                    if not (mismo_cultivo and misma_campana and mismo_grupo and cat_ok):
                         if not mismo_cultivo:
                             logger.info("BALANCE DEBUG descarta: cultivo distinto")
                         elif not misma_campana:
@@ -974,11 +1012,19 @@ class PlanningRepository:
                             logger.info("BALANCE DEBUG descarta: categoría distinta")
                         continue
 
+                    if (not policy_cfg["permitir_variedad_alternativa"]) and str(ind_key[3]).strip().upper() != str(variedad).strip().upper():
+                        continue
                     cmp_result = self.comparar_calibres_para_cobertura(calibre, ind_key[4], calibre_map=calibre_map)
                     if cmp_result["tipo"] == "SIN_COBERTURA":
                         logger.info("BALANCE DEBUG descarta: calibre sin cobertura")
                         continue
 
+                    if cmp_result["tipo"] == "CALIBRE_ADMITIDO" and not policy_cfg["permitir_calibre_admitido"]:
+                        continue
+                    if cmp_result["tipo"] == "AGRUPADA" and not policy_cfg["permitir_calibre_agrupado"]:
+                        continue
+                    if cmp_result["tipo"] == "SOLAPE_PARCIAL" and not policy_cfg["permitir_solape_parcial"]:
+                        continue
                     if logger.isEnabledFor(logging.INFO) and (mismo_grupo or (mismo_cultivo and misma_campana)):
                         logger.info(
                             "Cobertura industrial candidato: pedido_grupo=%s pedido_variedad=%s pedido_calibre=%s pedido_cat=%s | stock_grupo=%s stock_variedad=%s stock_calibre=%s stock_cat=%s kg=%s comparacion=%s",
@@ -992,6 +1038,8 @@ class PlanningRepository:
                         kg_cobertura_exacta += ind_kg
                     elif cmp_result["tipo"] in {"AGRUPADA", "CALIBRE_ADMITIDO"}:
                         kg_cobertura_agrupada += ind_kg
+                    elif cmp_result["tipo"] == "SOLAPE_PARCIAL":
+                        kg_cobertura_solape_parcial += ind_kg
 
                 kg_cobertura_exacta = round(kg_cobertura_exacta, 2)
                 kg_cobertura_agrupada = round(kg_cobertura_agrupada, 2)
@@ -1001,7 +1049,7 @@ class PlanningRepository:
                 elif kg_cobertura_agrupada > 0:
                     coincidencia = "Cobertura por calibre admitido"
 
-            kg_cobertura_potencial = round(kg_cobertura_exacta + kg_cobertura_agrupada, 2) if necesita_cobertura else 0.0
+            kg_cobertura_potencial = round(kg_cobertura_exacta + kg_cobertura_agrupada + kg_cobertura_solape_parcial, 2) if necesita_cobertura else 0.0
             faltante = abs(diff) if necesita_cobertura else 0.0
             if necesita_cobertura:
                 if kg_cobertura_potencial >= faltante and faltante > 0:
@@ -1042,6 +1090,15 @@ class PlanningRepository:
                 kg_cobertura_potencial = 0.0
                 coincidencia = "No aplica"
 
+            score = 0
+            flex = []
+            if kg_cobertura_exacta > 0: score = 100
+            elif kg_cobertura_agrupada > 0: score = 85 if "admitido" in coincidencia.lower() else 70
+            elif kg_cobertura_solape_parcial > 0: score = 40
+            if policy_cfg["usar_entrada_estimada"] and kg_entrada_estimada > 0: score -= 10
+            if policy_cfg["usar_stock_comercial"] and kg_stock_comercial > 0: score -= 20
+            if not (str(categoria).strip()): score -= 15
+            explicacion = "Sin cobertura con la política actual" if (necesita_cobertura and kg_cobertura_potencial <= 0) else ("Stock industrial compatible por calibre admitido" if kg_cobertura_agrupada > 0 else "Stock industrial compatible por calibre exacto")
             data.append({
                 "Cultivo": cultivo,
                 "Campaña": campana,
@@ -1064,6 +1121,12 @@ class PlanningRepository:
                 "Kg cobertura agrupada": kg_cobertura_agrupada,
                 "Kg cobertura solape parcial": kg_cobertura_solape_parcial,
                 "Kg cobertura potencial total": kg_cobertura_potencial,
+                "Kg disponibilidad compatible": kg_cobertura_potencial,
+                "Mejor cobertura": coincidencia,
+                "Calibres coincidentes": "",
+                "Flexibilidad aplicada": ", ".join(flex),
+                "Score cobertura": score,
+                "Explicación": explicacion,
                 "Cobertura posible": cobertura_posible,
                 "Coincidencia": coincidencia,
                 "Estado industrial": estado_ind,
@@ -1082,7 +1145,8 @@ class PlanningRepository:
         )
         return data
 
-    def get_balance_cobertura_detalle(self, filters: dict, balance_row: dict) -> list[dict]:
+    def get_balance_cobertura_detalle(self, filters: dict, balance_row: dict, policy: dict | None = None) -> list[dict]:
+        policy_cfg = self._merge_policy(policy)
         detalle_rows = self.get_stock_almacen_detalle_palets(filters)
         cultivo = str(balance_row.get("Cultivo", "") or "").strip()
         campana = str(balance_row.get("Campaña", "") or "").strip()
@@ -1095,7 +1159,9 @@ class PlanningRepository:
         for row in detalle_rows:
             confe = str(row.get("Confeccion", "") or "").strip()
             id_confeccion = str(row.get("IdConfeccion", "") or "").strip()
-            if not self._is_stock_industrial(row.get("Pedido"), confe, id_confeccion):
+            is_ind = self._is_stock_industrial(row.get("Pedido"), confe, id_confeccion)
+            is_sp = self._is_stock_sp_comercial(row.get("Pedido"), confe, id_confeccion)
+            if not ((policy_cfg["usar_stock_industrial"] and is_ind) or (policy_cfg["usar_stock_comercial"] and is_sp)):
                 continue
 
             stock_cultivo = str(row.get("Cultivo", "") or "").strip()
@@ -1106,13 +1172,19 @@ class PlanningRepository:
                 continue
             if stock_campana != campana:
                 continue
-            if stock_grupo.upper() != grupo.upper():
+            if policy_cfg["mismo_grupo_varietal"] and stock_grupo.upper() != grupo.upper():
                 continue
-            if stock_categoria.upper() != categoria.upper():
+            if stock_categoria.upper() != categoria.upper() and not policy_cfg["permitir_categoria_inferior"] and not policy_cfg["permitir_categoria_superior"]:
                 continue
 
             cmp_result = self.comparar_calibres_para_cobertura(calibre_pedido, row.get("Calibre", ""), calibre_map=calibre_map)
             if cmp_result["tipo"] == "SIN_COBERTURA":
+                continue
+            if cmp_result["tipo"] == "CALIBRE_ADMITIDO" and not policy_cfg["permitir_calibre_admitido"]:
+                continue
+            if cmp_result["tipo"] == "AGRUPADA" and not policy_cfg["permitir_calibre_agrupado"]:
+                continue
+            if cmp_result["tipo"] == "SOLAPE_PARCIAL" and not policy_cfg["permitir_solape_parcial"]:
                 continue
 
             if cmp_result["tipo"] == "EXACTA":
@@ -1153,6 +1225,9 @@ class PlanningRepository:
                     "Cajas": 0.0,
                     "Kg disponibles": 0.0,
                     "Coincidencia": coincidencia_label,
+                    "Score": 100 if cmp_result["tipo"]=="EXACTA" else (85 if cmp_result["tipo"]=="CALIBRE_ADMITIDO" else (70 if cmp_result["tipo"]=="AGRUPADA" else 40)),
+                    "Flexibilidad aplicada": cmp_result["tipo"],
+                    "Explicación": aviso or "Stock compatible por política de simulación",
                     "Aviso": aviso,
                 }
                 agrupado[key] = acc
