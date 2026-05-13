@@ -14,6 +14,7 @@ from widgets.multi_select_filter import MultiSelectFilter
 
 class PlanificacionDiariaScreen(ttk.Frame):
     FILTERS_FILE = Path("config") / "planificacion_diaria_filters.json"
+    BALANCE_SETTINGS_FILE = Path("config") / "planificacion_balance_settings.json"
     FILTER_KEYS = ["campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "marca"]
     PEDIDOS_MODOS = [("Próximos 10 días", "10_dias"), ("Semana actual", "semana_actual"), ("Próximas semanas", "proximas_semanas"), ("Rango fechas", "rango"), ("Todos futuros", "todos_futuros"), ("Todos", "todos")]
 
@@ -33,9 +34,11 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.pedidos_pendientes_rows: list[dict] = []
         self.balance_rows: list[dict] = []
         self.balance_rows_all: list[dict] = []
+        self.sim_policy_vars: dict[str, tk.BooleanVar] = {}
         self._build_ui()
         self._load_filter_options()
         self._load_filters()
+        self._load_balance_settings()
         self.load_data(save_filters=False)
 
     def _load_filter_options(self) -> None:
@@ -128,13 +131,22 @@ class PlanificacionDiariaScreen(ttk.Frame):
         )
         self.pedidos_table.pack(fill="both", expand=True)
 
+        sim_frame = ttk.LabelFrame(self.balance_tab, text="Simulación / flexibilidad", padding=8)
+        sim_frame.pack(fill="x", pady=(0, 6))
+        sim_defaults = [("mismo_grupo_varietal","Mismo grupo varietal", True),("permitir_variedad_alternativa","Permitir variedad alternativa dentro del grupo", True),("permitir_calibre_admitido","Permitir calibre admitido", True),("permitir_calibre_agrupado","Permitir calibre agrupado", True),("permitir_solape_parcial","Permitir solape parcial de calibre", False),("permitir_categoria_inferior","Permitir categoría inferior", False),("permitir_categoria_superior","Permitir categoría superior", False),("usar_stock_industrial","Usar stock industrial", True),("usar_stock_comercial","Usar stock comercial S/P", False),("usar_entrada_estimada","Usar entrada estimada / campo", False),("usar_reservas_amplias","Usar reservas amplias", False)]
+        for i,(k,lbl,dv) in enumerate(sim_defaults):
+            self.sim_policy_vars[k] = tk.BooleanVar(value=dv)
+            ttk.Checkbutton(sim_frame, text=lbl, variable=self.sim_policy_vars[k]).grid(row=i//3, column=i%3, sticky="w", padx=4, pady=2)
+        ttk.Label(sim_frame, text="Modo simulación: no descuenta stock ni crea reservas").grid(row=4, column=0, columnspan=2, sticky="w", pady=(6,0))
+        ttk.Button(sim_frame, text="Recalcular simulación", command=self._recalcular_simulacion).grid(row=4, column=2, sticky="e")
+
         balance_header = ttk.Frame(self.balance_tab)
         balance_header.pack(fill="x", pady=(0, 6))
         ttk.Label(balance_header, textvariable=self.kpi_balance, style="KPI.TLabel").pack(side="left", anchor="w")
         ttk.Button(balance_header, text="Ver cobertura (pedidos)", command=self._open_selected_balance_coverage).pack(side="right")
         self.balance_table = DataTable(
             self.balance_tab,
-            ["Cultivo", "Campaña", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Tipo línea", "Estado comercial", "Cobertura posible"],
+            ["Cultivo", "Campaña", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Tipo línea", "Estado comercial", "Cobertura posible", "Kg disponibilidad compatible", "Mejor cobertura", "Calibres coincidentes", "Flexibilidad aplicada", "Score cobertura", "Explicación"],
         )
         self.balance_table.pack(fill="both", expand=True)
         self.balance_table.tree.bind("<Double-1>", self._on_balance_double_click)
@@ -199,7 +211,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 messagebox.showwarning("Pedidos pendientes", f"No se pudo cargar pedidos pendientes: {exc}")
         elif tab_activa == "Balance":
             try:
-                self.balance_rows_all = self.service.load_balance_planificacion(payload)
+                self.balance_rows_all = self.service.load_balance_planificacion(payload, policy=self._build_sim_policy())
                 self.balance_rows = self._build_balance_view_rows(self.balance_rows_all)
             except Exception as exc:
                 self.balance_rows_all = []
@@ -321,10 +333,10 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
         stock_frame = ttk.LabelFrame(popup, text="Stock industrial compatible", padding=8)
         stock_frame.pack(fill="both", expand=True, padx=8, pady=(4, 8))
-        cols = ["Tipo cobertura", "Cultivo", "Campaña", "Grupo varietal", "Variedad stock", "Calibre stock", "Calibres coincidentes", "Categoría", "IdConfeccion stock", "Confección stock", "Palets", "Cajas", "Kg disponibles", "Coincidencia", "Aviso"]
+        cols = ["Origen", "Tipo cobertura", "Cultivo", "Campaña", "Grupo varietal", "Variedad stock", "Calibre stock", "Calibres coincidentes", "Categoría", "IdConfeccion stock", "Confección stock", "Palets", "Cajas", "Kg disponibles", "Score", "Flexibilidad aplicada", "Aviso", "Explicación"]
         tbl = DataTable(stock_frame, cols)
         tbl.pack(fill="both", expand=True)
-        cobertura_rows = self.service.get_balance_cobertura_detalle(self._filters_payload(), info)
+        cobertura_rows = self.service.get_balance_cobertura_detalle(self._filters_payload(), info, policy=self._build_sim_policy())
         tbl.set_rows(cobertura_rows)
 
     def _refresh_snapshot_info_label(self) -> None:
@@ -498,3 +510,26 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 }
             )
         table.set_rows(rows)
+
+
+    def _build_sim_policy(self) -> dict:
+        return {k: bool(v.get()) for k, v in self.sim_policy_vars.items()}
+
+    def _recalcular_simulacion(self) -> None:
+        self._save_balance_settings()
+        self.load_data(save_filters=True)
+
+    def _save_balance_settings(self) -> None:
+        self.BALANCE_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self.BALANCE_SETTINGS_FILE.write_text(json.dumps(self._build_sim_policy(), ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _load_balance_settings(self) -> None:
+        if not self.BALANCE_SETTINGS_FILE.exists():
+            return
+        try:
+            payload = json.loads(self.BALANCE_SETTINGS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        for k, var in self.sim_policy_vars.items():
+            if k in payload:
+                var.set(bool(payload.get(k)))
