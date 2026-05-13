@@ -10,6 +10,7 @@ from widgets.data_table import DataTable
 from widgets.screen_header import ScreenHeader
 from widgets.date_picker import DatePickerPopup
 from widgets.multi_select_filter import MultiSelectFilter
+from services.simulacion_asignacion import abrir_simulacion_asignacion
 
 
 class PlanificacionDiariaScreen(ttk.Frame):
@@ -145,6 +146,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         balance_header.pack(fill="x", pady=(0, 6))
         ttk.Label(balance_header, textvariable=self.kpi_balance, style="KPI.TLabel").pack(side="left", anchor="w")
         ttk.Button(balance_header, text="Ver cobertura (pedidos)", command=self._open_selected_balance_coverage).pack(side="right")
+        ttk.Button(balance_header, text="Simular asignación", command=self._open_simulacion_asignacion).pack(side="right", padx=(0, 8))
         self.balance_table = DataTable(
             self.balance_tab,
             ["Cultivo", "Campaña", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Tipo línea", "Estado comercial", "Cobertura posible", "Kg disponibilidad compatible", "Mejor cobertura", "Calibres coincidentes", "Flexibilidad aplicada", "Score cobertura", "Explicación"],
@@ -290,6 +292,23 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
     def _on_balance_double_click(self, _event=None) -> None:
         self._open_selected_balance_coverage()
+
+
+    def _open_simulacion_asignacion(self) -> None:
+        pedidos = [
+            r
+            for r in self.balance_rows_all
+            if str(r.get("Tipo línea", "")).strip() == "Pedido"
+            and str(r.get("Estado comercial", "")).strip() == "Faltante comercial"
+        ]
+        if not pedidos:
+            messagebox.showinfo("Simulación de asignación", "No hay pedidos pendientes con faltante comercial para simular.", parent=self)
+            return
+
+        def _candidatos_de_pedido(pedido: dict) -> list[dict]:
+            return self.service.get_balance_cobertura_detalle(self._filters_payload(), pedido, policy=self._build_sim_policy())
+
+        abrir_simulacion_asignacion(self, pedidos, _candidatos_de_pedido)
 
     def _open_selected_balance_coverage(self) -> None:
         sel = self.balance_table.tree.selection()
