@@ -45,7 +45,13 @@ COEFICIENTES_UTILIDAD = {
 
 PENALIZACION_RIESGO = {"BAJO": 0, "MEDIO": -10, "ALTO": -25}
 
-PORCENTAJE_DESTRIO_ESTIMADO = {"ESTANDAR": 0.03, "PRECALIBRADO": 0.08, "INDUSTRIAL": 0.10, "CAMPO_REAL": 0.15, "DESCONOCIDO": 0.10}
+CONFIG_UTILIDAD_STOCK = {
+    "INDUSTRIAL": {"coef_categoria_default": 0.80, "porcentaje_destrio_default": 0.05},
+    "ALMACEN_INDUSTRIAL": {"coef_categoria_default": 0.80, "porcentaje_destrio_default": 0.05},
+    "COMERCIAL": {"coef_categoria_default": 0.95, "porcentaje_destrio_default": 0.02},
+    "CAMPO_REAL": {"coef_categoria_default": 1.00, "porcentaje_destrio_default": 0.15},
+    "DESCONOCIDO": {"coef_categoria_default": 0.80, "porcentaje_destrio_default": 0.05},
+}
 
 
 def _norm_text(valor: object) -> str:
@@ -81,13 +87,71 @@ def detectar_perfil_stock(candidato: dict) -> str:
     texto = " ".join(_norm_text(candidato.get(c, "")) for c in campos)
     if "CAMPO_REAL" in texto or "PESOSFRES" in texto:
         return "CAMPO_REAL"
-    if "PRECALIBRADO" in texto or "PRE-CALIBRADO" in texto:
-        return "PRECALIBRADO"
-    if "ESTANDAR" in texto:
-        return "ESTANDAR"
-    if "INDUSTRIAL" in texto or "ALMACEN_INDUSTRIAL" in texto:
+    if "INDUSTRIAL" in texto or "ALMACEN_INDUSTRIAL" in texto or "ALMACEN INDUSTRIAL" in texto:
         return "INDUSTRIAL"
+    if "COMERCIAL" in texto:
+        return "COMERCIAL"
     return "DESCONOCIDO"
+
+
+def obtener_config_utilidad_stock(perfil_stock: str, candidato: dict | None = None) -> dict:
+    _ = candidato  # reservado para futuras reglas dinámicas
+    perfil = _norm_text(perfil_stock or "")
+    if perfil == "ALMACEN_INDUSTRIAL":
+        perfil = "INDUSTRIAL"
+    return dict(CONFIG_UTILIDAD_STOCK.get(perfil, CONFIG_UTILIDAD_STOCK["DESCONOCIDO"]))
+
+
+def _parse_percent_like(valor: object) -> float | None:
+    if valor is None:
+        return None
+    if isinstance(valor, str):
+        txt = valor.strip().replace(",", ".")
+        if not txt:
+            return None
+        txt = txt.replace("%", "")
+        try:
+            num = float(txt)
+        except ValueError:
+            return None
+    else:
+        try:
+            num = float(valor)
+        except (TypeError, ValueError):
+            return None
+    if num > 1:
+        num = num / 100.0
+    if num < 0:
+        return None
+    return min(num, 1.0)
+
+
+def extraer_porcentaje_destrio_historico(candidato: dict) -> float | None:
+    for key in ("porcentaje_destrio_real", "destrio_real"):
+        parsed = _parse_percent_like(candidato.get(key))
+        if parsed is not None:
+            return parsed
+
+    componentes = ("destrio_mesa", "destrio_linea", "podrido")
+    porcentajes = []
+    for key in ("porcentaje_destrio_mesa", "porcentaje_destrio_linea", "porcentaje_podrido"):
+        parsed = _parse_percent_like(candidato.get(key))
+        if parsed is not None:
+            porcentajes.append(parsed)
+    if porcentajes:
+        return min(sum(porcentajes), 1.0)
+
+    if all(candidato.get(k) is not None for k in componentes):
+        kg_total = _to_float(candidato.get("kg_total", candidato.get("kg_campo", candidato.get("Kg disponibles", candidato.get("kg_disponibles", 0)))))
+        if kg_total > 0:
+            destrio_kg = sum(_to_float(candidato.get(k, 0)) for k in componentes)
+            return min(max(destrio_kg / kg_total, 0.0), 1.0)
+
+    for key in ("destrio_total",):
+        parsed = _parse_percent_like(candidato.get(key))
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _riesgo_desde_coef(coef: float) -> str:
@@ -107,31 +171,62 @@ def _subir_riesgo(riesgo: str) -> str:
 
 
 def calcular_utilidad_operativa(pedido: dict, candidato: dict) -> dict:
-    perfil_confeccion = detectar_perfil_confeccion(pedido)
     perfil_stock = detectar_perfil_stock(candidato)
-    coef_utilidad = float(COEFICIENTES_UTILIDAD.get(perfil_confeccion, COEFICIENTES_UTILIDAD["DESCONOCIDO"]).get(perfil_stock, 0.70))
+    cfg = obtener_config_utilidad_stock(perfil_stock, candidato=candidato)
+    coef_utilidad = float(cfg.get("coef_categoria_default", 0.80))
+    porcentaje_destrio = float(cfg.get("porcentaje_destrio_default", 0.05))
     kg_fisicos = _to_float(candidato.get("Kg disponibles", candidato.get("kg_disponibles", 0)))
-    kg_utiles_categoria = kg_fisicos * coef_utilidad
-    porcentaje_destrio = float(PORCENTAJE_DESTRIO_ESTIMADO.get(perfil_stock, PORCENTAJE_DESTRIO_ESTIMADO["DESCONOCIDO"]))
-    kg_destrio_estimado = kg_utiles_categoria * porcentaje_destrio
-    kg_utiles_estimados = kg_utiles_categoria - kg_destrio_estimado
-    riesgo = _riesgo_desde_coef(coef_utilidad)
-    if porcentaje_destrio >= 0.12:
-        riesgo = _subir_riesgo(riesgo)
-    if perfil_confeccion == "MALLA" and perfil_stock in ("INDUSTRIAL", "PRECALIBRADO"):
-        motivo = "Malla admite mezcla I/II; destrío estimado bajo"
-    elif perfil_confeccion == "EXIGENTE" and perfil_stock == "PRECALIBRADO":
-        motivo = "Pedido exigente: precalibrado puede contener categoría II y destrío"
-    elif perfil_confeccion == "EXIGENTE" and perfil_stock == "INDUSTRIAL":
-        motivo = "Pedido exigente: stock industrial puede requerir separación I/II y generar destrío"
-    elif perfil_confeccion == "EXIGENTE" and perfil_stock == "CAMPO_REAL":
-        motivo = "Campo real pendiente de confección; destrío estimado elevado"
-    elif perfil_confeccion == "DESCONOCIDO" or perfil_stock == "DESCONOCIDO":
-        motivo = "Perfil no detectado; coeficientes conservadores con destrío estimado"
+    destrio_historico = extraer_porcentaje_destrio_historico(candidato) if perfil_stock == "CAMPO_REAL" else None
+
+    texto_cobertura = _norm_text(candidato.get("Tipo cobertura", candidato.get("tipo_cobertura", "")))
+    ya_neto_flag = candidato.get("kg_campo_real_ya_neto")
+    if isinstance(ya_neto_flag, str):
+        ya_neto = _norm_text(ya_neto_flag) in ("TRUE", "SI", "YES", "1")
     else:
-        motivo = "Coeficiente según perfil de confección y stock"
+        ya_neto = bool(ya_neto_flag)
+    if perfil_stock == "CAMPO_REAL" and ya_neto_flag is None and "ENTRADA ESTIMADA REAL" in texto_cobertura:
+        ya_neto = True
+
+    if perfil_stock == "CAMPO_REAL":
+        porcentaje_destrio = destrio_historico if destrio_historico is not None else porcentaje_destrio
+        if ya_neto:
+            kg_utiles_categoria = kg_fisicos
+            kg_destrio_estimado = 0.0
+            kg_utiles_estimados = kg_fisicos
+            if destrio_historico is not None:
+                riesgo = "BAJO" if porcentaje_destrio <= 0.05 else ("MEDIO" if porcentaje_destrio <= 0.12 else "ALTO")
+                motivo = f"Campo real con PesosFres; destrío histórico {porcentaje_destrio*100:.0f}% informativo"
+            else:
+                riesgo = "ALTO"
+                motivo = f"Campo real sin destrío histórico detectado; usando fallback {porcentaje_destrio*100:.0f}%"
+        else:
+            kg_utiles_categoria = kg_fisicos * coef_utilidad
+            kg_destrio_estimado = kg_utiles_categoria * porcentaje_destrio
+            kg_utiles_estimados = kg_utiles_categoria - kg_destrio_estimado
+            if destrio_historico is not None:
+                riesgo = "BAJO" if porcentaje_destrio <= 0.05 else ("MEDIO" if porcentaje_destrio <= 0.12 else "ALTO")
+                motivo = f"Campo real: destrío histórico PesosFres {porcentaje_destrio*100:.0f}%"
+            else:
+                riesgo = "ALTO"
+                motivo = f"Campo real sin destrío histórico; fallback {porcentaje_destrio*100:.0f}%"
+    else:
+        kg_utiles_categoria = kg_fisicos * coef_utilidad
+        kg_destrio_estimado = kg_utiles_categoria * porcentaje_destrio
+        kg_utiles_estimados = kg_utiles_categoria - kg_destrio_estimado
+        if perfil_stock == "INDUSTRIAL":
+            riesgo = "ALTO" if porcentaje_destrio > 0.10 else "MEDIO"
+            motivo = f"Industrial: primera útil estimada {coef_utilidad*100:.0f}%, destrío {porcentaje_destrio*100:.0f}% configurable"
+        elif perfil_stock == "COMERCIAL":
+            riesgo = "BAJO" if porcentaje_destrio <= 0.02 else "MEDIO"
+            motivo = "Comercial: stock comercial con baja merma estimada"
+        else:
+            riesgo = _riesgo_desde_coef(coef_utilidad)
+            if porcentaje_destrio >= 0.12:
+                riesgo = _subir_riesgo(riesgo)
+            motivo = "Perfil no detectado; coeficientes conservadores con destrío estimado"
+
     return {
-        "perfil_confeccion": perfil_confeccion,
+        "perfil_confeccion": detectar_perfil_confeccion(pedido),
         "perfil_stock": perfil_stock,
         "coef_utilidad": coef_utilidad,
         "kg_fisicos": kg_fisicos,
