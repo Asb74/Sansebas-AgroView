@@ -1455,9 +1455,19 @@ class PlanningRepository:
                     agrupado[key] = acc
                 acc["Kg disponibles"] += float(row.get("Kg disponibles", 0) or 0)
 
+        def _count_palets_safe(value: Any) -> int:
+            if value is None:
+                return 0
+            if isinstance(value, (set, list, tuple)):
+                return len(value)
+            try:
+                return int(value)
+            except Exception:
+                return 0
+
         out = list(agrupado.values())
         for row in out:
-            row["Palets"] = len(row["Palets"])
+            row["Palets"] = _count_palets_safe(row.get("Palets"))
             row["Cajas"] = round(float(row.get("Cajas", 0) or 0), 2)
             row["Kg disponibles"] = round(float(row.get("Kg disponibles", 0) or 0), 2)
         out.sort(key=lambda r: (int(r.get("__orden", 9)), -float(r.get("Kg disponibles", 0) or 0)))
