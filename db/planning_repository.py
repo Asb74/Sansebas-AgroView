@@ -15,6 +15,50 @@ from config import DB_CALIDAD, DB_DIR, DB_EEPPL, DB_FRUTA, DB_LOTEADO, DB_PEDIDO
 logger = logging.getLogger(__name__)
 
 
+CANONICAL_ALIASES = {
+    "campana": ["campana", "campaña", "CAMPAÑA", "Campana", "Campaña"],
+    "categoria": ["categoria", "categoría", "Categoria", "Categoría", "categoria stock", "Categoria stock"],
+    "grupo_varietal": ["grupo_varietal", "grupo varietal", "Grupo varietal", "GrupoVarietal", "GrupoVar"],
+    "id_confeccion": ["id_confeccion", "IdConfeccion", "ID Confección"],
+    "confeccion": ["confeccion", "Confección", "Confeccion"],
+    "kg": ["kg", "Kg", "Kg disponibles", "Neto", "kg_neto"],
+}
+
+def normalizar_texto(valor: Any) -> str:
+    return str(valor or "").strip()
+
+def normalizar_numero(valor: Any) -> float:
+    try:
+        return float(valor or 0)
+    except Exception:
+        return 0.0
+
+def normalizar_campana(valor: Any) -> str:
+    txt = normalizar_texto(valor)
+    return str(int(float(txt))) if txt.replace('.', '', 1).isdigit() else txt
+
+def normalizar_categoria(valor: Any) -> str:
+    return normalizar_texto(valor).upper()
+
+def canonical_get(row: dict[str, Any], key: str, default: Any = "") -> Any:
+    aliases = CANONICAL_ALIASES.get(key, [key])
+    norm_map = {str(k).strip().lower().replace("ñ", "n"): v for k, v in row.items()}
+    for alias in aliases:
+        k = alias.strip().lower().replace("ñ", "n")
+        if k in norm_map:
+            value = norm_map[k]
+            if key == "campana":
+                return normalizar_campana(value)
+            if key == "categoria":
+                return normalizar_categoria(value)
+            if key in {"id_confeccion", "confeccion", "grupo_varietal"}:
+                return normalizar_texto(value)
+            if key == "kg":
+                return normalizar_numero(value)
+            return value
+    return default
+
+
 class PlanningRepository:
     def __init__(self, base_dir: str | Path = DB_DIR) -> None:
         self.base_dir = Path(base_dir)
@@ -161,31 +205,27 @@ class PlanningRepository:
             return {}
 
     def comparar_calibres(self, calibre_pedido: Any, calibre_stock: Any, calibre_map: dict[str, str] | None = None) -> str:
-        pedido = self.normalizar_calibre_a_set(calibre_pedido, calibre_map=calibre_map)
-        stock = self.normalizar_calibre_a_set(calibre_stock, calibre_map=calibre_map)
-        if not pedido or not stock:
-            return "SIN_COBERTURA"
-        if pedido == stock:
-            return "EXACTO"
-        if pedido.issubset(stock):
-            return "COBERTURA_COMPLETA"
-        if pedido.intersection(stock):
-            return "SOLAPE_PARCIAL"
-        return "SIN_COBERTURA"
+        result = self.comparar_calibres_para_cobertura(calibre_pedido, calibre_stock, calibre_map=calibre_map)
+        legacy = {"EXACTA": "EXACTO", "CALIBRE_ADMITIDO": "COBERTURA_ADMITIDA", "AGRUPADA": "COBERTURA_AGRUPADA", "SOLAPE_PARCIAL": "SOLAPE_PARCIAL", "SIN_COBERTURA": "SIN_COBERTURA"}
+        return legacy.get(result["tipo"], "SIN_COBERTURA")
 
-    def comparar_calibres_para_cobertura(self, calibre_pedido: Any, calibre_stock: Any, calibre_map: dict[str, str] | None = None) -> tuple[str, set[str]]:
+    def comparar_calibres_para_cobertura(self, calibre_pedido: Any, calibre_stock: Any, calibre_map: dict[str, str] | None = None) -> dict[str, Any]:
         pedido = self.normalizar_calibre_a_set(calibre_pedido, calibre_map=calibre_map)
         stock = self.normalizar_calibre_a_set(calibre_stock, calibre_map=calibre_map)
         if not pedido or not stock:
-            return "SIN_COBERTURA", set()
-        coincidentes = pedido.intersection(stock)
+            return {"tipo": "SIN_COBERTURA", "pedido_set": pedido, "stock_set": stock, "coincidentes": []}
+        coincidentes = sorted(pedido.intersection(stock), key=lambda x: int(x) if x.isdigit() else 9999)
         if pedido == stock:
-            return "EXACTO", coincidentes
-        if not coincidentes:
-            return "SIN_COBERTURA", set()
-        if stock.issuperset(pedido):
-            return "COBERTURA_AGRUPADA", coincidentes
-        return "COBERTURA_ADMITIDA", coincidentes
+            tipo = "EXACTA"
+        elif not coincidentes:
+            tipo = "SIN_COBERTURA"
+        elif stock.issubset(pedido):
+            tipo = "CALIBRE_ADMITIDO"
+        elif pedido.issubset(stock):
+            tipo = "AGRUPADA"
+        else:
+            tipo = "SOLAPE_PARCIAL"
+        return {"tipo": tipo, "pedido_set": pedido, "stock_set": stock, "coincidentes": coincidentes}
 
     @staticmethod
     def calibres_coincidentes(calibre_pedido: Any, calibre_stock: Any, calibre_map: dict[str, str] | None = None) -> str:
@@ -934,8 +974,8 @@ class PlanningRepository:
                             logger.info("BALANCE DEBUG descarta: categoría distinta")
                         continue
 
-                    comparacion, _coincidentes = self.comparar_calibres_para_cobertura(calibre, ind_key[4], calibre_map=calibre_map)
-                    if comparacion == "SIN_COBERTURA":
+                    cmp_result = self.comparar_calibres_para_cobertura(calibre, ind_key[4], calibre_map=calibre_map)
+                    if cmp_result["tipo"] == "SIN_COBERTURA":
                         logger.info("BALANCE DEBUG descarta: calibre sin cobertura")
                         continue
 
@@ -944,13 +984,13 @@ class PlanningRepository:
                             "Cobertura industrial candidato: pedido_grupo=%s pedido_variedad=%s pedido_calibre=%s pedido_cat=%s | stock_grupo=%s stock_variedad=%s stock_calibre=%s stock_cat=%s kg=%s comparacion=%s",
                             grupo, variedad, calibre, categoria,
                             ind_key[2], ind_key[3], ind_key[4], ind_key[5],
-                            ind_kg, comparacion
+                            ind_kg, cmp_result["tipo"]
                         )
 
                     variedades_stock_industrial.add(str(ind_key[3] or "").strip())
-                    if comparacion == "EXACTO":
+                    if cmp_result["tipo"] == "EXACTA":
                         kg_cobertura_exacta += ind_kg
-                    elif comparacion in {"COBERTURA_AGRUPADA", "COBERTURA_ADMITIDA"}:
+                    elif cmp_result["tipo"] in {"AGRUPADA", "CALIBRE_ADMITIDO"}:
                         kg_cobertura_agrupada += ind_kg
 
                 kg_cobertura_exacta = round(kg_cobertura_exacta, 2)
@@ -1071,11 +1111,11 @@ class PlanningRepository:
             if stock_categoria.upper() != categoria.upper():
                 continue
 
-            comparacion, coincidentes = self.comparar_calibres_para_cobertura(calibre_pedido, row.get("Calibre", ""), calibre_map=calibre_map)
-            if comparacion == "SIN_COBERTURA":
+            cmp_result = self.comparar_calibres_para_cobertura(calibre_pedido, row.get("Calibre", ""), calibre_map=calibre_map)
+            if cmp_result["tipo"] == "SIN_COBERTURA":
                 continue
 
-            if comparacion == "EXACTO":
+            if cmp_result["tipo"] == "EXACTA":
                 tipo = "Industrial exacta"
                 aviso = ""
                 orden = 1
@@ -1088,7 +1128,7 @@ class PlanningRepository:
                 aviso = "Cobertura por calibre admitido"
                 orden = 2
 
-            coincidencia_label = "Exacta" if comparacion == "EXACTO" else ("Calibre agrupado" if len(self.normalizar_calibre_a_set(row.get("Calibre", ""), calibre_map=calibre_map)) > 1 else "Calibre admitido")
+            coincidencia_label = "Exacta" if cmp_result["tipo"] == "EXACTA" else ("Calibre agrupado" if len(self.normalizar_calibre_a_set(row.get("Calibre", ""), calibre_map=calibre_map)) > 1 else "Calibre admitido")
             calibre_stock = str(row.get("Calibre", "") or "").strip()
             coincidentes_txt = self.calibres_coincidentes(calibre_pedido, calibre_stock, calibre_map=calibre_map)
             key = (
