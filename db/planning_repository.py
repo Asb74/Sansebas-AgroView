@@ -299,6 +299,120 @@ class PlanningRepository:
                 return table
         return None
 
+    def _get_pesosfres_campo_disponibilidad_real(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[list[dict[str, Any]], int]:
+        fruta_path = self._db_path(DB_FRUTA)
+        if not fruta_path.exists():
+            return [], 0
+        if not stock_campo_rows:
+            return [], 0
+
+        logger.info("CAMPO PesosFres: stock_campo filas=%s", len(stock_campo_rows))
+        candidates: list[dict[str, Any]] = []
+        sin_datos = 0
+        with sqlite3.connect(fruta_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cols = [r[1] for r in conn.execute('PRAGMA table_info("PesosFres")').fetchall()]
+            if not cols:
+                return [], len(stock_campo_rows)
+            boleta_col = self._find_column(cols, ["Boleta"])
+            campana_col = self._find_campana_column(cols) or '"CAMPAÑA"'
+            cultivo_col = self._find_column(cols, ["CULTIVO"]) or "CULTIVO"
+            socio_col = self._find_column(cols, ["Socio"]) or "Socio"
+            variedad_col = self._find_column(cols, ["Variedad"]) or "Variedad"
+            fecha_col = self._find_column(cols, ["Fcarga", "FechaCarga"]) or "Fcarga"
+            neto_col = self._find_column(cols, ["Neto"])
+            neto_partida_col = self._find_column(cols, ["NetoPartida"])
+            categoria_col = self._find_column(cols, ["Categoria", "Categoría"])
+            cal_cols: list[tuple[str, str]] = []
+            for i in range(0, 12):
+                col = self._find_column(cols, [f"Cal{i}"])
+                if col:
+                    cal_cols.append((f"CAL {i}", col))
+            if not cal_cols:
+                return [], len(stock_campo_rows)
+
+            for row in stock_campo_rows:
+                boleta = str(row.get("Boleta", "") or "").strip()
+                kg_campo = float(row.get("Kg campo", 0) or 0)
+                if kg_campo <= 0:
+                    continue
+                query_params: list[Any] = []
+                match_row: dict[str, Any] | None = None
+                match = False
+                if boleta_col and boleta:
+                    q = f'SELECT * FROM "PesosFres" WHERE TRIM(CAST("{boleta_col}" AS TEXT)) = TRIM(CAST(? AS TEXT)) LIMIT 1'
+                    query_params = [boleta]
+                    found = conn.execute(q, query_params).fetchone()
+                    match_row = dict(found) if found else None
+                    match = bool(match_row)
+                if not match_row:
+                    q = (
+                        f'SELECT * FROM "PesosFres" WHERE UPPER(TRIM("{cultivo_col}")) = UPPER(TRIM(?)) '
+                        f'AND TRIM(CAST("{campana_col}" AS TEXT)) = TRIM(CAST(? AS TEXT)) '
+                        f'AND UPPER(TRIM("{socio_col}")) = UPPER(TRIM(?)) AND UPPER(TRIM("{variedad_col}")) = UPPER(TRIM(?)) '
+                        f'ORDER BY ABS(julianday("{fecha_col}") - julianday(?)) ASC LIMIT 1'
+                    )
+                    query_params = [
+                        str(row.get("Cultivo", "") or "").strip(),
+                        str(row.get("Campaña", row.get("Campana", "")) or "").strip(),
+                        str(row.get("Socio", "") or "").strip(),
+                        str(row.get("Variedad", "") or "").strip(),
+                        str(row.get("Fecha carga", row.get("FechaCarga", "")) or "").strip(),
+                    ]
+                    found = conn.execute(q, query_params).fetchone()
+                    match_row = dict(found) if found else None
+                    if match_row:
+                        dt_row = self._parse_date(match_row.get(fecha_col))
+                        dt_src = self._parse_date(row.get("Fecha carga", row.get("FechaCarga", "")))
+                        match = bool(dt_row and dt_src and abs((dt_row - dt_src).days) <= 2)
+                    else:
+                        match = False
+                logger.info("CAMPO PesosFres: boleta=%s kg_campo=%s match=%s", boleta, kg_campo, match)
+                if not match_row or not match:
+                    sin_datos += 1
+                    logger.info("Stock campo sin aprovechamiento real: boleta %s", boleta or "(sin boleta)")
+                    continue
+
+                kg_total_real = self._build_neto_correcto(
+                    match_row.get(neto_partida_col) if neto_partida_col else 0,
+                    match_row.get(neto_col) if neto_col else 0,
+                )
+                distribucion: dict[str, float] = {}
+                if kg_total_real > 0:
+                    for cal_label, cal_col in cal_cols:
+                        kg_cal = float(match_row.get(cal_col, 0) or 0)
+                        if kg_cal <= 0:
+                            continue
+                        distribucion[cal_label] = round(kg_cal / kg_total_real, 8)
+                logger.info("CAMPO PesosFres: boleta=%s kg_total_real=%s calibres=%s", boleta, kg_total_real, distribucion)
+                if not distribucion:
+                    sin_datos += 1
+                    continue
+                categoria = str(match_row.get(categoria_col, "") if categoria_col else "").strip()
+                for calibre, pct in distribucion.items():
+                    kg_estimado = round(kg_campo * pct, 2)
+                    logger.info("CAMPO disponibilidad creada boleta=%s calibre=%s kg=%s pct=%s", boleta, calibre, kg_estimado, pct)
+                    candidates.append({
+                        "Origen": "CAMPO_REAL_PESOSFRES",
+                        "Tipo stock": "CAMPO",
+                        "Cultivo": row.get("Cultivo", ""),
+                        "Campaña": row.get("Campaña", row.get("Campana", "")),
+                        "Grupo varietal": row.get("Grupo varietal", ""),
+                        "Variedad": row.get("Variedad", ""),
+                        "Calibre": calibre,
+                        "Categoría": categoria,
+                        "Kg disponibles": kg_estimado,
+                        "Kg campo origen": kg_campo,
+                        "Boleta": boleta,
+                        "Socio": row.get("Socio", ""),
+                        "Fecha carga": row.get("Fecha carga", row.get("FechaCarga", "")),
+                        "% aprovechamiento": round(pct * 100, 4),
+                        "Origen aprovechamiento": "REAL",
+                        "Aviso": f"Aprovechamiento real PesosFres boleta {boleta}".strip(),
+                        "Explicación": "Kg estimados por calibre calculados desde aprovechamiento real de PesosFres",
+                    })
+        return candidates, sin_datos
+
     @staticmethod
     def read_text_safe(path: str | Path) -> str:
         text_path = Path(path)
@@ -899,6 +1013,7 @@ class PlanningRepository:
         commercial_map: dict[tuple, float] = {}
         industrial_stock_map: dict[tuple, float] = {}
         campo_map: dict[tuple, float] = {}
+        campo_real_map: dict[tuple, float] = {}
         pedidos_map: dict[tuple, float] = {}
 
         for row in detalle_rows:
@@ -940,6 +1055,14 @@ class PlanningRepository:
                 row.get("Variedad", ""), "", "",
             )
             campo_map[key] = campo_map.get(key, 0.0) + float(row.get("Kg campo", 0) or 0)
+        campo_real_rows, campo_sin_datos = (self._get_pesosfres_campo_disponibilidad_real(stock_campo_rows, filters) if policy_cfg["usar_entrada_estimada"] else ([], 0))
+        campo_tiene_desglose = bool(campo_real_rows)
+        for c_row in campo_real_rows:
+            c_key = (
+                c_row.get("Cultivo", ""), c_row.get("Campaña", ""), c_row.get("Grupo varietal", ""),
+                c_row.get("Variedad", ""), c_row.get("Calibre", ""), c_row.get("Categoría", ""),
+            )
+            campo_real_map[c_key] = campo_real_map.get(c_key, 0.0) + float(c_row.get("Kg disponibles", 0) or 0)
 
         for row in pedidos_rows:
             id_confeccion = str(row.get("IdConfeccion", "") or "").strip()
@@ -975,7 +1098,9 @@ class PlanningRepository:
                 estado_com = "Cubierto comercialmente"
 
             kg_industrial_stock = round(industrial_stock_map.get(common_key, 0.0), 2)
-            kg_entrada_estimada = round(campo_map.get(common_key, campo_map.get(base_key, 0.0)), 2) if policy_cfg["usar_entrada_estimada"] else 0.0
+            kg_entrada_estimada_real = round(campo_real_map.get(common_key, 0.0), 2) if policy_cfg["usar_entrada_estimada"] else 0.0
+            kg_entrada_estimada = kg_entrada_estimada_real
+            kg_entrada_estimada_sin_datos = round(campo_map.get(base_key, 0.0), 2) if policy_cfg["usar_entrada_estimada"] else 0.0
             kg_base_total_estimada = round(kg_industrial_stock + kg_entrada_estimada, 2)
             necesita_cobertura = kg_pendiente > 0 and diff < 0
 
@@ -1149,6 +1274,8 @@ class PlanningRepository:
                 "Estado comercial": estado_com,
                 "Kg stock industrial almacén": kg_industrial_stock,
                 "Kg entrada estimada": kg_entrada_estimada,
+                "Kg entrada estimada real": kg_entrada_estimada_real,
+                "Kg entrada estimada sin datos": kg_entrada_estimada_sin_datos if campo_sin_datos > 0 else 0.0,
                 "Kg base total estimada": kg_base_total_estimada,
                 "Kg cobertura exacta": kg_cobertura_exacta,
                 "Kg cobertura agrupada": kg_cobertura_agrupada,
@@ -1181,6 +1308,7 @@ class PlanningRepository:
     def get_balance_cobertura_detalle(self, filters: dict, balance_row: dict, policy: dict | None = None) -> list[dict]:
         policy_cfg = self._merge_policy(policy)
         detalle_rows = self.get_stock_almacen_detalle_palets(filters)
+        stock_campo_rows, _, _ = self.get_stock_campo(filters)
         cultivo = str(balance_row.get("Cultivo", "") or "").strip()
         campana = str(balance_row.get("Campaña", "") or "").strip()
         grupo = str(balance_row.get("Grupo varietal", "") or "").strip()
@@ -1272,6 +1400,60 @@ class PlanningRepository:
                 acc["Palets"].add(id_palet)
             acc["Cajas"] += float(row.get("Cajas", 0) or 0)
             acc["Kg disponibles"] += float(row.get("Neto", 0) or 0)
+
+        if policy_cfg["usar_entrada_estimada"]:
+            campo_real_rows, _ = self._get_pesosfres_campo_disponibilidad_real(stock_campo_rows, filters)
+            for row in campo_real_rows:
+                stock_cultivo = str(row.get("Cultivo", "") or "").strip()
+                stock_campana = str(row.get("Campaña", "") or "").strip()
+                stock_grupo = str(row.get("Grupo varietal", "") or "").strip()
+                stock_categoria = str(row.get("Categoría", "") or "").strip()
+                if stock_cultivo.upper() != cultivo.upper() or stock_campana != campana:
+                    continue
+                if policy_cfg["mismo_grupo_varietal"] and (not policy_cfg["permitir_grupo_varietal_alternativo"]) and stock_grupo.upper() != grupo.upper():
+                    continue
+                cmp_result = self.comparar_calibres_para_cobertura(calibre_pedido, row.get("Calibre", ""), calibre_map=calibre_map)
+                if cmp_result["tipo"] == "SIN_COBERTURA":
+                    continue
+                aviso_base = str(row.get("Aviso", "") or "").strip()
+                if not stock_categoria:
+                    aviso_base = (aviso_base + " | " if aviso_base else "") + "Campo sin categoría; revisar"
+                key = (
+                    stock_cultivo, stock_campana, stock_grupo, str(row.get("Variedad", "") or "").strip(), str(row.get("Calibre", "") or "").strip(),
+                    stock_categoria, str(row.get("Boleta", "") or "").strip(), str(row.get("Socio", "") or "").strip(), aviso_base,
+                )
+                acc = agrupado.get(key)
+                if not acc:
+                    acc = {
+                        "__orden": 4,
+                        "Tipo cobertura": "Entrada estimada real",
+                        "Origen": "CAMPO_REAL_PESOSFRES",
+                        "Cultivo": stock_cultivo,
+                        "Campaña": stock_campana,
+                        "Grupo varietal": stock_grupo,
+                        "Variedad stock": str(row.get("Variedad", "") or "").strip(),
+                        "Calibre stock": str(row.get("Calibre", "") or "").strip(),
+                        "Calibres coincidentes": self.calibres_coincidentes(calibre_pedido, row.get("Calibre", ""), calibre_map=calibre_map),
+                        "Marca stock": "",
+                        "Categoría": stock_categoria,
+                        "IdConfeccion stock": "",
+                        "Confección stock": "",
+                        "Boleta": str(row.get("Boleta", "") or "").strip(),
+                        "Socio": str(row.get("Socio", "") or "").strip(),
+                        "Fecha carga": str(row.get("Fecha carga", "") or "").strip(),
+                        "Kg campo origen": float(row.get("Kg campo origen", 0) or 0),
+                        "% aprovechamiento": float(row.get("% aprovechamiento", 0) or 0),
+                        "Palets": 0,
+                        "Cajas": 0.0,
+                        "Kg disponibles": 0.0,
+                        "Coincidencia": "Entrada campo estimada real",
+                        "Score": 75,
+                        "Flexibilidad aplicada": "CAMPO_REAL",
+                        "Explicación": str(row.get("Explicación", "") or "").strip(),
+                        "Aviso": aviso_base,
+                    }
+                    agrupado[key] = acc
+                acc["Kg disponibles"] += float(row.get("Kg disponibles", 0) or 0)
 
         out = list(agrupado.values())
         for row in out:
