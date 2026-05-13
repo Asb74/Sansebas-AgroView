@@ -36,6 +36,8 @@ TIPOS_CONFECCION_EXIGENTES = [
     "CAJA",
     "CAJAS",
 ]
+TOKENS_PERFIL_MALLA = ["MALLA", "MALLAS", "RED", "BOLSA"]
+TOKENS_PERFIL_EXIGENTE = ["ENCAJADO", "ENCAJAR", "GRANEL", "ALVEOLO", "ALVÉOLO", "ALVEOLADO", "CAJA", "CAJAS"]
 
 COEFICIENTES_UTILIDAD = {
     "MALLA": {"ESTANDAR": 0.95, "PRECALIBRADO": 0.90, "INDUSTRIAL": 0.90, "CAMPO_REAL": 0.75, "DESCONOCIDO": 0.80},
@@ -78,6 +80,15 @@ def detectar_perfil_confeccion(pedido: dict) -> str:
     if any(token in texto for token in [_norm_text(v) for v in TIPOS_CONFECCION_FLEXIBLES]):
         return "MALLA"
     if any(token in texto for token in [_norm_text(v) for v in TIPOS_CONFECCION_EXIGENTES]):
+        return "EXIGENTE"
+    return "DESCONOCIDO"
+
+
+def detectar_perfil_confeccion_desde_grupo(grupo_confeccion: object) -> str:
+    grupo = _norm_text(grupo_confeccion)
+    if any(token in grupo for token in TOKENS_PERFIL_MALLA):
+        return "MALLA"
+    if any(token in grupo for token in TOKENS_PERFIL_EXIGENTE):
         return "EXIGENTE"
     return "DESCONOCIDO"
 
@@ -171,9 +182,14 @@ def _subir_riesgo(riesgo: str) -> str:
 
 
 def calcular_utilidad_operativa(pedido: dict, candidato: dict) -> dict:
+    perfil_confeccion = _norm_text(pedido.get("perfil_confeccion", "")) or detectar_perfil_confeccion(pedido)
     perfil_stock = detectar_perfil_stock(candidato)
     cfg = obtener_config_utilidad_stock(perfil_stock, candidato=candidato)
     coef_utilidad = float(cfg.get("coef_categoria_default", 0.80))
+    if perfil_stock in {"INDUSTRIAL", "ALMACEN_INDUSTRIAL", "CAMPO_REAL"}:
+        coef_utilidad = 0.90 if perfil_confeccion == "MALLA" else 0.80
+    elif perfil_stock == "COMERCIAL":
+        coef_utilidad = 0.95
     porcentaje_destrio = float(cfg.get("porcentaje_destrio_default", 0.05))
     kg_fisicos = _to_float(candidato.get("Kg disponibles", candidato.get("kg_disponibles", 0)))
     destrio_historico = extraer_porcentaje_destrio_historico(candidato) if perfil_stock == "CAMPO_REAL" else None
@@ -226,7 +242,7 @@ def calcular_utilidad_operativa(pedido: dict, candidato: dict) -> dict:
             motivo = "Perfil no detectado; coeficientes conservadores con destrío estimado"
 
     return {
-        "perfil_confeccion": detectar_perfil_confeccion(pedido),
+        "perfil_confeccion": perfil_confeccion,
         "perfil_stock": perfil_stock,
         "coef_utilidad": coef_utilidad,
         "kg_fisicos": kg_fisicos,
@@ -341,6 +357,7 @@ def simular_asignacion_pedido(pedido: dict, candidatos: list[dict], scoring: dic
         estado = "INSUFICIENTE"
 
     kg_potencial_fisico = sum(_to_float(c.get("kg_fisicos", 0)) for c in candidatos_ordenados)
+    perfil_confeccion = _norm_text(pedido.get("perfil_confeccion", "")) or detectar_perfil_confeccion(pedido)
     return {
         "pedido": dict(pedido),
         "kg_pendientes": kg_pend,
@@ -349,7 +366,7 @@ def simular_asignacion_pedido(pedido: dict, candidatos: list[dict], scoring: dic
         "kg_potencial_encontrado": acumulado,
         "kg_potencial_fisico": kg_potencial_fisico,
         "kg_potencial_util": acumulado,
-        "perfil_confeccion": detectar_perfil_confeccion(pedido),
+        "perfil_confeccion": perfil_confeccion,
         "candidatos": candidatos_ordenados,
     }
 
@@ -364,7 +381,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     bottom = ttk.LabelFrame(popup, text="Candidatos de cobertura", padding=8)
     bottom.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
-    pedidos_cols = ["Cliente", "Variedad", "Calibre", "Categoría", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg potencial físico", "Kg potencial útil"]
+    pedidos_cols = ["Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg potencial físico", "Kg potencial útil"]
     pedidos_tbl = DataTable(top, pedidos_cols)
     pedidos_tbl.pack(fill="both", expand=True)
 
@@ -397,6 +414,8 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Variedad": pedido.get("Variedad", ""),
             "Calibre": pedido.get("Calibre", ""),
             "Categoría": pedido.get("Categoría", ""),
+            "Grupo confección": pedido.get("grupo_confeccion", "DESCONOCIDO"),
+            "Perfil confección": pedido.get("perfil_confeccion", "DESCONOCIDO"),
             "Kg pendientes": formatear_kg(simulacion["kg_pendientes"]),
             "Estado simulación": estado,
             "Kg cobertura simulada": formatear_kg(simulacion["kg_cobertura_simulada"]),
@@ -445,6 +464,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         sim = simulaciones[index]
         detalle.configure(
             text=(
+                f"Id confección: {sim.get('pedido', {}).get('id_confeccion', '')} · "
+                f"Nombre confección: {sim.get('pedido', {}).get('nombre_confeccion', '')} · "
+                f"Grupo confección: {sim.get('pedido', {}).get('grupo_confeccion', 'DESCONOCIDO')} · "
                 f"Pedido seleccionado · Kg pendientes: {formatear_kg(sim['kg_pendientes'])} · "
                 f"Kg cobertura simulada: {formatear_kg(sim['kg_cobertura_simulada'])} · "
                 f"Kg potencial físico: {formatear_kg(sim['kg_potencial_fisico'])} · "
