@@ -40,6 +40,26 @@ def normalizar_campana(valor: Any) -> str:
 def normalizar_categoria(valor: Any) -> str:
     return normalizar_texto(valor).upper()
 
+def normalizar_codigo_confeccion(valor: Any) -> str:
+    txt = normalizar_texto(valor)
+    if not txt:
+        return ""
+    try:
+        num = float(txt.replace(",", "."))
+        if num.is_integer():
+            return str(int(num))
+    except Exception:
+        pass
+    return txt
+
+def detectar_perfil_confeccion_desde_grupo(grupo_confeccion: Any) -> str:
+    grupo = normalizar_texto(grupo_confeccion).upper()
+    if any(t in grupo for t in ("MALLA", "MALLAS", "RED", "BOLSA")):
+        return "MALLA"
+    if any(t in grupo for t in ("ENCAJADO", "ENCAJAR", "GRANEL", "ALVEOLO", "ALVÉOLO", "ALVEOLADO", "CAJA", "CAJAS")):
+        return "EXIGENTE"
+    return "DESCONOCIDO"
+
 def canonical_get(row: dict[str, Any], key: str, default: Any = "") -> Any:
     aliases = CANONICAL_ALIASES.get(key, [key])
     norm_map = {str(k).strip().lower().replace("ñ", "n"): v for k, v in row.items()}
@@ -66,6 +86,22 @@ class PlanningRepository:
 
     def _db_path(self, filename: str) -> Path:
         return self.base_dir / filename
+
+    @staticmethod
+    def cargar_mconfecciones(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        try:
+            rows = conn.execute(
+                'SELECT "CODIGO","NOMBRE","GRUPO","MERMA","NETO","ARTICULO","CODCAJA","DESCRIPCORTA" FROM "MConfecciones"'
+            ).fetchall()
+        except Exception:
+            return out
+        for row in rows:
+            item = dict(row)
+            key = normalizar_codigo_confeccion(item.get("CODIGO"))
+            if key:
+                out[key] = item
+        return out
 
     @staticmethod
     def _build_neto_correcto(neto_partida: Any, neto: Any) -> float:
@@ -1046,6 +1082,13 @@ class PlanningRepository:
         detalle_rows = self.get_stock_almacen_detalle_palets(filters)
         pedidos_rows, _ = self.get_pedidos_pendientes(filters, modo_pedidos=str(filters.get("pedidos_modo") or "10_dias"))
         stock_campo_rows, _, _ = self.get_stock_campo(filters)
+        mconfecciones: dict[str, dict[str, Any]] = {}
+        try:
+            with sqlite3.connect(self._db_path(DB_PEDIDOS).as_posix()) as conn_ped:
+                conn_ped.row_factory = sqlite3.Row
+                mconfecciones = self.cargar_mconfecciones(conn_ped)
+        except Exception:
+            logger.exception("No se pudo cargar MConfecciones para enriquecer balance.")
 
         commercial_map: dict[tuple, float] = {}
         industrial_stock_map: dict[tuple, float] = {}
@@ -1102,7 +1145,7 @@ class PlanningRepository:
             campo_real_map[c_key] = campo_real_map.get(c_key, 0.0) + float(c_row.get("Kg disponibles", 0) or 0)
 
         for row in pedidos_rows:
-            id_confeccion = str(row.get("IdConfeccion", "") or "").strip()
+            id_confeccion = normalizar_codigo_confeccion(row.get("IdConfeccion", row.get("Confeccion", "")))
             confeccion = str(row.get("Confección", "") or "").strip()
             key = (
                 row.get("Cultivo", ""), row.get("Campaña", ""), row.get("Grupo varietal", ""),
@@ -1120,6 +1163,26 @@ class PlanningRepository:
         data: list[dict] = []
         for key in sorted(keys, key=lambda k: tuple(str(x) for x in k)):
             cultivo, campana, grupo, variedad, calibre, categoria, marca, id_confeccion, confe = key
+            mconf = mconfecciones.get(normalizar_codigo_confeccion(id_confeccion))
+            if mconf:
+                grupo_confeccion = normalizar_texto(mconf.get("GRUPO"))
+                nombre_confeccion = normalizar_texto(mconf.get("NOMBRE")) or confe
+                merma_confeccion = mconf.get("MERMA")
+                neto_confeccion = mconf.get("NETO")
+                articulo_confeccion = normalizar_texto(mconf.get("ARTICULO"))
+                codcaja_confeccion = normalizar_texto(mconf.get("CODCAJA"))
+                descripcion_corta_confeccion = normalizar_texto(mconf.get("DESCRIPCORTA"))
+            else:
+                grupo_confeccion = "DESCONOCIDO"
+                nombre_confeccion = confe or str(id_confeccion)
+                merma_confeccion = None
+                neto_confeccion = None
+                articulo_confeccion = ""
+                codcaja_confeccion = ""
+                descripcion_corta_confeccion = ""
+                if id_confeccion:
+                    logger.warning("Confección %s no encontrada en MConfecciones; usando fallback.", id_confeccion)
+            perfil_confeccion = detectar_perfil_confeccion_desde_grupo(grupo_confeccion)
             common_key = (cultivo, campana, grupo, variedad, calibre, categoria)
             base_key = (cultivo, campana, grupo, variedad, "", "")
             kg_stock_comercial = round(commercial_map.get(key, 0.0), 2)
@@ -1304,6 +1367,15 @@ class PlanningRepository:
                 "Marca": marca,
                 "IdConfeccion": id_confeccion,
                 "Confección": confe,
+                "id_confeccion": normalizar_codigo_confeccion(id_confeccion),
+                "nombre_confeccion": nombre_confeccion,
+                "grupo_confeccion": grupo_confeccion,
+                "merma_confeccion": merma_confeccion,
+                "neto_confeccion": neto_confeccion,
+                "articulo_confeccion": articulo_confeccion,
+                "codcaja_confeccion": codcaja_confeccion,
+                "descripcion_corta_confeccion": descripcion_corta_confeccion,
+                "perfil_confeccion": perfil_confeccion,
                 "Kg stock comercial": kg_stock_comercial,
                 "Kg pedidos pendientes": kg_pendiente,
                 "Diferencia comercial": diff,
