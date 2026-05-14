@@ -16,7 +16,7 @@ from services.simulacion_asignacion import abrir_simulacion_asignacion
 class PlanificacionDiariaScreen(ttk.Frame):
     FILTERS_FILE = Path("config") / "planificacion_diaria_filters.json"
     BALANCE_SETTINGS_FILE = Path("config") / "planificacion_balance_settings.json"
-    FILTER_KEYS = ["campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "grupo_confeccion", "marca"]
+    FILTER_KEYS = ["campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "marca"]
     PEDIDOS_MODOS = [("Próximos 10 días", "10_dias"), ("Semana actual", "semana_actual"), ("Próximas semanas", "proximas_semanas"), ("Rango fechas", "rango"), ("Todos futuros", "todos_futuros"), ("Todos", "todos")]
 
     def __init__(self, master: tk.Misc, on_back) -> None:
@@ -37,8 +37,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.balance_rows_all: list[dict] = []
         self.sim_policy_vars: dict[str, tk.BooleanVar] = {}
         self._build_ui()
-        self._load_filter_options(contextual=True)
         self._load_filters()
+        self._load_filter_options(contextual=True)
         self._load_balance_settings()
         self.load_data(save_filters=False)
 
@@ -55,9 +55,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 self.filter_widgets[key].set_options(options)
                 self.filter_widgets[key].set_selected(valid)
             except Exception as exc:
-                logging.getLogger(__name__).warning("No se pudo cargar opciones de filtro %s: %s", key, exc)
-                self.filter_widgets[key].set_options([])
-                self.filter_widgets[key].set_selected([])
+                logging.getLogger(__name__).exception("No se pudo cargar opciones de filtro %s", key)
 
     def _build_ui(self) -> None:
         self.grid_rowconfigure(2, weight=1)
@@ -66,7 +64,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
         filters_frame = ttk.LabelFrame(self, text="Filtros globales", padding=10)
         filters_frame.grid(row=1, column=0, sticky="ew", pady=(8, 8))
-        fields = [("Campaña", "campana"), ("Cultivo", "cultivo"), ("Semana", "semana"), ("Fecha desde", "fecha_desde"), ("Fecha hasta", "fecha_hasta"), ("Empresa", "empresa"), ("Variedad Coop", "var_coop"), ("Grupo varietal", "grupo_varietal"), ("Grupo confección", "grupo_confeccion"), ("Marca", "marca")]
+        fields = [("Campaña", "campana"), ("Cultivo", "cultivo"), ("Semana", "semana"), ("Fecha desde", "fecha_desde"), ("Fecha hasta", "fecha_hasta"), ("Empresa", "empresa"), ("Variedad Coop", "var_coop"), ("Grupo varietal", "grupo_varietal"), ("Marca", "marca")]
         for i, (label, key) in enumerate(fields):
             ttk.Label(filters_frame, text=label).grid(row=0, column=i, sticky="w", padx=4)
             if key == "fecha_desde":
@@ -131,6 +129,12 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self._pedidos_modo_combo.pack(side="left")
         self._sync_pedidos_mode_combo()
         self._pedidos_modo_combo.bind("<<ComboboxSelected>>", self._on_pedidos_modo_changed)
+        ttk.Label(pedidos_filters, text="Grupo confección").pack(side="left", padx=(10, 6))
+        self.pedidos_grupo_confeccion_filter = MultiSelectFilter(pedidos_filters, title="Grupo confección", width=18)
+        self.pedidos_grupo_confeccion_filter.pack(side="left")
+        ttk.Label(pedidos_filters, text="Perfil confección").pack(side="left", padx=(10, 6))
+        self.pedidos_perfil_confeccion_filter = MultiSelectFilter(pedidos_filters, title="Perfil confección", width=18)
+        self.pedidos_perfil_confeccion_filter.pack(side="left")
 
         ttk.Label(self.pedidos_tab, textvariable=self.kpi_pedidos, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
         self.pedidos_table = DataTable(
@@ -181,7 +185,6 @@ class PlanificacionDiariaScreen(ttk.Frame):
             "semana": self.filter_widgets["semana"].get_selected(),
             "var_coop": self.filter_widgets["var_coop"].get_selected(),
             "grupo_varietal": self.filter_widgets["grupo_varietal"].get_selected(),
-            "grupo_confeccion": self.filter_widgets["grupo_confeccion"].get_selected(),
             "marca": self.filter_widgets["marca"].get_selected(),
             "fecha_desde": self.fecha_desde_var.get().strip(),
             "fecha_hasta": self.fecha_hasta_var.get().strip(),
@@ -214,7 +217,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
         elif tab_activa == "Pedidos pendientes":
             modo_pedidos = self.pedidos_modo_var.get()
             try:
-                self.pedidos_pendientes_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, modo_pedidos)
+                pedidos_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, modo_pedidos)
+                self._refresh_pedidos_local_filter_options(pedidos_rows)
+                self.pedidos_pendientes_rows, pedidos_kpi = self._apply_pedidos_local_filters(pedidos_rows, pedidos_kpi)
             except Exception as exc:
                 self.pedidos_pendientes_rows = []
                 logging.getLogger(__name__).warning("No se pudo cargar pedidos pendientes: %s", exc)
@@ -467,6 +472,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.fecha_hasta_var.set("")
         self.pedidos_modo_var.set("10_dias")
         self._sync_pedidos_mode_combo()
+        self.pedidos_grupo_confeccion_filter.clear()
+        self.pedidos_perfil_confeccion_filter.clear()
         self._clear_saved_filters()
         self._load_filter_options(contextual=True)
         self.filters_status_var.set("Sin filtros activos")
@@ -538,7 +545,6 @@ class PlanificacionDiariaScreen(ttk.Frame):
             "semana": "Semana",
             "var_coop": "Variedad Coop",
             "grupo_varietal": "Grupo varietal",
-            "grupo_confeccion": "Grupo confección",
             "marca": "Marca",
             "fecha_desde": "Fecha desde",
             "fecha_hasta": "Fecha hasta",
@@ -547,7 +553,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         if not has_values:
             return "Sin filtros activos"
         parts: list[str] = []
-        for key in ("pedidos_modo", "campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "grupo_confeccion", "marca", "fecha_desde", "fecha_hasta"):
+        for key in ("pedidos_modo", "campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "marca", "fecha_desde", "fecha_hasta"):
             value = payload.get(key, []) if key in self.FILTER_KEYS else payload.get(key, "")
             if key == "pedidos_modo":
                 display = self._pedidos_mode_label(str(value).strip())
@@ -559,8 +565,11 @@ class PlanificacionDiariaScreen(ttk.Frame):
         return "Filtros activos: " + " | ".join(parts)
 
     def _save_filters(self, payload: dict) -> None:
+        enriched = dict(payload)
+        enriched["pedidos_grupo_confeccion"] = self.pedidos_grupo_confeccion_filter.get_selected()
+        enriched["pedidos_perfil_confeccion"] = self.pedidos_perfil_confeccion_filter.get_selected()
         self.FILTERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        self.FILTERS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.FILTERS_FILE.write_text(json.dumps(enriched, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _load_filters(self) -> None:
         if not self.FILTERS_FILE.exists():
@@ -577,8 +586,48 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.fecha_desde_var.set(str(payload.get("fecha_desde", "") or "").strip())
         self.fecha_hasta_var.set(str(payload.get("fecha_hasta", "") or "").strip())
         self.pedidos_modo_var.set(str(payload.get("pedidos_modo", "10_dias") or "10_dias").strip() or "10_dias")
+        pedidos_gc = payload.get("pedidos_grupo_confeccion", [])
+        pedidos_pc = payload.get("pedidos_perfil_confeccion", [])
+        gc_vals = pedidos_gc if isinstance(pedidos_gc, list) else ([str(pedidos_gc)] if str(pedidos_gc or "").strip() else [])
+        pc_vals = pedidos_pc if isinstance(pedidos_pc, list) else ([str(pedidos_pc)] if str(pedidos_pc or "").strip() else [])
+        self.pedidos_grupo_confeccion_filter.set_selected([str(v).strip() for v in gc_vals if str(v or "").strip()])
+        self.pedidos_perfil_confeccion_filter.set_selected([str(v).strip() for v in pc_vals if str(v or "").strip()])
         self._sync_pedidos_mode_combo()
         self.filters_status_var.set(self._format_filters_status(self._filters_payload()))
+
+    def _refresh_pedidos_local_filter_options(self, pedidos_rows: list[dict]) -> None:
+        selected_gc = self.pedidos_grupo_confeccion_filter.get_selected()
+        selected_pc = self.pedidos_perfil_confeccion_filter.get_selected()
+        gc_options = sorted({str(r.get("Grupo confección", "")).strip() for r in pedidos_rows if str(r.get("Grupo confección", "")).strip()})
+        pc_options = sorted({str(r.get("Perfil confección", "")).strip() for r in pedidos_rows if str(r.get("Perfil confección", "")).strip()})
+        self.pedidos_grupo_confeccion_filter.set_options(gc_options)
+        self.pedidos_perfil_confeccion_filter.set_options(pc_options)
+        self.pedidos_grupo_confeccion_filter.set_selected([v for v in selected_gc if v in gc_options])
+        self.pedidos_perfil_confeccion_filter.set_selected([v for v in selected_pc if v in pc_options])
+
+    def _apply_pedidos_local_filters(self, pedidos_rows: list[dict], pedidos_kpi: dict) -> tuple[list[dict], dict]:
+        gc_selected = set(self.pedidos_grupo_confeccion_filter.get_selected())
+        pc_selected = set(self.pedidos_perfil_confeccion_filter.get_selected())
+        filtered = [
+            row for row in pedidos_rows
+            if (not gc_selected or str(row.get("Grupo confección", "")).strip() in gc_selected)
+            and (not pc_selected or str(row.get("Perfil confección", "")).strip() in pc_selected)
+        ]
+        if not gc_selected and not pc_selected:
+            return filtered, pedidos_kpi
+        kg_pedido = sum(float(r.get("Kg pedido teórico", 0) or 0) for r in filtered)
+        merma = sum(float(r.get("Merma kg", 0) or 0) for r in filtered)
+        return filtered, {
+            "Kg pedido teórico total": kg_pedido,
+            "Kg hecho real total": sum(float(r.get("Kg hecho real", 0) or 0) for r in filtered),
+            "Kg pendiente total": sum(float(r.get("Kg pendiente", 0) or 0) for r in filtered),
+            "Merma kg total": merma,
+            "% merma total": (merma / max(kg_pedido, 1e-9)) * 100,
+            "Nº pedidos": len({str(r.get("IdPedidoLora", "")).strip() for r in filtered if str(r.get("IdPedidoLora", "")).strip()}),
+            "Nº líneas": len(filtered),
+            "Nº líneas sin datos": sum(1 for r in filtered if str(r.get("Estado", "")).strip() == "Sin datos"),
+            "Nº líneas parciales": sum(1 for r in filtered if str(r.get("Estado", "")).strip() == "Parcial"),
+        }
 
     def _clear_saved_filters(self) -> None:
         if self.FILTERS_FILE.exists():
