@@ -51,6 +51,9 @@ class PlanningService:
     def get_filter_options(self, key: str) -> list[str]:
         return self.repo.get_filter_options(key)
 
+    def get_filter_options_contextual(self, key: str, filters: dict) -> list[str]:
+        return self.repo.get_filter_options_contextual(key, filters)
+
     def get_correspondencias_calibres(self, cultivo: str) -> list[dict]:
         return self.repo.get_correspondencias_calibres(cultivo)
 

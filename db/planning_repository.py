@@ -1817,3 +1817,93 @@ class PlanningRepository:
             return []
         values = sorted({str(r.get(col, "")).strip() for r in rows if str(r.get(col, "")).strip()})
         return values
+
+    def get_filter_options_contextual(self, key: str, filters: dict) -> list[str]:
+        pedidos_path = self._db_path(DB_PEDIDOS)
+        if not pedidos_path.exists():
+            return []
+
+        key_map = {
+            "campana": 'p."Campaña"',
+            "cultivo": 'p."Cultivo"',
+            "semana": 'p."Semana"',
+            "empresa": 'p."EMPRESA"',
+            "var_coop": 'p."VarCoop"',
+            "marca": 'p."Marca"',
+            "grupo_confeccion": 'mc."GRUPO"',
+            "perfil_confeccion": 'mc."GRUPO"',
+            "grupo_varietal": "TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,''))",
+        }
+        target_col = key_map.get(key)
+        if not target_col:
+            return []
+
+        with sqlite3.connect(pedidos_path) as conn:
+            conn.row_factory = sqlite3.Row
+            db_eepl = self._db_path(DB_EEPPL)
+            db_fruta = self._db_path(DB_FRUTA)
+            conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
+            conn.execute(f"ATTACH DATABASE '{db_fruta.as_posix()}' AS dbfruta")
+            query = f"""
+                SELECT DISTINCT {target_col} AS val
+                FROM "Pedidos" p
+                LEFT JOIN dbfruta."MConfecciones" mc
+                  ON CAST(mc."CODIGO" AS TEXT) = CAST(p."Confeccion" AS TEXT)
+                LEFT JOIN dbeepl."MVariedad" mv
+                  ON UPPER(TRIM(mv."Variedad")) = UPPER(TRIM(p."VarCoop"))
+                 AND UPPER(TRIM(mv."CULTIVO")) = UPPER(TRIM(p."Cultivo"))
+                WHERE COALESCE(p."Cancelado", 0) = 0
+            """
+            params: list[Any] = []
+            for field, col in (
+                ("campana", 'p."Campaña"'),
+                ("cultivo", 'p."Cultivo"'),
+                ("semana", 'p."Semana"'),
+                ("empresa", 'p."EMPRESA"'),
+                ("var_coop", 'p."VarCoop"'),
+                ("marca", 'p."Marca"'),
+            ):
+                if field == key:
+                    continue
+                values = self._normalize_filter_values(filters.get(field))
+                if values:
+                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
+                    query += f" AND UPPER(TRIM(COALESCE({col}, ''))) IN ({placeholders})"
+                    params.extend(values)
+
+            if key != "grupo_varietal":
+                gv_values = self._normalize_filter_values(filters.get("grupo_varietal"))
+                if gv_values:
+                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(gv_values))
+                    query += f" AND UPPER(TRIM(COALESCE(TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')), ''))) IN ({placeholders})"
+                    params.extend(gv_values)
+
+            if key not in {"grupo_confeccion", "perfil_confeccion"}:
+                gc_values = self._normalize_filter_values(filters.get("grupo_confeccion"))
+                if gc_values:
+                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(gc_values))
+                    query += f" AND UPPER(TRIM(COALESCE(mc.\"GRUPO\", ''))) IN ({placeholders})"
+                    params.extend(gc_values)
+
+            fecha_desde = str(filters.get("fecha_desde") or "").strip()
+            fecha_hasta = str(filters.get("fecha_hasta") or "").strip()
+            if fecha_desde:
+                query += " AND date(p.\"FechaSalida\") >= date(?)"
+                params.append(fecha_desde)
+            if fecha_hasta:
+                query += " AND date(p.\"FechaSalida\") <= date(?)"
+                params.append(fecha_hasta)
+
+            rows = conn.execute(query, params).fetchall()
+
+        values = [str(r["val"]).strip() for r in rows if str(r["val"] or "").strip()]
+        if key == "perfil_confeccion":
+            values = sorted({detectar_perfil_confeccion_desde_grupo(v) for v in values if str(v).strip()})
+        elif key == "semana":
+            try:
+                values = sorted(set(values), key=lambda x: int(float(x)))
+            except Exception:
+                values = sorted(set(values))
+        else:
+            values = sorted(set(values))
+        return values
