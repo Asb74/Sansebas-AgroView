@@ -25,6 +25,62 @@ class LegacySyncService:
         self.vbs_path = Path("legacy_scripts") / "export_access_table.vbs"
         self._sync_running = False
         self.runtime_db = RuntimeDatabaseService()
+        self.ensure_default_planificacion_settings()
+
+    def ensure_default_planificacion_settings(self) -> None:
+        settings = self.repository.get_settings()
+        defaults = [
+            {
+                "Nombre": "Pedidos",
+                "AccessTable": "Pedidos",
+                "SqliteTable": "Pedidos",
+                "SqlitePath": str(Path(CENTRAL_SQLITE_DIR) / "DBPedidos.sqlite"),
+                "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
+                "Activa": 1,
+            },
+            {
+                "Nombre": "Loteado",
+                "AccessTable": "Loteado",
+                "SqliteTable": "Loteado",
+                "SqlitePath": str(Path(CENTRAL_SQLITE_DIR) / "bdloteado.sqlite"),
+                "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
+                "Activa": 1,
+            },
+            {
+                "Nombre": "Lote",
+                "AccessTable": "Lote",
+                "SqliteTable": "Lote",
+                "SqlitePath": str(Path(CENTRAL_SQLITE_DIR) / "bdloteado.sqlite"),
+                "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
+                "Activa": 1,
+            },
+            {
+                "Nombre": "PesosFres",
+                "AccessTable": "PesosFres",
+                "SqliteTable": "PesosFres",
+                "SqlitePath": str(Path(CENTRAL_SQLITE_DIR) / "DBfruta.sqlite"),
+                "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
+                "Activa": 1,
+            },
+        ]
+        for default in defaults:
+            sqlite_file = Path(default["SqlitePath"]).name.lower()
+            sqlite_table = default["SqliteTable"].lower()
+            access_table = default["AccessTable"].lower()
+            exists = any(
+                Path(str(s.get("SqlitePath", ""))).name.lower() == sqlite_file
+                and str(s.get("SqliteTable", "")).lower() == sqlite_table
+                and str(s.get("AccessTable", "")).lower() == access_table
+                for s in settings
+            )
+            if exists:
+                continue
+            access_path = self._resolve_default_access_path(settings, sqlite_file, access_table)
+            data = dict(default)
+            data["AccessPath"] = access_path
+            self.repository.add_setting(data)
+            settings.append(data)
+            logger.info("Configuración legacy creada automáticamente: %s", default["Nombre"])
 
     def get_settings(self) -> list[dict[str, Any]]:
         return self.repository.get_settings()
@@ -114,6 +170,7 @@ class LegacySyncService:
         self._sync_running = True
         start = datetime.utcnow()
         fecha_corte = date.today().isoformat()
+        logger.info("Sync planificación usando CENTRAL_SQLITE_DIR=%s", CENTRAL_SQLITE_DIR)
         logger.info("Iniciando actualización planificación rápida. Fecha corte=%s", fecha_corte)
         try:
             pedidos = self._actualizar_pedidos_desde_hoy(fecha_corte)
@@ -326,7 +383,28 @@ class LegacySyncService:
         for s in self.repository.get_settings():
             if Path(str(s.get("SqlitePath", ""))).name.lower() == sqlite_name.lower() and str(s.get("SqliteTable", "")).lower() == sqlite_table.lower():
                 return s
-        raise ValueError(f"No existe configuración legacy para {sqlite_name}:{sqlite_table}")
+        raise ValueError(
+            f"No existe configuración legacy para {sqlite_name}:{sqlite_table}.\n"
+            "Se intentará crear automáticamente."
+        )
+
+    @staticmethod
+    def _resolve_default_access_path(settings: list[dict[str, Any]], sqlite_file: str, access_table: str) -> str:
+        for setting in settings:
+            if Path(str(setting.get("SqlitePath", ""))).name.lower() == sqlite_file:
+                access_path = str(setting.get("AccessPath", "")).strip()
+                if access_path:
+                    return access_path
+        for setting in settings:
+            if str(setting.get("AccessTable", "")).lower() == access_table:
+                access_path = str(setting.get("AccessPath", "")).strip()
+                if access_path:
+                    return access_path
+        for setting in settings:
+            access_path = str(setting.get("AccessPath", "")).strip()
+            if access_path:
+                return access_path
+        return ""
 
     def _run_export_custom(self, setting: dict[str, Any], table_or_query: str, output_tag: str | None = None) -> tuple[bool, str, Path | None, int]:
         tmp = dict(setting)
