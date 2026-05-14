@@ -6,10 +6,17 @@ from db.connection import get_connection
 
 DEFAULTS_PERCENT = {
     "CAMPO_REAL": (80, 20, 15, 1, 100, 1),
-    "ALMACEN_INDUSTRIAL": (80, 20, 5, 0, 100, 1),
-    "PRECALIBRADO": (80, 20, 8, 0, 100, 1),
-    "ALMACEN_COMERCIAL": (95, 5, 2, 0, 50, 1),
+    "CAMPO_ESTIMADO": (80, 20, 15, 0, 100, 1),
+    "STOCK_REPROCESO": (80, 20, 5, 0, 100, 1),
+    "STOCK_COMERCIAL": (95, 5, 2, 0, 50, 1),
     "DESCONOCIDO": (80, 20, 10, 0, 80, 1),
+}
+
+VISIBLE_ORIGINS = tuple(DEFAULTS_PERCENT.keys())
+LEGACY_ORIGIN_MIGRATION = {
+    "ALMACEN_INDUSTRIAL": "STOCK_REPROCESO",
+    "PRECALIBRADO": "STOCK_REPROCESO",
+    "ALMACEN_COMERCIAL": "STOCK_COMERCIAL",
 }
 
 
@@ -65,6 +72,7 @@ class OperationalQualityRepository:
 
     def ensure_defaults(self) -> None:
         self.ensure_schema()
+        self._migrate_legacy_origins()
         now = datetime.utcnow().isoformat()
         with get_connection() as conn:
             for origen, vals in DEFAULTS_PERCENT.items():
@@ -98,3 +106,57 @@ class OperationalQualityRepository:
                     """,
                     (origen, p1/100.0, p2/100.0, d/100.0, h, ir/100.0, a, now, now),
                 )
+
+    def _migrate_legacy_origins(self) -> None:
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            rows = conn.execute("SELECT * FROM OperationalQualitySettings").fetchall()
+            by_origin = {str(r["Origen"]): dict(r) for r in rows}
+
+            if "STOCK_REPROCESO" not in by_origin:
+                source = by_origin.get("ALMACEN_INDUSTRIAL") or by_origin.get("PRECALIBRADO")
+                if source:
+                    conn.execute(
+                        """
+                        INSERT INTO OperationalQualitySettings (Origen, PrimeraPct, SegundaPct, DestrioFallbackPct, UsarDestrioHistorico, IndustriaRecuperablePct, Activo, FechaCreacion, FechaModificacion)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(Origen) DO UPDATE SET
+                            PrimeraPct=excluded.PrimeraPct,
+                            SegundaPct=excluded.SegundaPct,
+                            DestrioFallbackPct=excluded.DestrioFallbackPct,
+                            UsarDestrioHistorico=excluded.UsarDestrioHistorico,
+                            IndustriaRecuperablePct=excluded.IndustriaRecuperablePct,
+                            Activo=excluded.Activo,
+                            FechaModificacion=excluded.FechaModificacion
+                        """,
+                        (
+                            "STOCK_REPROCESO", source["PrimeraPct"], source["SegundaPct"], source["DestrioFallbackPct"],
+                            int(source["UsarDestrioHistorico"]), source["IndustriaRecuperablePct"], int(source["Activo"]),
+                            source.get("FechaCreacion") or now, now,
+                        ),
+                    )
+
+            if "STOCK_COMERCIAL" not in by_origin and "ALMACEN_COMERCIAL" in by_origin:
+                source = by_origin["ALMACEN_COMERCIAL"]
+                conn.execute(
+                    """
+                    INSERT INTO OperationalQualitySettings (Origen, PrimeraPct, SegundaPct, DestrioFallbackPct, UsarDestrioHistorico, IndustriaRecuperablePct, Activo, FechaCreacion, FechaModificacion)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(Origen) DO UPDATE SET
+                        PrimeraPct=excluded.PrimeraPct,
+                        SegundaPct=excluded.SegundaPct,
+                        DestrioFallbackPct=excluded.DestrioFallbackPct,
+                        UsarDestrioHistorico=excluded.UsarDestrioHistorico,
+                        IndustriaRecuperablePct=excluded.IndustriaRecuperablePct,
+                        Activo=excluded.Activo,
+                        FechaModificacion=excluded.FechaModificacion
+                    """,
+                    (
+                        "STOCK_COMERCIAL", source["PrimeraPct"], source["SegundaPct"], source["DestrioFallbackPct"],
+                        int(source["UsarDestrioHistorico"]), source["IndustriaRecuperablePct"], int(source["Activo"]),
+                        source.get("FechaCreacion") or now, now,
+                    ),
+                )
+
+            for legacy in LEGACY_ORIGIN_MIGRATION:
+                conn.execute("UPDATE OperationalQualitySettings SET Activo=0, FechaModificacion=? WHERE Origen=?", (now, legacy))
