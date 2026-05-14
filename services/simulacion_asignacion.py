@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import date, datetime
 import tkinter as tk
 from tkinter import ttk
 import unicodedata
@@ -74,6 +75,45 @@ def _to_float(valor: object) -> float:
 def formatear_kg(valor: object) -> str:
     num = _to_float(valor)
     return f"{num:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _parse_fecha_salida(valor: object) -> date | None:
+    if not valor:
+        return None
+    txt = str(valor).strip()
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(txt[:10], fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _calcular_bloque_temporal(fecha: date | None, hoy: date) -> tuple[int, str]:
+    if not fecha:
+        return 9999, "FUTURO"
+    dias = (fecha - hoy).days
+    if dias <= 0:
+        return 0, "HOY"
+    if dias == 1:
+        return 1, "MAÑANA"
+    if dias <= 7:
+        return dias, f"+{dias} DÍAS"
+    return dias, "FUTURO"
+
+
+def _build_pool_id(candidato: dict) -> str:
+    campos = [
+        candidato.get("Origen", candidato.get("origen", "")),
+        candidato.get("Variedad stock", candidato.get("variedad_stock", candidato.get("Variedad", ""))),
+        candidato.get("Calibre stock", candidato.get("calibre_stock", candidato.get("Calibre", ""))),
+        candidato.get("Categoría", candidato.get("categoria_stock", candidato.get("categoria", ""))),
+        candidato.get("id_palet", candidato.get("palet", candidato.get("lote", candidato.get("boleta", "")))),
+        candidato.get("id_confeccion", ""),
+        candidato.get("pedido_stock", candidato.get("pedido", "")),
+    ]
+    partes = [_norm_text(c) for c in campos if _norm_text(c)]
+    return "|".join(partes) if partes else "POOL_DESCONOCIDO"
 
 
 def detectar_perfil_confeccion(pedido: dict) -> str:
@@ -441,6 +481,87 @@ def simular_asignacion_pedido(pedido: dict, candidatos: list[dict], scoring: dic
     }
 
 
+def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None) -> tuple[list[dict], list[dict], dict]:
+    hoy = date.today()
+    pedidos_meta = []
+    for pedido in pedidos:
+        fecha_salida = _parse_fecha_salida(pedido.get("Fecha salida", pedido.get("fecha_salida", "")))
+        dias_hasta, bloque = _calcular_bloque_temporal(fecha_salida, hoy)
+        prioridad_manual = int(_to_float(pedido.get("prioridad_manual", 0)))
+        item = dict(pedido)
+        item["fecha_salida"] = fecha_salida.isoformat() if fecha_salida else ""
+        item["dias_hasta_salida"] = dias_hasta
+        item["bloque_temporal"] = bloque
+        item["prioridad_fecha"] = dias_hasta
+        item["prioridad_manual"] = prioridad_manual
+        pedidos_meta.append(item)
+    pedidos_meta.sort(key=lambda p: (p.get("dias_hasta_salida", 9999), -int(_to_float(p.get("prioridad_manual", 0))), -_to_float(p.get("Kg pedidos pendientes", p.get("kg_pendientes", 0)))))
+
+    stock_simulado: dict[str, dict] = {}
+    asignaciones: list[dict] = []
+    simulaciones: list[dict] = []
+
+    for pedido in pedidos_meta:
+        candidatos_raw = get_candidatos_cb(pedido) or []
+        candidatos: list[dict] = []
+        for cand in deepcopy(candidatos_raw):
+            score, flex_txt = calcular_score_candidato(cand, pedido=pedido, scoring=scoring)
+            utilidad = calcular_utilidad_operativa(pedido, cand)
+            cand.update(utilidad)
+            cand["score_simulacion"] = score
+            cand["flexibilidad_usada_simulacion"] = flex_txt
+            cand["score_total"] = score + int(cand.get("penalizacion_riesgo", 0) or 0)
+            pool_id = _build_pool_id(cand)
+            cand["pool_id"] = pool_id
+            if pool_id not in stock_simulado:
+                stock_simulado[pool_id] = {
+                    "kg_fisicos": _to_float(cand.get("kg_fisicos", 0)),
+                    "kg_utiles_finales": _to_float(cand.get("kg_utiles_estimados", 0)),
+                    "kg_restante_simulado": _to_float(cand.get("kg_utiles_estimados", 0)),
+                    "origen": cand.get("Origen", cand.get("origen", "")),
+                    "variedad": cand.get("Variedad stock", cand.get("variedad_stock", "")),
+                    "calibre": cand.get("Calibre stock", cand.get("calibre_stock", "")),
+                    "categoria": cand.get("Categoría", cand.get("categoria_stock", "")),
+                }
+            candidatos.append(cand)
+        candidatos = ordenar_candidatos_simulacion(candidatos)
+        acumulado_potencial = 0.0
+        for cand in candidatos:
+            acumulado_potencial += _to_float(cand.get("kg_utiles_estimados", 0))
+            cand["cobertura_acumulada"] = acumulado_potencial
+
+        kg_necesario = _to_float(pedido.get("Kg pedidos pendientes", pedido.get("kg_pendientes", 0)))
+        pendiente = kg_necesario
+        asignado = 0.0
+        for cand in candidatos:
+            if pendiente <= 0:
+                break
+            pool = stock_simulado.get(cand["pool_id"], {})
+            antes = _to_float(pool.get("kg_restante_simulado", 0))
+            kg_asign = min(pendiente, antes)
+            despues = max(0.0, antes - kg_asign)
+            pool["kg_restante_simulado"] = despues
+            cand["kg_restante_antes"] = antes
+            cand["kg_asignado_simulado"] = kg_asign
+            cand["kg_restante_despues"] = despues
+            pendiente -= kg_asign
+            asignado += kg_asign
+            if kg_asign > 0:
+                asignaciones.append({"pedido_id": pedido.get("IdPedidoLora", pedido.get("id_pedido", "")), "pool_id": cand["pool_id"], "kg_asignados": kg_asign, "origen": cand.get("Origen", ""), "tipo_cobertura": cand.get("Tipo cobertura", ""), "score": cand.get("score_total", 0), "riesgo": cand.get("riesgo_operativo", "")})
+
+        estado_global = "TOTAL" if asignado >= kg_necesario and kg_necesario > 0 else "PARCIAL" if asignado > 0 else "INSUFICIENTE"
+        simulaciones.append({"pedido": pedido, "kg_necesario": kg_necesario, "kg_pendientes": kg_necesario, "estado": estado_global, "kg_cobertura_simulada": asignado, "kg_asignado_simulado": asignado, "kg_faltante_simulado": max(0.0, kg_necesario - asignado), "estado_global": estado_global, "kg_potencial_fisico": sum(_to_float(c.get("kg_fisicos", 0)) for c in candidatos), "kg_potencial_util": acumulado_potencial, "candidatos": candidatos})
+
+    conteo_pooles: dict[str, int] = {}
+    for sim in simulaciones:
+        for c in sim["candidatos"]:
+            conteo_pooles[c["pool_id"]] = conteo_pooles.get(c["pool_id"], 0) + 1
+    for sim in simulaciones:
+        for c in sim["candidatos"]:
+            c["compartido"] = "Sí" if conteo_pooles.get(c["pool_id"], 0) > 1 else "No"
+    return simulaciones, asignaciones, stock_simulado
+
+
 def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None) -> None:
     popup = tk.Toplevel(parent)
     popup.title("Simulación de asignación")
@@ -451,11 +572,11 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     bottom = ttk.LabelFrame(popup, text="Candidatos de cobertura", padding=8)
     bottom.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
-    pedidos_cols = ["Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg potencial físico", "Kg potencial útil"]
+    pedidos_cols = ["Fecha salida", "Bloque temporal", "Prioridad manual", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Kg potencial físico", "Kg potencial útil"]
     pedidos_tbl = DataTable(top, pedidos_cols)
     pedidos_tbl.pack(fill="both", expand=True)
 
-    cand_cols = ["Origen", "Tipo cobertura", "Variedad stock", "Calibre stock", "Categoría", "Kg físicos", "% destrío", "Kg destrío", "% primera", "Kg primera", "% segunda", "Kg segunda", "Kg industria", "Kg podrido", "Kg útiles finales", "Riesgo", "Motivo riesgo", "Score compat.", "Score total", "Flexibilidad aplicada", "Cobertura acumulada"]
+    cand_cols = ["Origen", "Tipo cobertura", "Variedad stock", "Calibre stock", "Categoría", "Kg físicos", "% destrío", "Kg destrío", "% primera", "Kg primera", "% segunda", "Kg segunda", "Kg industria", "Kg podrido", "Kg útiles finales", "Kg restante antes", "Kg asignado simulado", "Kg restante después", "Pool ID", "Compartido", "Riesgo", "Motivo riesgo", "Score compat.", "Score total", "Flexibilidad aplicada", "Cobertura acumulada"]
     cand_tbl = DataTable(bottom, cand_cols)
     cand_tbl.pack(fill="both", expand=True)
 
@@ -471,7 +592,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     cand_tbl.tree.tag_configure("riesgo_medio", background="#fff8b3")
     cand_tbl.tree.tag_configure("riesgo_alto", background="#f8d7da")
 
-    simulaciones: list[dict] = []
+    simulaciones, asignaciones_simuladas, _stock_simulado = simular_asignacion_global(pedidos, get_candidatos_cb, scoring=scoring)
     resumen_rows: list[dict] = []
     def _grupo_pedido(p: dict) -> str:
         return _norm_text(p.get("grupo_confeccion") or p.get("GrupoConfeccion") or p.get("GRUPO") or p.get("grupo")) or "DESCONOCIDO"
@@ -479,15 +600,16 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     def _perfil_pedido(p: dict, grupo: str) -> str:
         return _norm_text(p.get("perfil_confeccion")) or detectar_perfil_confeccion_desde_grupo(grupo) or "DESCONOCIDO"
 
-    for pedido in pedidos:
-        candidatos = get_candidatos_cb(pedido) or []
-        simulacion = simular_asignacion_pedido(pedido, candidatos, scoring=scoring)
-        simulaciones.append(simulacion)
-        estado = simulacion["estado"]
+    for simulacion in simulaciones:
+        pedido = simulacion["pedido"]
+        estado = simulacion["estado_global"]
         tag_estado = "estado_total" if estado == "TOTAL" else "estado_parcial" if estado == "PARCIAL" else "estado_insuf"
         grupo_conf = _grupo_pedido(pedido)
         perfil_conf = _perfil_pedido(pedido, grupo_conf)
         resumen_rows.append({
+            "Fecha salida": pedido.get("fecha_salida", pedido.get("Fecha salida", "")),
+            "Bloque temporal": pedido.get("bloque_temporal", ""),
+            "Prioridad manual": int(_to_float(pedido.get("prioridad_manual", 0))),
             "Cliente": pedido.get("Cliente", ""),
             "Variedad": pedido.get("Variedad", ""),
             "Calibre": pedido.get("Calibre", ""),
@@ -495,18 +617,24 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Grupo confección": grupo_conf,
             "Perfil confección": perfil_conf,
             "Kg pendientes": formatear_kg(simulacion["kg_pendientes"]),
-            "Estado simulación": estado,
-            "Kg cobertura simulada": formatear_kg(simulacion["kg_cobertura_simulada"]),
+            "Estado simulación": simulacion.get("estado", "N/A"),
+            "Kg cobertura simulada": formatear_kg(simulacion.get("kg_cobertura_simulada", 0)),
+            "Kg asignado global": formatear_kg(simulacion["kg_asignado_simulado"]),
+            "Kg faltante global": formatear_kg(simulacion["kg_faltante_simulado"]),
+            "Estado global": estado,
             "Kg potencial físico": formatear_kg(simulacion["kg_potencial_fisico"]),
             "Kg potencial útil": formatear_kg(simulacion["kg_potencial_util"]),
             "__tags__": (tag_estado,),
         })
 
     total_pedidos = len(simulaciones)
-    totales = sum(1 for s in simulaciones if s["estado"] == "TOTAL")
-    parciales = sum(1 for s in simulaciones if s["estado"] == "PARCIAL")
-    insuficientes = sum(1 for s in simulaciones if s["estado"] == "INSUFICIENTE")
-    resumen.configure(text=f"Pedidos: {total_pedidos}   Totales: {totales}   Parciales: {parciales}   Insuficientes: {insuficientes}")
+    totales = sum(1 for s in simulaciones if s["estado_global"] == "TOTAL")
+    parciales = sum(1 for s in simulaciones if s["estado_global"] == "PARCIAL")
+    insuficientes = sum(1 for s in simulaciones if s["estado_global"] == "INSUFICIENTE")
+    kg_pend_total = sum(_to_float(s["kg_necesario"]) for s in simulaciones)
+    kg_asig_total = sum(_to_float(s["kg_asignado_simulado"]) for s in simulaciones)
+    kg_falt_total = sum(_to_float(s["kg_faltante_simulado"]) for s in simulaciones)
+    resumen.configure(text=f"Pedidos: {total_pedidos}   Totales globales: {totales}   Parciales globales: {parciales}   Insuficientes globales: {insuficientes}   Kg pendientes total: {formatear_kg(kg_pend_total)}   Kg asignados simulados: {formatear_kg(kg_asig_total)}   Kg faltantes simulados: {formatear_kg(kg_falt_total)}")
 
     pedidos_tbl.set_rows(resumen_rows)
 
@@ -534,6 +662,11 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
                 "Kg industria": formatear_kg(c.get("kg_industria_estimado", 0)),
                 "Kg podrido": formatear_kg(c.get("kg_podrido_estimado", 0)),
                 "Kg útiles finales": formatear_kg(c.get("kg_utiles_estimados", 0)),
+                "Kg restante antes": formatear_kg(c.get("kg_restante_antes", c.get("kg_utiles_estimados", 0))),
+                "Kg asignado simulado": formatear_kg(c.get("kg_asignado_simulado", 0)),
+                "Kg restante después": formatear_kg(c.get("kg_restante_despues", c.get("kg_utiles_estimados", 0))),
+                "Pool ID": c.get("pool_id", ""),
+                "Compartido": c.get("compartido", "No"),
                 "Riesgo": riesgo,
                 "Motivo riesgo": c.get("motivo_riesgo", ""),
                 "Score compat.": int(_to_float(c.get("score_simulacion", 0))),
@@ -550,11 +683,12 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             text=(
                 f"Id confección: {sim.get('pedido', {}).get('id_confeccion', '')} · "
                 f"Nombre confección: {sim.get('pedido', {}).get('nombre_confeccion', '')} · "
-                f"Pedido seleccionado · Kg pendientes: {formatear_kg(sim['kg_pendientes'])} · "
-                f"Kg cobertura simulada: {formatear_kg(sim['kg_cobertura_simulada'])} · "
-                f"Kg potencial físico: {formatear_kg(sim['kg_potencial_fisico'])} · "
-                f"Kg potencial útil: {formatear_kg(sim['kg_potencial_util'])} · "
-                f"Estado: {sim['estado']} · Grupo confección: {grupo_conf} · Perfil confección: {perfil_conf}"
+                f"Pedido seleccionado · Fecha salida: {sim.get('pedido', {}).get('fecha_salida', '')} · "
+                f"Bloque temporal: {sim.get('pedido', {}).get('bloque_temporal', '')} · "
+                f"Kg pendiente: {formatear_kg(sim['kg_necesario'])} · "
+                f"Kg asignado global: {formatear_kg(sim['kg_asignado_simulado'])} · "
+                f"Kg faltante global: {formatear_kg(sim['kg_faltante_simulado'])} · "
+                f"Estado global: {sim['estado_global']} · Grupo confección: {grupo_conf} · Perfil confección: {perfil_conf}"
             )
         )
 
