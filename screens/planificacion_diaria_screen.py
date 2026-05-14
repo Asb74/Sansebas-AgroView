@@ -43,9 +43,6 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.load_data(save_filters=False)
 
     def _load_filter_options(self, contextual: bool = True) -> None:
-        diag = self.service.diagnose_loteado_tables()
-        if diag.get("warning"):
-            logging.getLogger(__name__).warning(diag["warning"])
         payload = self._filters_payload() if contextual else {}
         for key in self.FILTER_KEYS:
             selected = self.filter_widgets[key].get_selected() if key in self.filter_widgets else []
@@ -54,7 +51,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 valid = [v for v in selected if v in options]
                 self.filter_widgets[key].set_options(options)
                 self.filter_widgets[key].set_selected(valid)
-            except Exception as exc:
+            except Exception:
                 logging.getLogger(__name__).exception("No se pudo cargar opciones de filtro %s", key)
 
     def _build_ui(self) -> None:
@@ -517,6 +514,22 @@ class PlanificacionDiariaScreen(ttk.Frame):
             messagebox.showinfo("Actualizar planificación", msg.replace(" | ", "\n").replace("Planificación rápida OK. ", ""), parent=self)
             self._load_filter_options()
             self.load_data(save_filters=True)
+        except ValueError as exc:
+            msg = str(exc)
+            if "No existe configuración legacy" in msg and "DBPedidos.sqlite:Pedidos" in msg:
+                messagebox.showwarning(
+                    "Actualizar planificación",
+                    "No hay configuración legacy para DBPedidos.sqlite:Pedidos. "
+                    "Configúrala en Configuración > Actualización tablas legacy para habilitar esta acción.",
+                    parent=self,
+                )
+                logging.getLogger(__name__).warning(msg)
+                return
+            logging.getLogger(__name__).exception("Error de configuración al actualizar planificación")
+            messagebox.showerror("Actualizar planificación", msg, parent=self)
+        except Exception as exc:
+            logging.getLogger(__name__).exception("Error inesperado al actualizar planificación")
+            messagebox.showerror("Actualizar planificación", f"No se pudo actualizar la planificación: {exc}", parent=self)
         finally:
             self._btn_actualizar_planificacion.configure(state="normal", text="Actualizar planificación")
 
