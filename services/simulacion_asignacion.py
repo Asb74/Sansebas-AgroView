@@ -7,6 +7,7 @@ from tkinter import ttk
 import unicodedata
 
 from services.operational_quality_service import OperationalQualityService
+from db.planning_repository import PlanningRepository
 from widgets.data_table import DataTable
 
 
@@ -561,6 +562,97 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
     return simulaciones, asignaciones, stock_simulado
 
 
+def _clasificar_perfil_calibre(cal_set: set[str]) -> str:
+    altos = {"7", "8", "9", "10"}
+    medios = {"4", "5", "6"}
+    bajos = {"0", "1", "2", "3"}
+    grupos = set()
+    if cal_set & altos:
+        grupos.add("gruesa")
+    if cal_set & medios:
+        grupos.add("media")
+    if cal_set & bajos:
+        grupos.add("fina")
+    if not grupos:
+        return "Sin histórico suficiente"
+    if len(grupos) == 1:
+        return {"gruesa": "Fruta gruesa", "media": "Fruta media", "fina": "Fruta fina"}[next(iter(grupos))]
+    return "Fruta media/fina" if grupos == {"media", "fina"} else "Perfil mixto"
+
+
+def _calcular_necesidades(simulaciones: list[dict]) -> tuple[list[dict], dict]:
+    agrupado: dict[tuple, dict] = {}
+    for sim in simulaciones:
+        falt = _to_float(sim.get("kg_faltante_simulado", 0))
+        if falt <= 0:
+            continue
+        p = sim.get("pedido", {})
+        variedad = p.get("Variedad", "")
+        grupo_var = p.get("Grupo varietal", p.get("grupo_varietal", ""))
+        calibre = p.get("Calibre", "")
+        categoria = p.get("Categoría", "")
+        grupo_conf = p.get("grupo_confeccion") or p.get("GrupoConfeccion") or p.get("GRUPO") or p.get("grupo") or "DESCONOCIDO"
+        perfil_conf = _norm_text(p.get("perfil_confeccion")) or detectar_perfil_confeccion_desde_grupo(grupo_conf)
+        key = (p.get("fecha_salida", ""), p.get("bloque_temporal", ""), variedad, grupo_var, calibre, categoria, grupo_conf, perfil_conf)
+        if key not in agrupado:
+            agrupado[key] = {"kg_utiles_faltantes": 0.0, "pedidos_afectados": 0, "prioridad_fecha": int(_to_float(p.get("prioridad_fecha", 9999))), "candidatos": []}
+        agrupado[key]["kg_utiles_faltantes"] += falt
+        agrupado[key]["pedidos_afectados"] += 1
+        agrupado[key]["candidatos"].extend([c for c in sim.get("candidatos", []) if detectar_perfil_stock(c) == "CAMPO_REAL"])
+
+    rows = []
+    for key, acc in sorted(agrupado.items(), key=lambda kv: kv[1]["prioridad_fecha"]):
+        fecha, bloque, variedad, grupo_var, calibre, categoria, grupo_conf, perfil_conf = key
+        cal_set = PlanningRepository.normalizar_calibre_a_set(calibre)
+        perfil_recomendado = _clasificar_perfil_calibre(cal_set)
+        kg_falt = acc["kg_utiles_faltantes"]
+        hist = acc["candidatos"]
+        pct_cal = None
+        pct_destrio = None
+        primera_pct = 0.80
+        if hist and cal_set:
+            peso = sum(max(_to_float(c.get("kg_fisicos", 0)), 1.0) for c in hist)
+            if peso > 0:
+                sum_cal = 0.0
+                sum_destrio = 0.0
+                for c in hist:
+                    w = max(_to_float(c.get("kg_fisicos", 0)), 1.0)
+                    cal_part = sum(_parse_percent_like(c.get(f"%Cal{n}")) or 0.0 for n in cal_set)
+                    sum_cal += cal_part * w
+                    podr, lin, mesa = extraer_componentes_destrio_historico(c)
+                    sum_destrio += ((podr or 0.0) + (lin or 0.0) + (mesa or 0.0)) * w
+                pct_cal = sum_cal / peso
+                pct_destrio = min(max(sum_destrio / peso, 0.0), 1.0)
+        aprove = None
+        kg_campo = None
+        if pct_cal is not None and pct_destrio is not None:
+            factor_conf = 1.0 if perfil_conf == "MALLA" else primera_pct
+            aprove = pct_cal * (1 - pct_destrio) * factor_conf
+            if aprove > 0:
+                kg_campo = kg_falt / aprove
+        rows.append({
+            "Prioridad temporal": bloque,
+            "Fecha límite": fecha,
+            "Variedad": variedad,
+            "Grupo varietal": grupo_var,
+            "Calibre necesario": calibre,
+            "Categoría": categoria,
+            "Grupo confección": grupo_conf,
+            "Perfil confección": perfil_conf,
+            "Kg útiles faltantes": formatear_kg(kg_falt),
+            "Kg campo estimados": formatear_kg(kg_campo) if kg_campo is not None else "Sin histórico",
+            "% aprovechamiento esperado": f"{(aprove*100):.1f}%" if aprove is not None else "Sin histórico",
+            "% destrío esperado": f"{(pct_destrio*100):.1f}%" if pct_destrio is not None else "Sin histórico",
+            "Perfil recomendado": perfil_recomendado if kg_campo is not None else "Sin histórico suficiente",
+            "Pedidos afectados": int(acc["pedidos_afectados"]),
+            "__prioridad__": acc["prioridad_fecha"],
+            "__tags__": ("prio_hoy",) if acc["prioridad_fecha"] <= 1 else ("prio_23",) if acc["prioridad_fecha"] <= 3 else ("prio_future",),
+        })
+    total_falt = sum(_to_float(r["Kg útiles faltantes"].replace(".", "").replace(",", ".")) for r in rows) if rows else 0.0
+    total_campo = sum(_to_float(r["Kg campo estimados"].replace(".", "").replace(",", ".")) for r in rows if r["Kg campo estimados"] != "Sin histórico")
+    return rows, {"n": len(rows), "kg_falt": total_falt, "kg_campo": total_campo}
+
+
 def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None) -> None:
     popup = tk.Toplevel(parent)
     popup.title("Simulación de asignación")
@@ -568,8 +660,14 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
 
     top = ttk.LabelFrame(popup, text="Pedidos pendientes", padding=8)
     top.pack(fill="both", expand=True, padx=8, pady=(8, 4))
-    bottom = ttk.LabelFrame(popup, text="Candidatos de cobertura", padding=8)
-    bottom.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+    notebook = ttk.Notebook(popup)
+    notebook.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+    bottom = ttk.Frame(notebook, padding=8)
+    needs_frame = ttk.Frame(notebook, padding=8)
+    sobrantes_frame = ttk.Frame(notebook, padding=8)
+    notebook.add(bottom, text="Candidatos")
+    notebook.add(needs_frame, text="Necesidades")
+    notebook.add(sobrantes_frame, text="Sobrantes")
 
     pedidos_cols = ["Fecha salida", "Bloque temporal", "Prioridad manual", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Kg potencial físico", "Kg potencial útil"]
     pedidos_tbl = DataTable(top, pedidos_cols)
@@ -578,6 +676,12 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     cand_cols = ["Origen", "Tipo cobertura", "Variedad stock", "Calibre stock", "Categoría", "Kg físicos", "% destrío", "Kg destrío", "% primera", "Kg primera", "% segunda", "Kg segunda", "Kg industria", "Kg podrido", "Kg útiles finales", "Kg restante antes", "Kg asignado simulado", "Kg restante después", "Pool ID", "Compartido", "Riesgo", "Motivo riesgo", "Score compat.", "Score total", "Flexibilidad aplicada", "Cobertura acumulada"]
     cand_tbl = DataTable(bottom, cand_cols)
     cand_tbl.pack(fill="both", expand=True)
+    needs_cols = ["Prioridad temporal", "Fecha límite", "Variedad", "Grupo varietal", "Calibre necesario", "Categoría", "Grupo confección", "Perfil confección", "Kg útiles faltantes", "Kg campo estimados", "% aprovechamiento esperado", "% destrío esperado", "Perfil recomendado", "Pedidos afectados"]
+    needs_tbl = DataTable(needs_frame, needs_cols)
+    needs_tbl.pack(fill="both", expand=True)
+    sobrantes_cols = ["Origen", "Variedad", "Calibre", "Categoría", "Grupo calidad/origen", "Kg físicos iniciales", "Kg útiles iniciales", "Kg asignados simulados", "Kg restante simulado", "% restante", "Pool ID"]
+    sobrantes_tbl = DataTable(sobrantes_frame, sobrantes_cols)
+    sobrantes_tbl.pack(fill="both", expand=True)
 
     resumen = ttk.Label(popup, text="", anchor="w")
     resumen.pack(fill="x", padx=10, pady=(0, 4))
@@ -592,6 +696,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     cand_tbl.tree.tag_configure("riesgo_alto", background="#f8d7da")
 
     simulaciones, asignaciones_simuladas, _stock_simulado = simular_asignacion_global(pedidos, get_candidatos_cb, scoring=scoring)
+    necesidades_rows, need_tot = _calcular_necesidades(simulaciones)
     resumen_rows: list[dict] = []
     def _grupo_pedido(p: dict) -> str:
         return _norm_text(p.get("grupo_confeccion") or p.get("GrupoConfeccion") or p.get("GRUPO") or p.get("grupo")) or "DESCONOCIDO"
@@ -633,9 +738,53 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     kg_pend_total = sum(_to_float(s["kg_necesario"]) for s in simulaciones)
     kg_asig_total = sum(_to_float(s["kg_asignado_simulado"]) for s in simulaciones)
     kg_falt_total = sum(_to_float(s["kg_faltante_simulado"]) for s in simulaciones)
-    resumen.configure(text=f"Pedidos: {total_pedidos}   Totales globales: {totales}   Parciales globales: {parciales}   Insuficientes globales: {insuficientes}   Kg pendientes total: {formatear_kg(kg_pend_total)}   Kg asignados simulados: {formatear_kg(kg_asig_total)}   Kg faltantes simulados: {formatear_kg(kg_falt_total)}")
+    sobrantes_rows = []
+    sob_total = 0.0
+    sob_origenes = set()
+    for pool_id, pool in _stock_simulado.items():
+        restante = _to_float(pool.get("kg_restante_simulado", 0))
+        inicial = _to_float(pool.get("kg_utiles_finales", 0))
+        if restante <= 0:
+            continue
+        origen = pool.get("origen", "")
+        sob_total += restante
+        sob_origenes.add(origen)
+        pct_rest = (restante / inicial * 100.0) if inicial > 0 else 0.0
+        tag = "sob_desconocido"
+        o = _canonicalizar_origen(origen)
+        if o == "ALMACEN_COMERCIAL":
+            tag = "sob_comercial"
+        elif o == "ALMACEN_INDUSTRIAL":
+            tag = "sob_industrial"
+        elif o == "CAMPO_REAL":
+            tag = "sob_campo"
+        sobrantes_rows.append({
+            "Origen": origen,
+            "Variedad": pool.get("variedad", ""),
+            "Calibre": pool.get("calibre", ""),
+            "Categoría": pool.get("categoria", ""),
+            "Grupo calidad/origen": o or "DESCONOCIDO",
+            "Kg físicos iniciales": formatear_kg(pool.get("kg_fisicos", 0)),
+            "Kg útiles iniciales": formatear_kg(inicial),
+            "Kg asignados simulados": formatear_kg(max(0.0, inicial - restante)),
+            "Kg restante simulado": formatear_kg(restante),
+            "% restante": f"{pct_rest:.1f}%",
+            "Pool ID": pool_id,
+            "__tags__": (tag,),
+        })
+    resumen.configure(text=f"Cobertura global · Pedidos: {total_pedidos} · Totales: {totales} · Parciales: {parciales} · Insuficientes: {insuficientes} · Kg asignados simulados: {formatear_kg(kg_asig_total)} · Kg faltantes simulados: {formatear_kg(kg_falt_total)} · Kg sobrantes útiles: {formatear_kg(sob_total)}")
+    detalle.configure(text=f"Necesidad recolección · Nº necesidades: {need_tot['n']} · Kg útiles faltantes: {formatear_kg(need_tot['kg_falt'])} · Kg campo estimados total: {formatear_kg(need_tot['kg_campo'])} · Sobrantes · Kg útiles sobrantes: {formatear_kg(sob_total)} · Orígenes con sobrante: {len(sob_origenes)}")
 
     pedidos_tbl.set_rows(resumen_rows)
+    needs_tbl.set_rows(necesidades_rows)
+    sobrantes_tbl.set_rows(sobrantes_rows)
+    needs_tbl.tree.tag_configure("prio_hoy", background="#f8d7da")
+    needs_tbl.tree.tag_configure("prio_23", background="#fff3cd")
+    needs_tbl.tree.tag_configure("prio_future", background="#dff0d8")
+    sobrantes_tbl.tree.tag_configure("sob_comercial", background="#dff0d8")
+    sobrantes_tbl.tree.tag_configure("sob_industrial", background="#fff3cd")
+    sobrantes_tbl.tree.tag_configure("sob_campo", background="#d9edf7")
+    sobrantes_tbl.tree.tag_configure("sob_desconocido", background="#eeeeee")
 
     def render_candidatos(index: int) -> None:
         if index < 0 or index >= len(simulaciones):
