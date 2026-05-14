@@ -15,6 +15,8 @@ SQLITE_DATABASES = [DB_LOTEADO, DB_PEDIDOS, DB_FRUTA, DB_CALIDAD, DB_EEPPL]
 DB_DIR = RUNTIME_SQLITE_DIR
 
 BASE_DIR = Path(__file__).resolve().parent
+APP_DATA_DIR = Path(r"C:\Sansebas AgroView\data")
+APP_DB_PATH = APP_DATA_DIR / "app_config.sqlite"
 LOG_DIR = BASE_DIR / "logs"
 LOG_FILE = LOG_DIR / "app.log"
 

@@ -32,7 +32,7 @@ class LegacySyncSettingsScreen(ttk.Frame):
             ("Añadir", self._add), ("Editar", self._edit), ("Eliminar", self._delete), ("Probar lectura", self._test),
             ("Actualizar seleccionada", self._sync_selected), ("Actualizar activas", self._sync_active), ("Ver log", self._show_log),
             ("Copiar comando", self._copy_command),
-            ("Crear configuración loteado por defecto", self._create_defaults),
+            ("Crear configuración planificación por defecto", self._create_defaults),
         ]
         for i, (label, cmd) in enumerate(actions):
             ttk.Button(btns, text=label, command=cmd).grid(row=0, column=i, padx=4, pady=4, sticky="w")
@@ -92,6 +92,8 @@ class LegacySyncSettingsScreen(ttk.Frame):
         try:
             self.service.add_setting(data)
             self._load()
+            if not any(str(r.get("Nombre", "")).strip() == data.get("Nombre", "") for r in self.service.get_settings()):
+                messagebox.showerror("Error", "No se pudo persistir la configuración legacy.", parent=self)
         except Exception as exc:
             messagebox.showerror("Error", str(exc), parent=self)
 
@@ -108,6 +110,9 @@ class LegacySyncSettingsScreen(ttk.Frame):
         try:
             self.service.update_setting(sid, data)
             self._load()
+            updated = next((r for r in self.service.get_settings() if int(r["Id"]) == sid), None)
+            if not updated:
+                messagebox.showerror("Error", "No se pudo guardar la edición de configuración legacy.", parent=self)
         except Exception as exc:
             messagebox.showerror("Error", str(exc), parent=self)
 
@@ -161,21 +166,14 @@ class LegacySyncSettingsScreen(ttk.Frame):
         messagebox.showinfo("Copiar comando", "Comando copiado al portapapeles.", parent=self)
 
     def _create_defaults(self) -> None:
-        access = filedialog.askopenfilename(filetypes=[("Access MDB", "*.mdb"), ("Todos", "*.*")])
+        existing_access = self.service.resolve_default_access_path_for_planificacion()
+        access = existing_access or filedialog.askopenfilename(filetypes=[("Access MDB", "*.mdb"), ("Todos", "*.*")])
         if not access:
+            messagebox.showerror("Error", "No se puede crear configuración por defecto con AccessPath vacío.", parent=self)
             return
-        for name in ("Loteado", "Lote"):
-            try:
-                self.service.add_setting({
-                    "Nombre": name,
-                    "AccessPath": access,
-                    "AccessTable": name,
-                    "SqlitePath": self.service.default_sqlite_path(),
-                    "SqliteTable": name,
-                    "Modo": "REEMPLAZAR_TABLA",
-                    "Activa": 1,
-                    "Observaciones": "",
-                })
-            except Exception:
-                continue
-        self._load()
+        try:
+            created_or_updated = self.service.create_or_update_planificacion_defaults(access)
+            self._load()
+            messagebox.showinfo("Configuración", f"Configuraciones creadas/actualizadas: {created_or_updated}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Error", str(exc), parent=self)
