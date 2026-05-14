@@ -1747,76 +1747,9 @@ class PlanningRepository:
         return result
 
     def get_filter_options(self, key: str) -> list[str]:
-        if key == "campana":
-            pedidos_path = self._db_path(DB_PEDIDOS)
-            if not pedidos_path.exists():
-                return []
-            with sqlite3.connect(pedidos_path) as conn:
-                conn.row_factory = sqlite3.Row
-                pedidos_cols = [r["name"] for r in conn.execute('PRAGMA table_info("Pedidos")').fetchall()]
-                if not pedidos_cols:
-                    return []
-                campana_col = self._find_campana_column(pedidos_cols)
-                if not campana_col:
-                    return []
-                rows = conn.execute(
-                    f"""
-                    SELECT DISTINCT CAST("{campana_col}" AS TEXT) AS Campana
-                    FROM "Pedidos"
-                    WHERE COALESCE("Cancelado", 0) = 0
-                      AND TRIM(CAST("{campana_col}" AS TEXT)) <> ''
-                    ORDER BY CAST("{campana_col}" AS TEXT) DESC
-                    """
-                ).fetchall()
-            opciones = [str(r[0]).strip() for r in rows if str(r[0] or "").strip()]
-            logger.info("Opciones campaña desde Pedidos: %s", opciones)
-            return opciones
-
-        if key == "grupo_varietal":
-            path = self.db_loteado
-            if not path.exists():
-                return []
-            with sqlite3.connect(path) as conn:
-                db_eepl = self._db_path(DB_EEPPL)
-                conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
-                eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
-                if "MVariedad" not in eepl_tables:
-                    logger.warning("No existe tabla MVariedad en DBEEPPL.sqlite")
-                ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
-                lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
-                if not ldo_table or not lote_table:
-                    return []
-                rows = conn.execute(
-                    f"""
-                    SELECT DISTINCT TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')) AS GrupoVarietal
-                    FROM "{ldo_table}" ldo
-                    INNER JOIN "{lote_table}" l ON l.IdPalet = ldo.IdPalet
-                    LEFT JOIN dbeepl.MVariedad mv
-                      ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(l.Variedad))
-                     AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(ldo.CULTIVO))
-                    WHERE UPPER(TRIM(ldo.Estado)) = 'STOCK'
-                      AND UPPER(TRIM(ldo.Terminado)) IN ('S','SI','SÍ')
-                      AND UPPER(REPLACE(REPLACE(TRIM(ldo.Pedido), '/', ''), ' ', '')) IN ('SP','PRECALIBRADO','ESTANDAR','ESTÁNDAR')
-                    """
-                ).fetchall()
-            return sorted({str(r[0] or "").strip() for r in rows if str(r[0] or "").strip()})
-
-        filters = {"campana": [], "cultivo": [], "empresa": [], "semana": [], "var_coop": [], "fecha_desde": "", "fecha_hasta": ""}
-        rows = self._get_loteado_filter_rows(filters)
-        mapping = {
-            "campana": "Campaña",
-            "cultivo": "Cultivo",
-            "empresa": "Empresa",
-            "semana": "Semana",
-            "var_coop": "Variedad",
-            "marca": "Marca",
-            "fecha": "Fecha",
-        }
-        col = mapping.get(key)
-        if not col:
-            return []
-        values = sorted({str(r.get(col, "")).strip() for r in rows if str(r.get(col, "")).strip()})
-        return values
+        if key in {"campana", "cultivo", "semana", "empresa", "var_coop", "grupo_varietal", "marca"}:
+            return self.get_filter_options_contextual(key, {})
+        return []
 
     def get_filter_options_contextual(self, key: str, filters: dict) -> list[str]:
         pedidos_path = self._db_path(DB_PEDIDOS)
@@ -1830,8 +1763,6 @@ class PlanningRepository:
             "empresa": 'p."EMPRESA"',
             "var_coop": 'p."VarCoop"',
             "marca": 'p."Marca"',
-            "grupo_confeccion": 'mc."GRUPO"',
-            "perfil_confeccion": 'mc."GRUPO"',
             "grupo_varietal": "TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,''))",
         }
         target_col = key_map.get(key)
@@ -1841,13 +1772,11 @@ class PlanningRepository:
         with sqlite3.connect(pedidos_path) as conn:
             conn.row_factory = sqlite3.Row
             db_eepl = self._db_path(DB_EEPPL)
-            db_fruta = self._db_path(DB_FRUTA)
             conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
-            conn.execute(f"ATTACH DATABASE '{db_fruta.as_posix()}' AS dbfruta")
             query = f"""
                 SELECT DISTINCT {target_col} AS val
                 FROM "Pedidos" p
-                LEFT JOIN dbfruta."MConfecciones" mc
+                LEFT JOIN "MConfecciones" mc
                   ON CAST(mc."CODIGO" AS TEXT) = CAST(p."Confeccion" AS TEXT)
                 LEFT JOIN dbeepl."MVariedad" mv
                   ON UPPER(TRIM(mv."Variedad")) = UPPER(TRIM(p."VarCoop"))
@@ -1855,14 +1784,7 @@ class PlanningRepository:
                 WHERE COALESCE(p."Cancelado", 0) = 0
             """
             params: list[Any] = []
-            for field, col in (
-                ("campana", 'p."Campaña"'),
-                ("cultivo", 'p."Cultivo"'),
-                ("semana", 'p."Semana"'),
-                ("empresa", 'p."EMPRESA"'),
-                ("var_coop", 'p."VarCoop"'),
-                ("marca", 'p."Marca"'),
-            ):
+            for field, col in (("campana", 'p."Campaña"'), ("cultivo", 'p."Cultivo"'), ("semana", 'p."Semana"'), ("empresa", 'p."EMPRESA"'), ("var_coop", 'p."VarCoop"'), ("marca", 'p."Marca"')):
                 if field == key:
                     continue
                 values = self._normalize_filter_values(filters.get(field))
@@ -1875,35 +1797,30 @@ class PlanningRepository:
                 gv_values = self._normalize_filter_values(filters.get("grupo_varietal"))
                 if gv_values:
                     placeholders = ",".join(["UPPER(TRIM(?))"] * len(gv_values))
-                    query += f" AND UPPER(TRIM(COALESCE(TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')), ''))) IN ({placeholders})"
+                    query += " AND UPPER(TRIM(COALESCE(TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')), ''))) IN (" + placeholders + ")"
                     params.extend(gv_values)
 
-            if key not in {"grupo_confeccion", "perfil_confeccion"}:
-                gc_values = self._normalize_filter_values(filters.get("grupo_confeccion"))
-                if gc_values:
-                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(gc_values))
-                    query += f" AND UPPER(TRIM(COALESCE(mc.\"GRUPO\", ''))) IN ({placeholders})"
-                    params.extend(gc_values)
-
-            fecha_desde = str(filters.get("fecha_desde") or "").strip()
-            fecha_hasta = str(filters.get("fecha_hasta") or "").strip()
-            if fecha_desde:
-                query += " AND date(p.\"FechaSalida\") >= date(?)"
-                params.append(fecha_desde)
-            if fecha_hasta:
-                query += " AND date(p.\"FechaSalida\") <= date(?)"
-                params.append(fecha_hasta)
+            pedidos_modo = str(filters.get("pedidos_modo") or "").strip()
+            if pedidos_modo == "10_dias":
+                query += " AND date(p.\"FechaSalida\") BETWEEN date('now') AND date('now', '+10 days')"
+            elif pedidos_modo == "todos_futuros":
+                query += " AND date(p.\"FechaSalida\") >= date('now')"
+            elif pedidos_modo == "rango":
+                fecha_desde = str(filters.get("fecha_desde") or "").strip()
+                fecha_hasta = str(filters.get("fecha_hasta") or "").strip()
+                if fecha_desde:
+                    query += " AND date(p.\"FechaSalida\") >= date(?)"
+                    params.append(fecha_desde)
+                if fecha_hasta:
+                    query += " AND date(p.\"FechaSalida\") <= date(?)"
+                    params.append(fecha_hasta)
 
             rows = conn.execute(query, params).fetchall()
 
         values = [str(r["val"]).strip() for r in rows if str(r["val"] or "").strip()]
-        if key == "perfil_confeccion":
-            values = sorted({detectar_perfil_confeccion_desde_grupo(v) for v in values if str(v).strip()})
-        elif key == "semana":
+        if key == "semana":
             try:
-                values = sorted(set(values), key=lambda x: int(float(x)))
+                return sorted(set(values), key=lambda x: int(float(x)))
             except Exception:
-                values = sorted(set(values))
-        else:
-            values = sorted(set(values))
-        return values
+                return sorted(set(values))
+        return sorted(set(values))
