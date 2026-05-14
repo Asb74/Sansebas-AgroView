@@ -3,6 +3,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from db.operational_quality_repository import VISIBLE_ORIGINS
 from services.operational_quality_service import OperationalQualityService
 from widgets.screen_header import ScreenHeader
 
@@ -34,14 +35,18 @@ class OperationalQualitySettingsScreen(ttk.Frame):
         ttk.Button(btns, text="Editar fila", command=self._edit_selected).pack(side="left", padx=4)
         ttk.Button(btns, text="Guardar", command=self._save).pack(side="left", padx=4)
         ttk.Button(btns, text="Restablecer valores predeterminados", command=self._reset_defaults).pack(side="left", padx=4)
-        ttk.Button(btns, text="Cancelar / Volver", command=self.on_back).pack(side="right", padx=4)
+        ttk.Button(btns, text="Volver", command=self.on_back).pack(side="right", padx=4)
 
     def _fmt_pct(self, dec: float) -> str:
         return f"{dec * 100:.2f}".rstrip("0").rstrip(".")
 
     def _load(self) -> None:
         self.tree.delete(*self.tree.get_children())
-        for r in self.service.get_settings():
+        rows = {r["Origen"]: r for r in self.service.get_settings()}
+        for origen in VISIBLE_ORIGINS:
+            r = rows.get(origen)
+            if not r:
+                continue
             self.tree.insert("", "end", iid=r["Origen"], values=(
                 r["Origen"], self._fmt_pct(float(r["PrimeraPct"])), self._fmt_pct(float(r["SegundaPct"])),
                 self._fmt_pct(float(r["DestrioFallbackPct"])), "Sí" if int(r["UsarDestrioHistorico"]) else "No",
