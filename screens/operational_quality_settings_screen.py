@@ -7,7 +7,7 @@ from db.operational_quality_repository import VISIBLE_ORIGINS
 from services.operational_quality_service import OperationalQualityService
 from widgets.screen_header import ScreenHeader
 
-COLUMNS = ("Origen", "% Primera", "% Segunda", "% Destrío", "Usar histórico", "% Recuperación industria", "Activo")
+COLUMNS = ("Origen", "% Primera", "% Segunda", "% Destrío", "Usar histórico", "% destrío recuperable industria")
 
 
 class OperationalQualitySettingsScreen(ttk.Frame):
@@ -30,8 +30,14 @@ class OperationalQualitySettingsScreen(ttk.Frame):
         self.grid_columnconfigure(0, weight=1)
         self.tree.bind("<Double-1>", self._edit_selected)
 
+        help_text = (
+            "% destrío recuperable industria indica qué parte del destrío puede aprovecharse como industria. "
+            "No reduce la cobertura comercial; se usará más adelante para balance industrial/económico."
+        )
+        ttk.Label(self, text=help_text, wraplength=980, justify="left").grid(row=2, column=0, sticky="w", pady=(0, 8))
+
         btns = ttk.Frame(self)
-        btns.grid(row=2, column=0, sticky="ew")
+        btns.grid(row=3, column=0, sticky="ew")
         ttk.Button(btns, text="Editar fila", command=self._edit_selected).pack(side="left", padx=4)
         ttk.Button(btns, text="Guardar", command=self._save).pack(side="left", padx=4)
         ttk.Button(btns, text="Restablecer valores predeterminados", command=self._reset_defaults).pack(side="left", padx=4)
@@ -50,7 +56,7 @@ class OperationalQualitySettingsScreen(ttk.Frame):
             self.tree.insert("", "end", iid=r["Origen"], values=(
                 r["Origen"], self._fmt_pct(float(r["PrimeraPct"])), self._fmt_pct(float(r["SegundaPct"])),
                 self._fmt_pct(float(r["DestrioFallbackPct"])), "Sí" if int(r["UsarDestrioHistorico"]) else "No",
-                self._fmt_pct(float(r["IndustriaRecuperablePct"])), "Sí" if int(r["Activo"]) else "No",
+                self._fmt_pct(float(r["IndustriaRecuperablePct"])),
             ))
 
     def _parse_pct(self, txt: str) -> float:
@@ -76,7 +82,7 @@ class OperationalQualitySettingsScreen(ttk.Frame):
             ttk.Label(win, text=label).grid(row=i, column=0, sticky="w", padx=6, pady=4)
             v = tk.StringVar(value=str(vals[i]))
             vars_.append(v)
-            if label in ("Usar histórico", "Activo"):
+            if label == "Usar histórico":
                 ttk.Combobox(win, textvariable=v, values=["Sí", "No"], state="readonly", width=20).grid(row=i, column=1, padx=6, pady=4)
             else:
                 ttk.Entry(win, textvariable=v, width=24).grid(row=i, column=1, padx=6, pady=4)
@@ -93,7 +99,7 @@ class OperationalQualitySettingsScreen(ttk.Frame):
     def _rows_for_save(self) -> list[dict]:
         rows = []
         for iid in self.tree.get_children():
-            o, p1, p2, d, h, ir, a = self.tree.item(iid, "values")
+            o, p1, p2, d, h, ir = self.tree.item(iid, "values")
             p1d = self._parse_pct(p1)
             p2d = self._parse_pct(p2)
             if abs((p1d + p2d) - 1.0) > 0.0001 and not messagebox.askyesno("Advertencia", f"{o}: % primera + % segunda no suma 100. ¿Guardar igualmente?", parent=self):
@@ -105,7 +111,6 @@ class OperationalQualitySettingsScreen(ttk.Frame):
                 "DestrioFallbackPct": self._parse_pct(d),
                 "UsarDestrioHistorico": 1 if str(h).strip().upper().startswith("S") else 0,
                 "IndustriaRecuperablePct": self._parse_pct(ir),
-                "Activo": 1 if str(a).strip().upper().startswith("S") else 0,
             })
         return rows
 
