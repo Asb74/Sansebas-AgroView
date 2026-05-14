@@ -51,8 +51,8 @@ PENALIZACION_RIESGO = {"BAJO": 0, "MEDIO": -10, "ALTO": -25}
 CONFIG_CALIDAD_OPERATIVA = {
     "CAMPO_REAL": {"primera_pct": 0.80, "segunda_pct": 0.20, "destrio_fallback_pct": 0.15, "usar_destrio_historico": True, "industria_recuperable_pct": 1.00},
     "CAMPO_ESTIMADO": {"primera_pct": 0.80, "segunda_pct": 0.20, "destrio_fallback_pct": 0.15, "usar_destrio_historico": False, "industria_recuperable_pct": 1.00},
-    "STOCK_REPROCESO": {"primera_pct": 0.80, "segunda_pct": 0.20, "destrio_fallback_pct": 0.05, "usar_destrio_historico": False, "industria_recuperable_pct": 1.00},
-    "STOCK_COMERCIAL": {"primera_pct": 0.95, "segunda_pct": 0.05, "destrio_fallback_pct": 0.02, "usar_destrio_historico": False, "industria_recuperable_pct": 0.50},
+    "ALMACEN_INDUSTRIAL": {"primera_pct": 0.80, "segunda_pct": 0.20, "destrio_fallback_pct": 0.05, "usar_destrio_historico": False, "industria_recuperable_pct": 1.00},
+    "ALMACEN_COMERCIAL": {"primera_pct": 0.95, "segunda_pct": 0.05, "destrio_fallback_pct": 0.02, "usar_destrio_historico": False, "industria_recuperable_pct": 0.50},
     "DESCONOCIDO": {"primera_pct": 0.80, "segunda_pct": 0.20, "destrio_fallback_pct": 0.10, "usar_destrio_historico": False, "industria_recuperable_pct": 0.80},
 }
 _quality_service = OperationalQualityService()
@@ -98,26 +98,37 @@ def detectar_perfil_confeccion_desde_grupo(grupo_confeccion: object) -> str:
 def detectar_perfil_stock(candidato: dict) -> str:
     campos = ["origen", "Origen", "tipo_cobertura", "Tipo cobertura", "tipo cobertura", "flexibilidad", "flexibilidad_aplicada", "descripcion", "articulo", "observaciones", "lote", "tipo_stock"]
     texto = " ".join(_norm_text(candidato.get(c, "")) for c in campos)
+    if any(token in texto for token in ("ALMACEN_INDUSTRIAL", "ALMACEN INDUSTRIAL", "INDUSTRIAL", "PRECALIBRADO", "ESTANDAR", "ESTÁNDAR")):
+        return "ALMACEN_INDUSTRIAL"
+    if any(token in texto for token in ("ALMACEN_COMERCIAL", "ALMACEN COMERCIAL", "COMERCIAL", "S/P", "SIN PEDIDO")):
+        return "ALMACEN_COMERCIAL"
     if "CAMPO_REAL" in texto or "PESOSFRES" in texto:
         return "CAMPO_REAL"
     if "CAMPO_ESTIMADO" in texto or "ESTIMADO" in texto:
         return "CAMPO_ESTIMADO"
-    if any(token in texto for token in ("ALMACEN_INDUSTRIAL", "ALMACEN INDUSTRIAL", "INDUSTRIAL", "PRECALIBRADO", "ESTANDAR", "ESTÁNDAR")):
-        return "STOCK_REPROCESO"
-    if any(token in texto for token in ("ALMACEN_COMERCIAL", "ALMACEN COMERCIAL", "COMERCIAL", "S/P", "SIN PEDIDO")):
-        return "STOCK_COMERCIAL"
     return "DESCONOCIDO"
+
+
+def _canonicalizar_origen(origen: str) -> str:
+    origen_norm = _norm_text(origen)
+    if origen_norm in {"CAMPO_REAL_PESOSFRES", "CAMPO_REAL_PESOS"}:
+        return "CAMPO_REAL"
+    if origen_norm == "STOCK_REPROCESO":
+        return "ALMACEN_INDUSTRIAL"
+    if origen_norm == "STOCK_COMERCIAL":
+        return "ALMACEN_COMERCIAL"
+    return origen_norm
 
 
 def obtener_config_utilidad_stock(perfil_stock: str, candidato: dict | None = None) -> dict:
     _ = candidato  # reservado para futuras reglas dinámicas
-    perfil = _norm_text(perfil_stock or "")
+    perfil = _canonicalizar_origen(perfil_stock or "")
     if perfil == "INDUSTRIAL":
-        perfil = "STOCK_REPROCESO"
+        perfil = "ALMACEN_INDUSTRIAL"
     elif perfil == "COMERCIAL":
-        perfil = "STOCK_COMERCIAL"
+        perfil = "ALMACEN_COMERCIAL"
     elif perfil == "PRECALIBRADO":
-        perfil = "STOCK_REPROCESO"
+        perfil = "ALMACEN_INDUSTRIAL"
     try:
         _quality_service.ensure_defaults()
         rows = _quality_service.get_settings()
@@ -221,7 +232,7 @@ def calcular_utilidad_operativa(pedido: dict, candidato: dict) -> dict:
     es_precalibrado = "PRECALIBRADO" in texto_candidato
     primera_pct = float(cfg.get("primera_pct", 0.80))
     segunda_pct = float(cfg.get("segunda_pct", 0.20))
-    if es_estandar and perfil_stock == "STOCK_REPROCESO":
+    if es_estandar and perfil_stock == "ALMACEN_INDUSTRIAL":
         primera_pct = 0.0
         segunda_pct = 1.0
     porcentaje_destrio = float(cfg.get("destrio_fallback_pct", 0.10))
@@ -263,24 +274,24 @@ def calcular_utilidad_operativa(pedido: dict, candidato: dict) -> dict:
     if perfil_stock == "CAMPO_REAL":
         if destrio_historico is not None:
             riesgo = "BAJO" if porcentaje_destrio <= 0.05 else ("MEDIO" if porcentaje_destrio <= 0.12 else "ALTO")
-            motivo = f"Campo real: destrío histórico PesosFres; primera estimada {primera_pct*100:.0f}%"
+            motivo = f"CAMPO_REAL: histórico PesosFres; primera estimada {primera_pct*100:.0f}%"
         else:
             riesgo = "ALTO"
             motivo = f"Sin histórico de destrío; usando fallback {porcentaje_destrio*100:.0f}%"
     elif perfil_stock == "CAMPO_ESTIMADO":
         riesgo = "MEDIO"
-        motivo = "Campo estimado: usando valores configurados"
-    elif perfil_stock == "STOCK_REPROCESO":
+        motivo = "CAMPO_ESTIMADO: valores estimados configurados"
+    elif perfil_stock == "ALMACEN_INDUSTRIAL":
         riesgo = "ALTO" if porcentaje_destrio > 0.10 else "MEDIO"
         if es_estandar:
             motivo = "Estándar: regla negocio, 100% segunda"
         elif es_precalibrado:
-            motivo = "Precalibrado: usa configuración de stock reproceso"
+            motivo = "PRECALIBRADO: usa configuración de ALMACEN_INDUSTRIAL"
         else:
-            motivo = "Stock reproceso: primera/segunda configuradas; destrío configurable"
-    elif perfil_stock == "STOCK_COMERCIAL":
+            motivo = "ALMACEN_INDUSTRIAL: primera/segunda configuradas; destrío configurable"
+    elif perfil_stock == "ALMACEN_COMERCIAL":
         riesgo = "BAJO" if porcentaje_destrio <= 0.02 else "MEDIO"
-        motivo = "Stock comercial: producto terminado con merma baja"
+        motivo = "ALMACEN_COMERCIAL: producto terminado"
     else:
         riesgo = "MEDIO" if porcentaje_destrio <= 0.10 else "ALTO"
         motivo = "Origen desconocido: valores conservadores"
