@@ -107,6 +107,7 @@ def _build_pool_id(candidato: dict) -> str:
     campos = [
         candidato.get("Origen", candidato.get("origen", "")),
         candidato.get("Variedad stock", candidato.get("variedad_stock", candidato.get("Variedad", ""))),
+        candidato.get("Grupo varietal stock", candidato.get("grupo_varietal_stock", candidato.get("Grupo varietal", ""))),
         candidato.get("Calibre stock", candidato.get("calibre_stock", candidato.get("Calibre", ""))),
         candidato.get("Categoría", candidato.get("categoria_stock", candidato.get("categoria", ""))),
         candidato.get("id_palet", candidato.get("palet", candidato.get("lote", candidato.get("boleta", "")))),
@@ -115,6 +116,20 @@ def _build_pool_id(candidato: dict) -> str:
     ]
     partes = [_norm_text(c) for c in campos if _norm_text(c)]
     return "|".join(partes) if partes else "POOL_DESCONOCIDO"
+
+
+def _compatibilidad_varietal(pedido: dict, candidato: dict) -> tuple[int, str]:
+    ped_var = _norm_text(pedido.get("Variedad", pedido.get("variedad", "")))
+    ped_grp = _norm_text(pedido.get("Grupo varietal", pedido.get("grupo_varietal", "")))
+    cand_var = _norm_text(candidato.get("Variedad stock", candidato.get("variedad_stock", candidato.get("Variedad", ""))))
+    cand_grp = _norm_text(candidato.get("Grupo varietal stock", candidato.get("grupo_varietal_stock", candidato.get("Grupo varietal", ""))))
+    allow_mismo = bool(pedido.get("mismo_grupo_varietal", True) and pedido.get("permitir_variedad_alternativa", True))
+    allow_alt = bool(pedido.get("permitir_grupo_varietal_alternativo", False))
+    if ped_var and cand_var and ped_var == cand_var:
+        return 0, "EXACTA"
+    if ped_grp and cand_grp and ped_grp == cand_grp:
+        return (1, "MISMO GRUPO") if allow_mismo else (99, "INCOMPATIBLE")
+    return (2, "GRUPO ALTERNATIVO") if allow_alt else (99, "INCOMPATIBLE")
 
 
 def detectar_perfil_confeccion(pedido: dict) -> str:
@@ -431,10 +446,10 @@ def ordenar_candidatos_simulacion(candidatos: list[dict]) -> list[dict]:
     return sorted(
         candidatos,
         key=lambda c: (
+            int(_to_float(c.get("compatibilidad_varietal_rank", 99))),
             -_to_float(c.get("score_total", 0)),
-            -_to_float(c.get("score_simulacion", 0)),
             prioridad_riesgo.get(str(c.get("riesgo_operativo", "ALTO")), 9),
-            -_to_float(c.get("kg_utiles_estimados", 0)),
+            -_to_float(c.get("kg_utiles_finales", c.get("kg_utiles_estimados", 0))),
         ),
     )
 
@@ -508,26 +523,57 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             score, flex_txt = calcular_score_candidato(cand, pedido=pedido, scoring=scoring)
             utilidad = calcular_utilidad_operativa(pedido, cand)
             cand.update(utilidad)
+            rank_var, txt_var = _compatibilidad_varietal(pedido, cand)
+            cand["compatibilidad_varietal_rank"] = rank_var
+            cand["compatibilidad_varietal"] = txt_var
+            cand["Grupo varietal stock"] = cand.get("Grupo varietal stock", cand.get("grupo_varietal_stock", cand.get("Grupo varietal", "")))
+            cand["Grupo varietal pedido"] = pedido.get("Grupo varietal", pedido.get("grupo_varietal", ""))
             cand["score_simulacion"] = score
-            cand["flexibilidad_usada_simulacion"] = flex_txt
+            cand["flexibilidad_usada_simulacion"] = ("Variedad exacta" if rank_var == 0 else "Mismo grupo varietal" if rank_var == 1 else "Grupo varietal alternativo" if rank_var == 2 else "Incompatible")
             cand["score_total"] = score + int(cand.get("penalizacion_riesgo", 0) or 0)
-            pool_id = _build_pool_id(cand)
-            cand["pool_id"] = pool_id
-            if pool_id not in stock_simulado:
-                stock_simulado[pool_id] = {
-                    "kg_fisicos": _to_float(cand.get("kg_fisicos", 0)),
-                    "kg_utiles_finales": _to_float(cand.get("kg_utiles_estimados", 0)),
-                    "kg_restante_simulado": _to_float(cand.get("kg_utiles_estimados", 0)),
-                    "origen": cand.get("Origen", cand.get("origen", "")),
-                    "variedad": cand.get("Variedad stock", cand.get("variedad_stock", "")),
-                    "calibre": cand.get("Calibre stock", cand.get("calibre_stock", "")),
-                    "categoria": cand.get("Categoría", cand.get("categoria_stock", "")),
-                }
-            candidatos.append(cand)
+            if rank_var >= 99:
+                continue
+            perfil_stock = cand.get("perfil_stock", "")
+            perfil_conf = _norm_text(pedido.get("perfil_confeccion", "")) or detectar_perfil_confeccion(pedido)
+            cat_pedido = _norm_text(pedido.get("Categoría", pedido.get("categoria", "")))
+            subcands: list[dict] = []
+            if perfil_stock == "ALMACEN_INDUSTRIAL":
+                if perfil_conf == "EXIGENTE" and cat_pedido == "I":
+                    subcands = [dict(cand, subpool_calidad="PRIMERA", categoria_util="I", kg_utiles_finales=_to_float(cand.get("kg_primera_estimado", 0)))]
+                elif perfil_conf == "MALLA":
+                    subcands = [
+                        dict(cand, subpool_calidad="SEGUNDA", categoria_util="II", kg_utiles_finales=_to_float(cand.get("kg_segunda_estimado", 0))),
+                        dict(cand, subpool_calidad="PRIMERA", categoria_util="I", kg_utiles_finales=_to_float(cand.get("kg_primera_estimado", 0))),
+                    ]
+                elif cat_pedido == "II":
+                    subcands = [dict(cand, subpool_calidad="SEGUNDA", categoria_util="II", kg_utiles_finales=_to_float(cand.get("kg_segunda_estimado", 0)))]
+                else:
+                    subcands = [dict(cand, subpool_calidad="PRIMERA", categoria_util="I", kg_utiles_finales=_to_float(cand.get("kg_primera_estimado", 0)))]
+            else:
+                subcands = [dict(cand, subpool_calidad="MIXTO", categoria_util=cand.get("Categoría", ""), kg_utiles_finales=_to_float(cand.get("kg_utiles_estimados", 0)))]
+
+            for sc in subcands:
+                pool_id = _build_pool_id(sc) + f"|{_norm_text(sc.get('subpool_calidad', 'MIXTO'))}"
+                sc["pool_id"] = pool_id
+                if pool_id not in stock_simulado:
+                    stock_simulado[pool_id] = {
+                        "kg_fisicos": _to_float(sc.get("kg_fisicos", 0)),
+                        "kg_primera_inicial": _to_float(sc.get("kg_primera_estimado", 0)),
+                        "kg_segunda_inicial": _to_float(sc.get("kg_segunda_estimado", 0)),
+                        "kg_utiles_finales": _to_float(sc.get("kg_utiles_finales", 0)),
+                        "kg_restante_simulado": _to_float(sc.get("kg_utiles_finales", 0)),
+                        "origen": sc.get("Origen", sc.get("origen", "")),
+                        "variedad": sc.get("Variedad stock", sc.get("variedad_stock", "")),
+                        "grupo_varietal": sc.get("Grupo varietal stock", ""),
+                        "calibre": sc.get("Calibre stock", sc.get("calibre_stock", "")),
+                        "categoria": sc.get("Categoría", sc.get("categoria_stock", "")),
+                        "subpool_calidad": sc.get("subpool_calidad", "MIXTO"),
+                    }
+                candidatos.append(sc)
         candidatos = ordenar_candidatos_simulacion(candidatos)
         acumulado_potencial = 0.0
         for cand in candidatos:
-            acumulado_potencial += _to_float(cand.get("kg_utiles_estimados", 0))
+            acumulado_potencial += _to_float(cand.get("kg_utiles_finales", 0))
             cand["cobertura_acumulada"] = acumulado_potencial
 
         kg_necesario = _to_float(pedido.get("Kg pedidos pendientes", pedido.get("kg_pendientes", 0)))
@@ -637,6 +683,7 @@ def _calcular_necesidades(simulaciones: list[dict]) -> tuple[list[dict], dict]:
             "Grupo varietal": grupo_var,
             "Calibre necesario": calibre,
             "Categoría": categoria,
+            "Calidad necesaria": "PRIMERA+SEGUNDA" if perfil_conf == "MALLA" else ("PRIMERA" if _norm_text(categoria) == "I" else "SEGUNDA"),
             "Grupo confección": grupo_conf,
             "Perfil confección": perfil_conf,
             "Kg útiles faltantes": formatear_kg(kg_falt),
@@ -673,13 +720,13 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     pedidos_tbl = DataTable(top, pedidos_cols)
     pedidos_tbl.pack(fill="both", expand=True)
 
-    cand_cols = ["Origen", "Tipo cobertura", "Variedad stock", "Calibre stock", "Categoría", "Kg físicos", "% destrío", "Kg destrío", "% primera", "Kg primera", "% segunda", "Kg segunda", "Kg industria", "Kg podrido", "Kg útiles finales", "Kg restante antes", "Kg asignado simulado", "Kg restante después", "Pool ID", "Compartido", "Riesgo", "Motivo riesgo", "Score compat.", "Score total", "Flexibilidad aplicada", "Cobertura acumulada"]
+    cand_cols = ["Origen", "Tipo cobertura", "Variedad stock", "Grupo varietal stock", "Grupo varietal pedido", "Compatibilidad variedad", "Calibre stock", "Categoría", "Subpool calidad", "Kg físicos", "% destrío", "Kg destrío", "% primera", "Kg primera", "% segunda", "Kg segunda", "Kg industria", "Kg podrido", "Kg útiles finales", "Kg restante antes", "Kg asignado simulado", "Kg restante después", "Pool ID", "Compartido", "Riesgo", "Motivo riesgo", "Score compat.", "Score total", "Flexibilidad aplicada", "Cobertura acumulada"]
     cand_tbl = DataTable(bottom, cand_cols)
     cand_tbl.pack(fill="both", expand=True)
-    needs_cols = ["Prioridad temporal", "Fecha límite", "Variedad", "Grupo varietal", "Calibre necesario", "Categoría", "Grupo confección", "Perfil confección", "Kg útiles faltantes", "Kg campo estimados", "% aprovechamiento esperado", "% destrío esperado", "Perfil recomendado", "Pedidos afectados"]
+    needs_cols = ["Prioridad temporal", "Fecha límite", "Variedad", "Grupo varietal", "Calibre necesario", "Categoría", "Calidad necesaria", "Grupo confección", "Perfil confección", "Kg útiles faltantes", "Kg campo estimados", "% aprovechamiento esperado", "% destrío esperado", "Perfil recomendado", "Pedidos afectados"]
     needs_tbl = DataTable(needs_frame, needs_cols)
     needs_tbl.pack(fill="both", expand=True)
-    sobrantes_cols = ["Origen", "Variedad", "Calibre", "Categoría", "Grupo calidad/origen", "Kg físicos iniciales", "Kg útiles iniciales", "Kg asignados simulados", "Kg restante simulado", "% restante", "Pool ID"]
+    sobrantes_cols = ["Origen", "Variedad", "Grupo varietal", "Calibre", "Categoría stock", "Calidad útil", "Kg físicos iniciales", "Kg primera inicial", "Kg segunda inicial", "Kg asignados primera", "Kg asignados segunda", "Kg restante primera", "Kg restante segunda", "Kg restante total", "% restante", "Pool ID"]
     sobrantes_tbl = DataTable(sobrantes_frame, sobrantes_cols)
     sobrantes_tbl.pack(fill="both", expand=True)
 
@@ -761,13 +808,18 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         sobrantes_rows.append({
             "Origen": origen,
             "Variedad": pool.get("variedad", ""),
+            "Grupo varietal": pool.get("grupo_varietal", ""),
             "Calibre": pool.get("calibre", ""),
-            "Categoría": pool.get("categoria", ""),
-            "Grupo calidad/origen": o or "DESCONOCIDO",
+            "Categoría stock": pool.get("categoria", ""),
+            "Calidad útil": pool.get("subpool_calidad", "MIXTO"),
             "Kg físicos iniciales": formatear_kg(pool.get("kg_fisicos", 0)),
-            "Kg útiles iniciales": formatear_kg(inicial),
-            "Kg asignados simulados": formatear_kg(max(0.0, inicial - restante)),
-            "Kg restante simulado": formatear_kg(restante),
+            "Kg primera inicial": formatear_kg(pool.get("kg_primera_inicial", 0)),
+            "Kg segunda inicial": formatear_kg(pool.get("kg_segunda_inicial", 0)),
+            "Kg asignados primera": formatear_kg(max(0.0, inicial - restante) if pool.get("subpool_calidad") == "PRIMERA" else 0),
+            "Kg asignados segunda": formatear_kg(max(0.0, inicial - restante) if pool.get("subpool_calidad") == "SEGUNDA" else 0),
+            "Kg restante primera": formatear_kg(restante if pool.get("subpool_calidad") == "PRIMERA" else 0),
+            "Kg restante segunda": formatear_kg(restante if pool.get("subpool_calidad") == "SEGUNDA" else 0),
+            "Kg restante total": formatear_kg(restante),
             "% restante": f"{pct_rest:.1f}%",
             "Pool ID": pool_id,
             "__tags__": (tag,),
@@ -798,8 +850,12 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
                 "Origen": c.get("Origen", ""),
                 "Tipo cobertura": c.get("Tipo cobertura", ""),
                 "Variedad stock": c.get("Variedad stock", ""),
+                "Grupo varietal stock": c.get("Grupo varietal stock", ""),
+                "Grupo varietal pedido": c.get("Grupo varietal pedido", ""),
+                "Compatibilidad variedad": c.get("compatibilidad_varietal", ""),
                 "Calibre stock": c.get("Calibre stock", ""),
                 "Categoría": c.get("Categoría", ""),
+                "Subpool calidad": c.get("subpool_calidad", "MIXTO"),
                 "Kg físicos": formatear_kg(c.get("kg_fisicos", 0)),
                 "% destrío": f"{(_to_float(c.get('porcentaje_destrio', 0))*100):.0f}%",
                 "Kg destrío": formatear_kg(c.get("kg_destrio_estimado", 0)),
@@ -809,10 +865,10 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
                 "Kg segunda": formatear_kg(c.get("kg_segunda_estimado", 0)),
                 "Kg industria": formatear_kg(c.get("kg_industria_estimado", 0)),
                 "Kg podrido": formatear_kg(c.get("kg_podrido_estimado", 0)),
-                "Kg útiles finales": formatear_kg(c.get("kg_utiles_estimados", 0)),
-                "Kg restante antes": formatear_kg(c.get("kg_restante_antes", c.get("kg_utiles_estimados", 0))),
+                "Kg útiles finales": formatear_kg(c.get("kg_utiles_finales", c.get("kg_utiles_estimados", 0))),
+                "Kg restante antes": formatear_kg(c.get("kg_restante_antes", c.get("kg_utiles_finales", c.get("kg_utiles_estimados", 0)))),
                 "Kg asignado simulado": formatear_kg(c.get("kg_asignado_simulado", 0)),
-                "Kg restante después": formatear_kg(c.get("kg_restante_despues", c.get("kg_utiles_estimados", 0))),
+                "Kg restante después": formatear_kg(c.get("kg_restante_despues", c.get("kg_utiles_finales", c.get("kg_utiles_estimados", 0)))),
                 "Pool ID": c.get("pool_id", ""),
                 "Compartido": c.get("compartido", "No"),
                 "Riesgo": riesgo,
