@@ -16,7 +16,7 @@ from services.simulacion_asignacion import abrir_simulacion_asignacion
 class PlanificacionDiariaScreen(ttk.Frame):
     FILTERS_FILE = Path("config") / "planificacion_diaria_filters.json"
     BALANCE_SETTINGS_FILE = Path("config") / "planificacion_balance_settings.json"
-    FILTER_KEYS = ["campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "marca"]
+    FILTER_KEYS = ["campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "grupo_confeccion", "marca"]
     PEDIDOS_MODOS = [("Próximos 10 días", "10_dias"), ("Semana actual", "semana_actual"), ("Próximas semanas", "proximas_semanas"), ("Rango fechas", "rango"), ("Todos futuros", "todos_futuros"), ("Todos", "todos")]
 
     def __init__(self, master: tk.Misc, on_back) -> None:
@@ -37,21 +37,27 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.balance_rows_all: list[dict] = []
         self.sim_policy_vars: dict[str, tk.BooleanVar] = {}
         self._build_ui()
-        self._load_filter_options()
+        self._load_filter_options(contextual=True)
         self._load_filters()
         self._load_balance_settings()
         self.load_data(save_filters=False)
 
-    def _load_filter_options(self) -> None:
+    def _load_filter_options(self, contextual: bool = True) -> None:
         diag = self.service.diagnose_loteado_tables()
         if diag.get("warning"):
             logging.getLogger(__name__).warning(diag["warning"])
-        for key in ("campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "marca"):
+        payload = self._filters_payload() if contextual else {}
+        for key in self.FILTER_KEYS:
+            selected = self.filter_widgets[key].get_selected() if key in self.filter_widgets else []
             try:
-                self.filter_widgets[key].set_options(self.service.get_filter_options(key))
+                options = self.service.get_filter_options_contextual(key, payload) if contextual else self.service.get_filter_options(key)
+                valid = [v for v in selected if v in options]
+                self.filter_widgets[key].set_options(options)
+                self.filter_widgets[key].set_selected(valid)
             except Exception as exc:
                 logging.getLogger(__name__).warning("No se pudo cargar opciones de filtro %s: %s", key, exc)
                 self.filter_widgets[key].set_options([])
+                self.filter_widgets[key].set_selected([])
 
     def _build_ui(self) -> None:
         self.grid_rowconfigure(2, weight=1)
@@ -60,7 +66,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
         filters_frame = ttk.LabelFrame(self, text="Filtros globales", padding=10)
         filters_frame.grid(row=1, column=0, sticky="ew", pady=(8, 8))
-        fields = [("Campaña", "campana"), ("Cultivo", "cultivo"), ("Semana", "semana"), ("Fecha desde", "fecha_desde"), ("Fecha hasta", "fecha_hasta"), ("Empresa", "empresa"), ("Variedad Coop", "var_coop"), ("Grupo varietal", "grupo_varietal"), ("Marca", "marca")]
+        fields = [("Campaña", "campana"), ("Cultivo", "cultivo"), ("Semana", "semana"), ("Fecha desde", "fecha_desde"), ("Fecha hasta", "fecha_hasta"), ("Empresa", "empresa"), ("Variedad Coop", "var_coop"), ("Grupo varietal", "grupo_varietal"), ("Grupo confección", "grupo_confeccion"), ("Marca", "marca")]
         for i, (label, key) in enumerate(fields):
             ttk.Label(filters_frame, text=label).grid(row=0, column=i, sticky="w", padx=4)
             if key == "fecha_desde":
@@ -73,7 +79,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 self.filter_widgets[key] = widget
             filters_frame.grid_columnconfigure(i, weight=1)
         btns = ttk.Frame(filters_frame)
-        btns.grid(row=2, column=0, columnspan=9, sticky="w", pady=(8, 0))
+        btns.grid(row=2, column=0, columnspan=10, sticky="w", pady=(8, 0))
         ttk.Button(btns, text="Aplicar filtros", command=lambda: self.load_data(save_filters=True)).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Limpiar filtros", command=self.reset_filters).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Reaplicar filtros", command=lambda: self.load_data(save_filters=True)).pack(side="left", padx=(0, 8))
@@ -82,7 +88,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self._btn_actualizar_planificacion.pack(side="left", padx=(0, 8))
         self._btn_actualizar_foto = ttk.Button(btns, text="Actualizar foto local", command=self._actualizar_foto_local)
         self._btn_actualizar_foto.pack(side="left")
-        ttk.Label(filters_frame, textvariable=self.filters_status_var).grid(row=3, column=0, columnspan=9, sticky="w", padx=4, pady=(6, 0))
+        ttk.Label(filters_frame, textvariable=self.filters_status_var).grid(row=3, column=0, columnspan=10, sticky="w", padx=4, pady=(6, 0))
 
         self.tabs = ttk.Notebook(self)
         self.tabs.grid(row=2, column=0, sticky="nsew")
@@ -175,6 +181,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             "semana": self.filter_widgets["semana"].get_selected(),
             "var_coop": self.filter_widgets["var_coop"].get_selected(),
             "grupo_varietal": self.filter_widgets["grupo_varietal"].get_selected(),
+            "grupo_confeccion": self.filter_widgets["grupo_confeccion"].get_selected(),
             "marca": self.filter_widgets["marca"].get_selected(),
             "fecha_desde": self.fecha_desde_var.get().strip(),
             "fecha_hasta": self.fecha_hasta_var.get().strip(),
@@ -252,6 +259,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
             messagebox.showwarning("Planificación diaria", "No se pudo leer un archivo auxiliar de actualización. Se continuará sin ese dato.")
         if save_filters:
             self._save_filters(payload)
+        self._load_filter_options(contextual=True)
+        payload = self._filters_payload()
         self.filters_status_var.set(self._format_filters_status(payload))
         self._refresh_snapshot_info_label()
 
@@ -459,7 +468,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.pedidos_modo_var.set("10_dias")
         self._sync_pedidos_mode_combo()
         self._clear_saved_filters()
+        self._load_filter_options(contextual=True)
         self.filters_status_var.set("Sin filtros activos")
+        self.load_data(save_filters=True)
 
     def export_excel(self) -> None:
         tab = self.tabs.tab(self.tabs.select(), "text")
@@ -527,6 +538,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             "semana": "Semana",
             "var_coop": "Variedad Coop",
             "grupo_varietal": "Grupo varietal",
+            "grupo_confeccion": "Grupo confección",
             "marca": "Marca",
             "fecha_desde": "Fecha desde",
             "fecha_hasta": "Fecha hasta",
@@ -535,7 +547,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         if not has_values:
             return "Sin filtros activos"
         parts: list[str] = []
-        for key in ("pedidos_modo", "campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "marca", "fecha_desde", "fecha_hasta"):
+        for key in ("pedidos_modo", "campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "grupo_confeccion", "marca", "fecha_desde", "fecha_hasta"):
             value = payload.get(key, []) if key in self.FILTER_KEYS else payload.get(key, "")
             if key == "pedidos_modo":
                 display = self._pedidos_mode_label(str(value).strip())
