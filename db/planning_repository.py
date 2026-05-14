@@ -1769,58 +1769,65 @@ class PlanningRepository:
         if not target_col:
             return []
 
-        with sqlite3.connect(pedidos_path) as conn:
-            conn.row_factory = sqlite3.Row
-            db_eepl = self._db_path(DB_EEPPL)
-            conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
-            query = f"""
-                SELECT DISTINCT {target_col} AS val
-                FROM "Pedidos" p
-                LEFT JOIN "MConfecciones" mc
-                  ON CAST(mc."CODIGO" AS TEXT) = CAST(p."Confeccion" AS TEXT)
-                LEFT JOIN dbeepl."MVariedad" mv
-                  ON UPPER(TRIM(mv."Variedad")) = UPPER(TRIM(p."VarCoop"))
-                 AND UPPER(TRIM(mv."CULTIVO")) = UPPER(TRIM(p."Cultivo"))
-                WHERE COALESCE(p."Cancelado", 0) = 0
-            """
-            params: list[Any] = []
-            for field, col in (("campana", 'p."Campaña"'), ("cultivo", 'p."Cultivo"'), ("semana", 'p."Semana"'), ("empresa", 'p."EMPRESA"'), ("var_coop", 'p."VarCoop"'), ("marca", 'p."Marca"')):
-                if field == key:
-                    continue
-                values = self._normalize_filter_values(filters.get(field))
-                if values:
-                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
-                    query += f" AND UPPER(TRIM(COALESCE({col}, ''))) IN ({placeholders})"
-                    params.extend(values)
+        try:
+            with sqlite3.connect(pedidos_path) as conn:
+                conn.row_factory = sqlite3.Row
+                db_eepl = self._db_path(DB_EEPPL)
+                conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
+                query = f"""
+                    SELECT DISTINCT {target_col} AS val
+                    FROM "Pedidos" p
+                    LEFT JOIN "MConfecciones" mc
+                      ON CAST(mc."CODIGO" AS TEXT) = CAST(p."Confeccion" AS TEXT)
+                    LEFT JOIN dbeepl."MVariedad" mv
+                      ON UPPER(TRIM(mv."Variedad")) = UPPER(TRIM(p."VarCoop"))
+                     AND UPPER(TRIM(mv."CULTIVO")) = UPPER(TRIM(p."Cultivo"))
+                    WHERE COALESCE(p."Cancelado", 0) = 0
+                """
+                params: list[Any] = []
+                for field, col in (("campana", 'p."Campaña"'), ("cultivo", 'p."Cultivo"'), ("semana", 'p."Semana"'), ("empresa", 'p."EMPRESA"'), ("var_coop", 'p."VarCoop"'), ("marca", 'p."Marca"')):
+                    if field == key:
+                        continue
+                    values = self._normalize_filter_values(filters.get(field))
+                    if values:
+                        placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
+                        query += f" AND UPPER(TRIM(COALESCE({col}, ''))) IN ({placeholders})"
+                        params.extend(values)
 
-            if key != "grupo_varietal":
-                gv_values = self._normalize_filter_values(filters.get("grupo_varietal"))
-                if gv_values:
-                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(gv_values))
-                    query += " AND UPPER(TRIM(COALESCE(TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')), ''))) IN (" + placeholders + ")"
-                    params.extend(gv_values)
+                if key != "grupo_varietal":
+                    gv_values = self._normalize_filter_values(filters.get("grupo_varietal"))
+                    if gv_values:
+                        placeholders = ",".join(["UPPER(TRIM(?))"] * len(gv_values))
+                        query += " AND UPPER(TRIM(COALESCE(TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')), ''))) IN (" + placeholders + ")"
+                        params.extend(gv_values)
 
-            pedidos_modo = str(filters.get("pedidos_modo") or "").strip()
-            if pedidos_modo == "10_dias":
-                query += " AND date(p.\"FechaSalida\") BETWEEN date('now') AND date('now', '+10 days')"
-            elif pedidos_modo == "todos_futuros":
-                query += " AND date(p.\"FechaSalida\") >= date('now')"
-            elif pedidos_modo == "rango":
-                fecha_desde = str(filters.get("fecha_desde") or "").strip()
-                fecha_hasta = str(filters.get("fecha_hasta") or "").strip()
-                if fecha_desde:
-                    query += " AND date(p.\"FechaSalida\") >= date(?)"
-                    params.append(fecha_desde)
-                if fecha_hasta:
-                    query += " AND date(p.\"FechaSalida\") <= date(?)"
-                    params.append(fecha_hasta)
+                pedidos_modo = str(filters.get("pedidos_modo") or "").strip()
+                if pedidos_modo == "10_dias":
+                    query += " AND date(p.\"FechaSalida\") BETWEEN date('now') AND date('now', '+10 days')"
+                elif pedidos_modo == "todos_futuros":
+                    query += " AND date(p.\"FechaSalida\") >= date('now')"
+                elif pedidos_modo == "rango":
+                    fecha_desde = str(filters.get("fecha_desde") or "").strip()
+                    fecha_hasta = str(filters.get("fecha_hasta") or "").strip()
+                    if fecha_desde:
+                        query += " AND date(p.\"FechaSalida\") >= date(?)"
+                        params.append(fecha_desde)
+                    if fecha_hasta:
+                        query += " AND date(p.\"FechaSalida\") <= date(?)"
+                        params.append(fecha_hasta)
 
-            rows = conn.execute(query, params).fetchall()
+                rows = conn.execute(query, params).fetchall()
 
-        values = [str(r["val"]).strip() for r in rows if str(r["val"] or "").strip()]
-        if key == "semana":
-            try:
-                return sorted(set(values), key=lambda x: int(float(x)))
-            except Exception:
-                return sorted(set(values))
-        return sorted(set(values))
+            values = [str(r["val"]).strip() for r in rows if str(r["val"] or "").strip()]
+            if key == "semana":
+                try:
+                    values = sorted(set(values), key=lambda x: int(float(x)))
+                except Exception:
+                    values = sorted(set(values))
+            else:
+                values = sorted(set(values))
+            logger.info("Opciones filtro %s con filtros %s: %s", key, filters, values)
+            return values
+        except Exception:
+            logger.exception("Error obteniendo opciones contextuales de filtro %s con filtros %s", key, filters)
+            raise
