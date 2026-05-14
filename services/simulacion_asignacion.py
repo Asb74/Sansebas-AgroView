@@ -138,7 +138,6 @@ def obtener_config_utilidad_stock(perfil_stock: str, candidato: dict | None = No
             "destrio_fallback_pct": float(r.get("DestrioFallbackPct", 0)),
             "usar_destrio_historico": bool(int(r.get("UsarDestrioHistorico", 0))),
             "industria_recuperable_pct": float(r.get("IndustriaRecuperablePct", 0)),
-            "activo": bool(int(r.get("Activo", 1))),
         } for r in rows}
         cfg = db_cfg.get(perfil, db_cfg.get("DESCONOCIDO"))
         if cfg:

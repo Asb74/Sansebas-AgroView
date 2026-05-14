@@ -63,12 +63,11 @@ class OperationalQualityRepository:
                         DestrioFallbackPct=excluded.DestrioFallbackPct,
                         UsarDestrioHistorico=excluded.UsarDestrioHistorico,
                         IndustriaRecuperablePct=excluded.IndustriaRecuperablePct,
-                        Activo=excluded.Activo,
                         FechaModificacion=excluded.FechaModificacion
                     """,
                     (
                         r["Origen"], r["PrimeraPct"], r["SegundaPct"], r["DestrioFallbackPct"],
-                        int(r["UsarDestrioHistorico"]), r["IndustriaRecuperablePct"], int(r["Activo"]), now, now,
+                        int(r["UsarDestrioHistorico"]), r["IndustriaRecuperablePct"], 1, now, now,
                     ),
                 )
 
@@ -103,7 +102,6 @@ class OperationalQualityRepository:
                         DestrioFallbackPct=excluded.DestrioFallbackPct,
                         UsarDestrioHistorico=excluded.UsarDestrioHistorico,
                         IndustriaRecuperablePct=excluded.IndustriaRecuperablePct,
-                        Activo=excluded.Activo,
                         FechaModificacion=excluded.FechaModificacion
                     """,
                     (origen, p1/100.0, p2/100.0, d/100.0, h, ir/100.0, a, now, now),
@@ -132,7 +130,6 @@ class OperationalQualityRepository:
                             DestrioFallbackPct=excluded.DestrioFallbackPct,
                             UsarDestrioHistorico=excluded.UsarDestrioHistorico,
                             IndustriaRecuperablePct=excluded.IndustriaRecuperablePct,
-                            Activo=excluded.Activo,
                             FechaModificacion=excluded.FechaModificacion
                         """,
                         (
