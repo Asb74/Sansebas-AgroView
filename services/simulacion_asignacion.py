@@ -47,12 +47,12 @@ COEFICIENTES_UTILIDAD = {
 
 PENALIZACION_RIESGO = {"BAJO": 0, "MEDIO": -10, "ALTO": -25}
 
-CONFIG_UTILIDAD_STOCK = {
-    "INDUSTRIAL": {"coef_categoria_default": 0.80, "porcentaje_destrio_default": 0.05},
-    "ALMACEN_INDUSTRIAL": {"coef_categoria_default": 0.80, "porcentaje_destrio_default": 0.05},
-    "COMERCIAL": {"coef_categoria_default": 0.95, "porcentaje_destrio_default": 0.02},
-    "CAMPO_REAL": {"coef_categoria_default": 1.00, "porcentaje_destrio_default": 0.15},
-    "DESCONOCIDO": {"coef_categoria_default": 0.80, "porcentaje_destrio_default": 0.05},
+CONFIG_CALIDAD_OPERATIVA = {
+    "CAMPO_REAL": {"primera_pct": 0.80, "segunda_pct": 0.20, "destrio_fallback_pct": 0.15, "usar_destrio_historico": True, "industria_recuperable_pct": 1.00},
+    "ALMACEN_INDUSTRIAL": {"primera_pct": 0.80, "segunda_pct": 0.20, "destrio_fallback_pct": 0.05, "usar_destrio_historico": False, "industria_recuperable_pct": 1.00},
+    "ALMACEN_COMERCIAL": {"primera_pct": 0.95, "segunda_pct": 0.05, "destrio_fallback_pct": 0.02, "usar_destrio_historico": False, "industria_recuperable_pct": 0.50},
+    "PRECALIBRADO": {"primera_pct": 0.80, "segunda_pct": 0.20, "destrio_fallback_pct": 0.08, "usar_destrio_historico": False, "industria_recuperable_pct": 1.00},
+    "DESCONOCIDO": {"primera_pct": 0.80, "segunda_pct": 0.20, "destrio_fallback_pct": 0.10, "usar_destrio_historico": False, "industria_recuperable_pct": 0.80},
 }
 
 
@@ -108,9 +108,11 @@ def detectar_perfil_stock(candidato: dict) -> str:
 def obtener_config_utilidad_stock(perfil_stock: str, candidato: dict | None = None) -> dict:
     _ = candidato  # reservado para futuras reglas dinámicas
     perfil = _norm_text(perfil_stock or "")
-    if perfil == "ALMACEN_INDUSTRIAL":
-        perfil = "INDUSTRIAL"
-    return dict(CONFIG_UTILIDAD_STOCK.get(perfil, CONFIG_UTILIDAD_STOCK["DESCONOCIDO"]))
+    if perfil == "INDUSTRIAL":
+        perfil = "ALMACEN_INDUSTRIAL"
+    elif perfil == "COMERCIAL":
+        perfil = "ALMACEN_COMERCIAL"
+    return dict(CONFIG_CALIDAD_OPERATIVA.get(perfil, CONFIG_CALIDAD_OPERATIVA["DESCONOCIDO"]))
 
 
 def _parse_percent_like(valor: object) -> float | None:
@@ -165,6 +167,13 @@ def extraer_porcentaje_destrio_historico(candidato: dict) -> float | None:
     return None
 
 
+def extraer_componentes_destrio_historico(candidato: dict) -> tuple[float | None, float | None, float | None]:
+    podrido = _parse_percent_like(candidato.get("porcentaje_podrido", candidato.get("%Podrido")))
+    des_linea = _parse_percent_like(candidato.get("porcentaje_destrio_linea", candidato.get("%DesLinea")))
+    des_mesa = _parse_percent_like(candidato.get("porcentaje_destrio_mesa", candidato.get("%DesMesa")))
+    return podrido, des_linea, des_mesa
+
+
 def _riesgo_desde_coef(coef: float) -> str:
     if coef >= 0.85:
         return "BAJO"
@@ -185,14 +194,13 @@ def calcular_utilidad_operativa(pedido: dict, candidato: dict) -> dict:
     perfil_confeccion = _norm_text(pedido.get("perfil_confeccion", "")) or detectar_perfil_confeccion(pedido)
     perfil_stock = detectar_perfil_stock(candidato)
     cfg = obtener_config_utilidad_stock(perfil_stock, candidato=candidato)
-    coef_utilidad = float(cfg.get("coef_categoria_default", 0.80))
-    if perfil_stock in {"INDUSTRIAL", "ALMACEN_INDUSTRIAL", "CAMPO_REAL"}:
-        coef_utilidad = 0.90 if perfil_confeccion == "MALLA" else 0.80
-    elif perfil_stock == "COMERCIAL":
-        coef_utilidad = 0.95
-    porcentaje_destrio = float(cfg.get("porcentaje_destrio_default", 0.05))
+    primera_pct = float(cfg.get("primera_pct", 0.80))
+    segunda_pct = float(cfg.get("segunda_pct", 0.20))
+    porcentaje_destrio = float(cfg.get("destrio_fallback_pct", 0.10))
+    usar_destrio_historico = bool(cfg.get("usar_destrio_historico", False))
     kg_fisicos = _to_float(candidato.get("Kg disponibles", candidato.get("kg_disponibles", 0)))
-    destrio_historico = extraer_porcentaje_destrio_historico(candidato) if perfil_stock == "CAMPO_REAL" else None
+    destrio_historico = extraer_porcentaje_destrio_historico(candidato) if (perfil_stock == "CAMPO_REAL" and usar_destrio_historico) else None
+    podrido_pct_hist, deslinea_pct_hist, desmesa_pct_hist = extraer_componentes_destrio_historico(candidato) if perfil_stock == "CAMPO_REAL" else (None, None, None)
 
     texto_cobertura = _norm_text(candidato.get("Tipo cobertura", candidato.get("tipo_cobertura", "")))
     ya_neto_flag = candidato.get("kg_campo_real_ya_neto")
@@ -203,43 +211,47 @@ def calcular_utilidad_operativa(pedido: dict, candidato: dict) -> dict:
     if perfil_stock == "CAMPO_REAL" and ya_neto_flag is None and "ENTRADA ESTIMADA REAL" in texto_cobertura:
         ya_neto = True
 
+    if destrio_historico is not None:
+        porcentaje_destrio = destrio_historico
+    podrido_pct = podrido_pct_hist if podrido_pct_hist is not None else 0.0
+    deslinea_pct = deslinea_pct_hist if deslinea_pct_hist is not None else 0.0
+    desmesa_pct = desmesa_pct_hist if desmesa_pct_hist is not None else 0.0
+    if destrio_historico is None:
+        podrido_pct = porcentaje_destrio
+        deslinea_pct = 0.0
+        desmesa_pct = 0.0
+
+    industria_pct = deslinea_pct + desmesa_pct
+    kg_podrido_estimado = kg_fisicos * podrido_pct
+    kg_industria_estimado = kg_fisicos * industria_pct
+    kg_destrio_estimado = kg_fisicos * porcentaje_destrio
+    kg_comercial_util = kg_fisicos - kg_destrio_estimado
+    kg_primera_estimado = kg_comercial_util * primera_pct
+    kg_segunda_estimado = kg_comercial_util * segunda_pct
+    kg_utiles_categoria = kg_comercial_util
+    kg_utiles_estimados = kg_primera_estimado + kg_segunda_estimado if perfil_confeccion == "MALLA" else kg_primera_estimado
+    coef_utilidad = primera_pct
+
     if perfil_stock == "CAMPO_REAL":
-        porcentaje_destrio = destrio_historico if destrio_historico is not None else porcentaje_destrio
-        if ya_neto:
-            kg_utiles_categoria = kg_fisicos
-            kg_destrio_estimado = 0.0
-            kg_utiles_estimados = kg_fisicos
-            if destrio_historico is not None:
-                riesgo = "BAJO" if porcentaje_destrio <= 0.05 else ("MEDIO" if porcentaje_destrio <= 0.12 else "ALTO")
-                motivo = f"Campo real con PesosFres; destrío histórico {porcentaje_destrio*100:.0f}% informativo"
-            else:
-                riesgo = "ALTO"
-                motivo = f"Campo real sin destrío histórico detectado; usando fallback {porcentaje_destrio*100:.0f}%"
+        if destrio_historico is not None:
+            riesgo = "BAJO" if porcentaje_destrio <= 0.05 else ("MEDIO" if porcentaje_destrio <= 0.12 else "ALTO")
+            motivo = f"Campo real: destrío histórico PesosFres; primera estimada {primera_pct*100:.0f}%"
         else:
-            kg_utiles_categoria = kg_fisicos * coef_utilidad
-            kg_destrio_estimado = kg_utiles_categoria * porcentaje_destrio
-            kg_utiles_estimados = kg_utiles_categoria - kg_destrio_estimado
-            if destrio_historico is not None:
-                riesgo = "BAJO" if porcentaje_destrio <= 0.05 else ("MEDIO" if porcentaje_destrio <= 0.12 else "ALTO")
-                motivo = f"Campo real: destrío histórico PesosFres {porcentaje_destrio*100:.0f}%"
-            else:
-                riesgo = "ALTO"
-                motivo = f"Campo real sin destrío histórico; fallback {porcentaje_destrio*100:.0f}%"
+            riesgo = "ALTO"
+            motivo = f"Sin histórico de destrío; usando fallback {porcentaje_destrio*100:.0f}%"
+    elif perfil_stock == "INDUSTRIAL":
+        riesgo = "ALTO" if porcentaje_destrio > 0.10 else "MEDIO"
+        motivo = f"Industrial: destrío {porcentaje_destrio*100:.0f}%, primera estimada {primera_pct*100:.0f}%"
+    elif perfil_stock == "COMERCIAL":
+        riesgo = "BAJO" if porcentaje_destrio <= 0.02 else "MEDIO"
+        motivo = f"Comercial: destrío {porcentaje_destrio*100:.0f}%, primera estimada {primera_pct*100:.0f}%"
     else:
-        kg_utiles_categoria = kg_fisicos * coef_utilidad
-        kg_destrio_estimado = kg_utiles_categoria * porcentaje_destrio
-        kg_utiles_estimados = kg_utiles_categoria - kg_destrio_estimado
-        if perfil_stock == "INDUSTRIAL":
-            riesgo = "ALTO" if porcentaje_destrio > 0.10 else "MEDIO"
-            motivo = f"Industrial: primera útil estimada {coef_utilidad*100:.0f}%, destrío {porcentaje_destrio*100:.0f}% configurable"
-        elif perfil_stock == "COMERCIAL":
-            riesgo = "BAJO" if porcentaje_destrio <= 0.02 else "MEDIO"
-            motivo = "Comercial: stock comercial con baja merma estimada"
-        else:
-            riesgo = _riesgo_desde_coef(coef_utilidad)
-            if porcentaje_destrio >= 0.12:
-                riesgo = _subir_riesgo(riesgo)
-            motivo = "Perfil no detectado; coeficientes conservadores con destrío estimado"
+        riesgo = "MEDIO" if porcentaje_destrio <= 0.10 else "ALTO"
+        motivo = f"Perfil no detectado; primera estimada {primera_pct*100:.0f}% y destrío {porcentaje_destrio*100:.0f}%"
+    if perfil_confeccion == "MALLA":
+        motivo += "; Malla: se admite primera + segunda"
+    else:
+        motivo += "; Exigente/desconocido: solo se considera primera útil"
 
     return {
         "perfil_confeccion": perfil_confeccion,
@@ -249,6 +261,17 @@ def calcular_utilidad_operativa(pedido: dict, candidato: dict) -> dict:
         "kg_utiles_categoria": kg_utiles_categoria,
         "porcentaje_destrio": porcentaje_destrio,
         "kg_destrio_estimado": kg_destrio_estimado,
+        "kg_comercial_util": kg_comercial_util,
+        "primera_pct": primera_pct,
+        "segunda_pct": segunda_pct,
+        "kg_primera_estimado": kg_primera_estimado,
+        "kg_segunda_estimado": kg_segunda_estimado,
+        "podrido_pct": podrido_pct,
+        "deslinea_pct": deslinea_pct,
+        "desmesa_pct": desmesa_pct,
+        "industria_pct": industria_pct,
+        "kg_podrido_estimado": kg_podrido_estimado,
+        "kg_industria_estimado": kg_industria_estimado,
         "kg_utiles_estimados": kg_utiles_estimados,
         "riesgo_operativo": riesgo,
         "penalizacion_riesgo": PENALIZACION_RIESGO.get(riesgo, 0),
@@ -385,7 +408,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     pedidos_tbl = DataTable(top, pedidos_cols)
     pedidos_tbl.pack(fill="both", expand=True)
 
-    cand_cols = ["Origen", "Tipo cobertura", "Variedad stock", "Calibre stock", "Categoría", "Kg físicos", "Coef. categoría", "Kg útiles categoría", "% destrío", "Kg destrío estimado", "Kg útiles finales", "Riesgo", "Motivo riesgo", "Score compat.", "Score total", "Flexibilidad aplicada", "Cobertura acumulada"]
+    cand_cols = ["Origen", "Tipo cobertura", "Variedad stock", "Calibre stock", "Categoría", "Kg físicos", "% destrío", "Kg destrío", "% primera", "Kg primera", "% segunda", "Kg segunda", "Kg industria", "Kg podrido", "Kg útiles finales", "Riesgo", "Motivo riesgo", "Score compat.", "Score total", "Flexibilidad aplicada", "Cobertura acumulada"]
     cand_tbl = DataTable(bottom, cand_cols)
     cand_tbl.pack(fill="both", expand=True)
 
@@ -455,10 +478,14 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
                 "Calibre stock": c.get("Calibre stock", ""),
                 "Categoría": c.get("Categoría", ""),
                 "Kg físicos": formatear_kg(c.get("kg_fisicos", 0)),
-                "Coef. categoría": f"{(_to_float(c.get('coef_utilidad', 0))*100):.0f}%",
-                "Kg útiles categoría": formatear_kg(c.get("kg_utiles_categoria", 0)),
                 "% destrío": f"{(_to_float(c.get('porcentaje_destrio', 0))*100):.0f}%",
-                "Kg destrío estimado": formatear_kg(c.get("kg_destrio_estimado", 0)),
+                "Kg destrío": formatear_kg(c.get("kg_destrio_estimado", 0)),
+                "% primera": f"{(_to_float(c.get('primera_pct', 0))*100):.0f}%",
+                "Kg primera": formatear_kg(c.get("kg_primera_estimado", 0)),
+                "% segunda": f"{(_to_float(c.get('segunda_pct', 0))*100):.0f}%",
+                "Kg segunda": formatear_kg(c.get("kg_segunda_estimado", 0)),
+                "Kg industria": formatear_kg(c.get("kg_industria_estimado", 0)),
+                "Kg podrido": formatear_kg(c.get("kg_podrido_estimado", 0)),
                 "Kg útiles finales": formatear_kg(c.get("kg_utiles_estimados", 0)),
                 "Riesgo": riesgo,
                 "Motivo riesgo": c.get("motivo_riesgo", ""),
