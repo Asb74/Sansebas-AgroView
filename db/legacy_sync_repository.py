@@ -6,11 +6,16 @@ import sqlite3
 from typing import Any
 
 from db.connection import get_db_path
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class LegacySyncRepository:
     def __init__(self) -> None:
         self.db_path = get_db_path()
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info("LegacySyncRepository DB path: %s", self.db_path)
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
@@ -74,6 +79,7 @@ class LegacySyncRepository:
     def get_settings(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM LegacyTableSyncSettings ORDER BY Nombre").fetchall()
+        logger.info("Configuraciones legacy cargadas desde %s: %s", self.db_path, len(rows))
         return [dict(r) for r in rows]
 
     def add_setting(self, data: dict[str, Any]) -> int:
@@ -89,6 +95,13 @@ class LegacySyncRepository:
                     data["Nombre"], data["AccessPath"], data["AccessTable"], data["SqlitePath"], data["SqliteTable"],
                     data.get("Modo", "REEMPLAZAR_TABLA"), int(data.get("Activa", 1)), data.get("Observaciones", ""), now, now,
                 ),
+            )
+            conn.commit()
+            logger.info(
+                "Configuración legacy guardada: %s -> %s:%s",
+                data["Nombre"],
+                data["SqlitePath"],
+                data["SqliteTable"],
             )
             return int(cur.lastrowid)
 

@@ -2,13 +2,15 @@ from pathlib import Path
 import sqlite3
 import logging
 
-from config import DB_DIR, DB_PEDIDOS
+from config import APP_DB_PATH
 
 logger = logging.getLogger(__name__)
 
 
 def get_db_path() -> Path:
-    return Path(DB_DIR) / DB_PEDIDOS
+    db_path = Path(APP_DB_PATH)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    return db_path
 
 
 def db_exists() -> bool:

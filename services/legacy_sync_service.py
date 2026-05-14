@@ -402,13 +402,60 @@ class LegacySyncService:
         return imported
 
     def _find_setting(self, sqlite_name: str, sqlite_table: str) -> dict[str, Any]:
-        for s in self.repository.get_settings():
+        settings = self.repository.get_settings()
+        for s in settings:
             if Path(str(s.get("SqlitePath", ""))).name.lower() == sqlite_name.lower() and str(s.get("SqliteTable", "")).lower() == sqlite_table.lower():
                 return s
         raise ValueError(
             f"No existe configuración legacy para {sqlite_name}:{sqlite_table}.\n"
-            "Se intentará crear automáticamente."
+            f"Base configuración: {self.repository.db_path}.\n"
+            f"Configuraciones encontradas: {len(settings)}"
         )
+
+    def resolve_default_access_path_for_planificacion(self) -> str:
+        settings = self.repository.get_settings()
+        return (
+            self._find_existing_access_path(settings, ["Pedidos", "Loteado", "Lote", "PesosFres", "DBfruta"])
+            or self._resolve_default_access_path(settings, "dbpedidos.sqlite", "pedidos")
+        )
+
+    def create_or_update_planificacion_defaults(self, access_path: str) -> int:
+        access = str(access_path or "").strip()
+        if not access:
+            raise ValueError("AccessPath obligatorio para crear configuración por defecto.")
+        defaults = [
+            ("Pedidos", "Pedidos", "DBPedidos.sqlite", "Pedidos"),
+            ("Loteado", "Loteado", "bdloteado.sqlite", "Loteado"),
+            ("Lote", "Lote", "bdloteado.sqlite", "Lote"),
+            ("PesosFres", "PesosFres", "DBfruta.sqlite", "PesosFres"),
+        ]
+        settings = self.repository.get_settings()
+        updated = 0
+        for nombre, access_table, sqlite_file, sqlite_table in defaults:
+            payload = {
+                "Nombre": nombre,
+                "AccessPath": access,
+                "AccessTable": access_table,
+                "SqlitePath": str(Path(CENTRAL_SQLITE_DIR) / sqlite_file),
+                "SqliteTable": sqlite_table,
+                "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
+                "Activa": 1,
+                "Observaciones": "",
+            }
+            existing = next(
+                (
+                    row for row in settings
+                    if Path(str(row.get("SqlitePath", ""))).name.lower() == sqlite_file.lower()
+                    and str(row.get("SqliteTable", "")).lower() == sqlite_table.lower()
+                ),
+                None,
+            )
+            if existing:
+                self.repository.update_setting(int(existing["Id"]), payload)
+            else:
+                self.repository.add_setting(payload)
+            updated += 1
+        return updated
 
     @staticmethod
     def _resolve_default_access_path(settings: list[dict[str, Any]], sqlite_file: str, access_table: str) -> str:
