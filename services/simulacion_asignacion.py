@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 import unicodedata
 
+from services.operational_quality_service import OperationalQualityService
 from widgets.data_table import DataTable
 
 
@@ -54,6 +55,7 @@ CONFIG_CALIDAD_OPERATIVA = {
     "PRECALIBRADO": {"primera_pct": 0.80, "segunda_pct": 0.20, "destrio_fallback_pct": 0.08, "usar_destrio_historico": False, "industria_recuperable_pct": 1.00},
     "DESCONOCIDO": {"primera_pct": 0.80, "segunda_pct": 0.20, "destrio_fallback_pct": 0.10, "usar_destrio_historico": False, "industria_recuperable_pct": 0.80},
 }
+_quality_service = OperationalQualityService()
 
 
 def _norm_text(valor: object) -> str:
@@ -100,6 +102,8 @@ def detectar_perfil_stock(candidato: dict) -> str:
         return "CAMPO_REAL"
     if "INDUSTRIAL" in texto or "ALMACEN_INDUSTRIAL" in texto or "ALMACEN INDUSTRIAL" in texto:
         return "INDUSTRIAL"
+    if "PRECALIBRADO" in texto:
+        return "PRECALIBRADO"
     if "COMERCIAL" in texto:
         return "COMERCIAL"
     return "DESCONOCIDO"
@@ -112,6 +116,24 @@ def obtener_config_utilidad_stock(perfil_stock: str, candidato: dict | None = No
         perfil = "ALMACEN_INDUSTRIAL"
     elif perfil == "COMERCIAL":
         perfil = "ALMACEN_COMERCIAL"
+    elif perfil == "PRECALIBRADO":
+        perfil = "PRECALIBRADO"
+    try:
+        _quality_service.ensure_defaults()
+        rows = _quality_service.get_settings()
+        db_cfg = {str(r.get("Origen")): {
+            "primera_pct": float(r.get("PrimeraPct", 0)),
+            "segunda_pct": float(r.get("SegundaPct", 0)),
+            "destrio_fallback_pct": float(r.get("DestrioFallbackPct", 0)),
+            "usar_destrio_historico": bool(int(r.get("UsarDestrioHistorico", 0))),
+            "industria_recuperable_pct": float(r.get("IndustriaRecuperablePct", 0)),
+            "activo": bool(int(r.get("Activo", 1))),
+        } for r in rows}
+        cfg = db_cfg.get(perfil, db_cfg.get("DESCONOCIDO"))
+        if cfg:
+            return dict(cfg)
+    except Exception:
+        pass
     return dict(CONFIG_CALIDAD_OPERATIVA.get(perfil, CONFIG_CALIDAD_OPERATIVA["DESCONOCIDO"]))
 
 

@@ -11,6 +11,7 @@ from widgets.screen_header import ScreenHeader
 from widgets.date_picker import DatePickerPopup
 from widgets.multi_select_filter import MultiSelectFilter
 from services.simulacion_asignacion import abrir_simulacion_asignacion
+from screens.operational_quality_settings_screen import OperationalQualitySettingsScreen
 
 
 class PlanificacionDiariaScreen(ttk.Frame):
@@ -148,6 +149,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             ttk.Checkbutton(sim_frame, text=lbl, variable=self.sim_policy_vars[k]).grid(row=i//3, column=i%3, sticky="w", padx=4, pady=2)
         ttk.Label(sim_frame, text="Modo simulación: no descuenta stock ni crea reservas").grid(row=4, column=0, columnspan=2, sticky="w", pady=(6,0))
         ttk.Button(sim_frame, text="Recalcular simulación", command=self._recalcular_simulacion).grid(row=4, column=2, sticky="e")
+        ttk.Button(sim_frame, text="Configurar calidad", command=self._open_config_calidad).grid(row=4, column=1, sticky="e", padx=(0, 8))
 
         balance_header = ttk.Frame(self.balance_tab)
         balance_header.pack(fill="x", pady=(0, 6))
@@ -173,6 +175,13 @@ class PlanificacionDiariaScreen(ttk.Frame):
         btn = ttk.Button(frame, text="...", width=3)
         btn.configure(command=lambda v=var, b=btn: DatePickerPopup(self, target_var=v, anchor_widget=b))
         btn.grid(row=0, column=1, padx=(4, 0))
+
+    def _open_config_calidad(self) -> None:
+        win = tk.Toplevel(self)
+        win.title("Configuración calidad operativa")
+        win.geometry("1200x620")
+        frame = OperationalQualitySettingsScreen(win, on_back=win.destroy)
+        frame.pack(fill="both", expand=True)
 
     def _filters_payload(self) -> dict:
         return {
