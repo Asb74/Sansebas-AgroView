@@ -22,6 +22,7 @@ class LegacySyncService:
     def __init__(self) -> None:
         self.repository = LegacySyncRepository()
         self.temp_dir = Path("temp") / "legacy_sync"
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
         self.vbs_path = Path("legacy_scripts") / "export_access_table.vbs"
         self._sync_running = False
         self.runtime_db = RuntimeDatabaseService()
@@ -29,10 +30,27 @@ class LegacySyncService:
 
     def ensure_default_planificacion_settings(self) -> None:
         settings = self.repository.get_settings()
+        access_loteado = self._find_existing_access_path(settings, ["Loteado", "Lote"])
+        access_fruta = self._find_existing_access_path(settings, ["PesosFres", "DBfruta"])
+        access_pedidos = self._find_existing_access_path(settings, ["Pedidos"])
+        missing_access_groups: list[str] = []
+        if not access_pedidos:
+            missing_access_groups.append("Pedidos")
+        if not access_loteado:
+            missing_access_groups.append("Loteado")
+        if not access_fruta:
+            missing_access_groups.append("PesosFres")
+        if missing_access_groups:
+            logger.warning(
+                "Falta configurar ruta MDB origen para %s",
+                "/".join(missing_access_groups),
+            )
+            return
         defaults = [
             {
                 "Nombre": "Pedidos",
                 "AccessTable": "Pedidos",
+                "AccessPath": access_pedidos,
                 "SqliteTable": "Pedidos",
                 "SqlitePath": str(Path(CENTRAL_SQLITE_DIR) / "DBPedidos.sqlite"),
                 "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
@@ -41,6 +59,7 @@ class LegacySyncService:
             {
                 "Nombre": "Loteado",
                 "AccessTable": "Loteado",
+                "AccessPath": access_loteado,
                 "SqliteTable": "Loteado",
                 "SqlitePath": str(Path(CENTRAL_SQLITE_DIR) / "bdloteado.sqlite"),
                 "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
@@ -49,6 +68,7 @@ class LegacySyncService:
             {
                 "Nombre": "Lote",
                 "AccessTable": "Lote",
+                "AccessPath": access_loteado,
                 "SqliteTable": "Lote",
                 "SqlitePath": str(Path(CENTRAL_SQLITE_DIR) / "bdloteado.sqlite"),
                 "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
@@ -57,6 +77,7 @@ class LegacySyncService:
             {
                 "Nombre": "PesosFres",
                 "AccessTable": "PesosFres",
+                "AccessPath": access_fruta,
                 "SqliteTable": "PesosFres",
                 "SqlitePath": str(Path(CENTRAL_SQLITE_DIR) / "DBfruta.sqlite"),
                 "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
@@ -75,9 +96,7 @@ class LegacySyncService:
             )
             if exists:
                 continue
-            access_path = self._resolve_default_access_path(settings, sqlite_file, access_table)
             data = dict(default)
-            data["AccessPath"] = access_path
             self.repository.add_setting(data)
             settings.append(data)
             logger.info("Configuración legacy creada automáticamente: %s", default["Nombre"])
@@ -170,6 +189,9 @@ class LegacySyncService:
         self._sync_running = True
         start = datetime.utcnow()
         fecha_corte = date.today().isoformat()
+        ok_required, required_msg = self._validate_required_planificacion_settings()
+        if not ok_required:
+            return False, required_msg
         logger.info("Sync planificación usando CENTRAL_SQLITE_DIR=%s", CENTRAL_SQLITE_DIR)
         logger.info("Iniciando actualización planificación rápida. Fecha corte=%s", fecha_corte)
         try:
@@ -406,6 +428,57 @@ class LegacySyncService:
                 return access_path
         return ""
 
+    @staticmethod
+    def _find_existing_access_path(settings: list[dict[str, Any]], aliases: list[str]) -> str:
+        aliases_lower = {a.lower() for a in aliases}
+        for setting in settings:
+            if not int(setting.get("Activa", 1)):
+                continue
+            sqlite_name = Path(str(setting.get("SqlitePath", ""))).name.lower()
+            access_table = str(setting.get("AccessTable", "")).lower()
+            nombre = str(setting.get("Nombre", "")).lower()
+            if sqlite_name in {f"{a.lower()}.sqlite" for a in aliases} or access_table in aliases_lower or nombre in aliases_lower:
+                access_path = str(setting.get("AccessPath", "")).strip()
+                if access_path:
+                    return access_path
+        return ""
+
+    def _validate_required_planificacion_settings(self) -> tuple[bool, str]:
+        required = [
+            ("DBPedidos.sqlite", "Pedidos"),
+            ("bdloteado.sqlite", "Loteado"),
+            ("bdloteado.sqlite", "Lote"),
+            ("DBfruta.sqlite", "PesosFres"),
+        ]
+        missing: list[str] = []
+        for sqlite_name, sqlite_table in required:
+            try:
+                setting = self._find_setting(sqlite_name, sqlite_table)
+            except Exception:
+                missing.append(f"Falta configuración: {sqlite_name}:{sqlite_table}")
+                continue
+            access_path_raw = str(setting.get("AccessPath", "")).strip()
+            if not access_path_raw:
+                missing.append(f"AccessPath vacío para {sqlite_name}:{sqlite_table}")
+            else:
+                access_path = Path(access_path_raw).resolve()
+                if not access_path.exists():
+                    missing.append(f"MDB origen no existe para {sqlite_name}:{sqlite_table}: {access_path}")
+            sqlite_path_raw = str(setting.get("SqlitePath", "")).strip()
+            if not sqlite_path_raw:
+                missing.append(f"SqlitePath vacío para {sqlite_name}:{sqlite_table}")
+            else:
+                sqlite_parent = Path(sqlite_path_raw).resolve().parent
+                try:
+                    sqlite_parent.mkdir(parents=True, exist_ok=True)
+                except Exception as exc:
+                    missing.append(f"No se pudo crear carpeta SQLite para {sqlite_name}:{sqlite_table}: {sqlite_parent} ({exc})")
+            if not self.vbs_path.resolve().exists():
+                missing.append(f"Script VBS no existe: {self.vbs_path.resolve()}")
+        if missing:
+            return False, "Rutas inválidas para exportación:\n" + "\n".join(missing)
+        return True, ""
+
     def _run_export_custom(self, setting: dict[str, Any], table_or_query: str, output_tag: str | None = None) -> tuple[bool, str, Path | None, int]:
         tmp = dict(setting)
         tmp["AccessTable"] = table_or_query
@@ -420,8 +493,22 @@ class LegacySyncService:
         export_tag = setting.get('ExportTag') or f"{setting['Nombre']}_{setting.get('Id','adhoc')}"
         csv_path = temp_dir / f"{export_tag}.csv"
         log_path = temp_dir / f"{export_tag}.log"
-        if not vbs_path.exists() or not mdb_path.exists() or not temp_dir.exists():
-            return False, "Rutas inválidas para exportación", None, 0
+        logger.info("Export legacy VBS=%s", vbs_path)
+        logger.info("Export legacy MDB=%s existe=%s", mdb_path, mdb_path.exists())
+        logger.info("Export legacy CSV=%s", csv_path)
+        logger.info("Export legacy LOG=%s", log_path)
+        missing = []
+        if not vbs_path.exists():
+            missing.append(f"Script VBS no existe: {vbs_path}")
+        if not mdb_path.exists():
+            missing.append(f"MDB origen no existe: {mdb_path}")
+        if not temp_dir.exists():
+            try:
+                temp_dir.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                missing.append(f"No se pudo crear carpeta temporal: {temp_dir} ({exc})")
+        if missing:
+            return False, "Rutas inválidas para exportación:\n" + "\n".join(missing), None, 0
         command = self._build_vbs_command(vbs_path, mdb_path, setting["AccessTable"], csv_path, log_path)
         result = subprocess.run(command, capture_output=True, text=True, encoding="cp1252", timeout=120)
         if result.returncode != 0:
