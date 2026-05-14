@@ -1115,6 +1115,21 @@ class PlanningRepository:
             """
             logger.info("get_pedidos_pendientes: después de pedidos_filtrados (query construida)")
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+            mconfecciones = self.cargar_mconfecciones(conn)
+            rows = [
+                self.enriquecer_pedido_con_confeccion(r, mconfecciones)
+                for r in rows
+            ]
+            logger.info(
+                "Pedidos pendientes enriquecidos con MConfecciones: %s filas, con grupo: %s",
+                len(rows),
+                sum(
+                    1
+                    for r in rows
+                    if str(r.get("Grupo confección", "")).strip()
+                    and str(r.get("Grupo confección", "")).strip() != "DESCONOCIDO"
+                ),
+            )
             logger.info("get_pedidos_pendientes: después de query final (%s filas)", len(rows))
             logger.info("get_pedidos_pendientes: tiempo total %.3fs", time.perf_counter() - t0_total)
             logger.info("Pedidos pendientes finales: %s", len(rows))
@@ -1732,6 +1747,31 @@ class PlanningRepository:
         return result
 
     def get_filter_options(self, key: str) -> list[str]:
+        if key == "campana":
+            pedidos_path = self._db_path(DB_PEDIDOS)
+            if not pedidos_path.exists():
+                return []
+            with sqlite3.connect(pedidos_path) as conn:
+                conn.row_factory = sqlite3.Row
+                pedidos_cols = [r["name"] for r in conn.execute('PRAGMA table_info("Pedidos")').fetchall()]
+                if not pedidos_cols:
+                    return []
+                campana_col = self._find_campana_column(pedidos_cols)
+                if not campana_col:
+                    return []
+                rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT CAST("{campana_col}" AS TEXT) AS Campana
+                    FROM "Pedidos"
+                    WHERE COALESCE("Cancelado", 0) = 0
+                      AND TRIM(CAST("{campana_col}" AS TEXT)) <> ''
+                    ORDER BY CAST("{campana_col}" AS TEXT) DESC
+                    """
+                ).fetchall()
+            opciones = [str(r[0]).strip() for r in rows if str(r[0] or "").strip()]
+            logger.info("Opciones campaña desde Pedidos: %s", opciones)
+            return opciones
+
         if key == "grupo_varietal":
             path = self.db_loteado
             if not path.exists():
