@@ -329,11 +329,35 @@ class PlanificacionDiariaScreen(ttk.Frame):
             return self.service.get_balance_cobertura_detalle(self._filters_payload(), pedido, policy=self._build_sim_policy())
 
         def _inventario_global() -> list[dict]:
-            policy = self._build_sim_policy()
-            rows = [r for r in self.balance_rows_all if str(r.get("Tipo línea", "")).strip() == "Pedido"]
-            inventario = []
-            for row in rows:
-                inventario.extend(self.service.get_balance_cobertura_detalle(self._filters_payload(), row, policy=policy))
+            """Construye inventario global desacoplado de la demanda puntual de cada pedido.
+
+            Antes se unían candidatos por pedido y, por diseño, solo aparecía el stock
+            compatible con calibres ya demandados. Para el bloque de sobrantes globales
+            necesitamos todo el inventario comercial/industrial disponible en balance,
+            incluso si no cubre ningún pedido actual.
+            """
+            inventario: list[dict] = []
+            for row in self.balance_rows_all:
+                if str(row.get("Tipo línea", "")).strip() != "Sobrante comercial":
+                    continue
+                kg_stock = float(row.get("Diferencia comercial", 0) or 0)
+                if kg_stock <= 0:
+                    continue
+                origen = "ALMACEN_COMERCIAL" if float(row.get("Kg stock comercial", 0) or 0) > 0 else "ALMACEN_INDUSTRIAL"
+                inventario.append({
+                    "Origen": origen,
+                    "Cultivo": row.get("Cultivo", ""),
+                    "Campaña": row.get("Campaña", ""),
+                    "Grupo varietal": row.get("Grupo varietal", ""),
+                    "Variedad stock": row.get("Variedad", ""),
+                    "Calibre stock": row.get("Calibre", ""),
+                    "Categoría": row.get("Categoría", ""),
+                    "Marca stock": row.get("Marca", ""),
+                    "kg_fisicos": kg_stock,
+                    "kg_utiles_estimados": kg_stock,
+                    "kg_primera_estimado": kg_stock,
+                    "kg_segunda_estimado": 0.0,
+                })
             return inventario
 
         abrir_simulacion_asignacion(self, pedidos, _candidatos_de_pedido, get_inventario_global_cb=_inventario_global)
