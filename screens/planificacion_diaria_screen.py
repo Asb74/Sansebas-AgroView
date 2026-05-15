@@ -322,10 +322,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
             r
             for r in self.balance_rows_all
             if str(r.get("Tipo línea", "")).strip() == "Pedido"
-            and str(r.get("Estado comercial", "")).strip() == "Faltante comercial"
         ]
         if not pedidos:
-            messagebox.showinfo("Simulación de asignación", "No hay pedidos pendientes con faltante comercial para simular.", parent=self)
+            messagebox.showinfo("Simulación de asignación", "No hay pedidos pendientes para simular.", parent=self)
             return
 
         def _candidatos_de_pedido(pedido: dict) -> list[dict]:
