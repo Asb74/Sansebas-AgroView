@@ -345,7 +345,14 @@ class PlanificacionDiariaScreen(ttk.Frame):
             )
             return pools
 
-        abrir_simulacion_asignacion(self, pedidos, _candidatos_de_pedido, get_inventario_global_cb=_inventario_global)
+        pedidos_detalle_horizonte = [dict(r) for r in self.pedidos_pendientes_rows]
+        abrir_simulacion_asignacion(
+            self,
+            pedidos,
+            _candidatos_de_pedido,
+            get_inventario_global_cb=_inventario_global,
+            pedidos_detalle_horizonte=pedidos_detalle_horizonte,
+        )
 
     def _open_selected_balance_coverage(self) -> None:
         sel = self.balance_table.tree.selection()

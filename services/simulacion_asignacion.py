@@ -153,6 +153,20 @@ def _parse_fecha_salida(valor: object) -> date | None:
             continue
     return None
 
+def _normalizar_fecha_salida(row: dict) -> date | None:
+    for key in ("Fecha salida", "fecha_salida", "FechaSalida", "fecha salida", "Salida", "Fecha", "fecha", "salida"):
+        if key not in row:
+            continue
+        valor = row.get(key)
+        if isinstance(valor, datetime):
+            return valor.date()
+        if isinstance(valor, date):
+            return valor
+        fecha = _parse_fecha_salida(valor)
+        if fecha:
+            return fecha
+    return None
+
 
 def _calcular_bloque_temporal(fecha: date | None, hoy: date) -> tuple[int, str]:
     if not fecha:
@@ -590,7 +604,7 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
     hoy = date.today()
     pedidos_meta = []
     for pedido in pedidos:
-        fecha_salida = _parse_fecha_salida(pedido.get("Fecha salida", pedido.get("fecha_salida", "")))
+        fecha_salida = _normalizar_fecha_salida(pedido)
         dias_hasta, bloque = _calcular_bloque_temporal(fecha_salida, hoy)
         prioridad_manual = int(_to_float(pedido.get("prioridad_manual", 0)))
         item = dict(pedido)
@@ -600,7 +614,14 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
         item["prioridad_fecha"] = dias_hasta
         item["prioridad_manual"] = prioridad_manual
         pedidos_meta.append(item)
-    pedidos_meta.sort(key=lambda p: (p.get("dias_hasta_salida", 9999), -int(_to_float(p.get("prioridad_manual", 0))), -_to_float(p.get("Kg pedidos pendientes", p.get("kg_pendientes", 0)))))
+    pedidos_meta.sort(
+        key=lambda p: (
+            p.get("dias_hasta_salida", 9999),
+            -int(_to_float(p.get("prioridad_manual", 0))),
+            str(p.get("IdPedidoLora", p.get("id_pedido", ""))),
+            int(_to_float(p.get("Línea", p.get("linea", 0)))),
+        )
+    )
 
     stock_simulado: dict[str, dict] = {}
     asignaciones: list[dict] = []
@@ -954,8 +975,9 @@ def calcular_horizonte_cobertura(
     faltantes: dict[tuple[str, str, str, str, str, str], dict] = {}
     for sim in simulaciones:
         ped = sim.get("pedido", {})
+        fecha_dt = _normalizar_fecha_salida(ped)
+        fecha = fecha_dt.isoformat() if fecha_dt else ""
         fecha_raw = ped.get("fecha_salida") or ped.get("Fecha salida") or ped.get("FechaSalida") or ped.get("fecha") or ped.get("salida")
-        fecha = str(fecha_raw or "").strip()
         bloque = _bloque_temporal_horizonte(fecha_raw, ped.get("bloque_temporal", ""), date.today())
         key = (fecha, bloque)
         reg = resumen_fecha.setdefault(key, {"Fecha salida": fecha, "Bloque temporal": bloque, "Nº pedidos": 0, "Kg pedidos": 0.0, "Kg cubiertos": 0.0, "Kg faltantes": 0.0, "Calibre crítico": "", "Grupo varietal crítico": "", "Grupo confección crítico": "", "Acción sugerida": "", "_fecha_critica": None})
@@ -1039,10 +1061,14 @@ def calcular_horizonte_cobertura(
         recomendaciones.append("No es necesario recolectar para cubrir pedidos simulados.")
     recomendaciones.append(f"Política campo real: {'habilitado' if incluir_campo_real else 'deshabilitado'}")
     recomendaciones.append(f"Política campo estimado: {'habilitado' if incluir_campo_estimado else 'deshabilitado'}")
+    logger.info(
+        "Horizonte resumen fechas=%s",
+        [(r["Fecha salida"], r["Kg pedidos"], r["Estado día"]) for r in resumen_por_fecha],
+    )
     return {"fecha_limite_cubierta": fecha_limite_display, "dias_autonomia": dias_autonomia, "estado_horizonte": estado_horizonte, "pedidos_cubiertos": sum(1 for s in simulaciones if s.get('estado_global') == 'TOTAL'), "pedidos_parciales": sum(1 for s in simulaciones if s.get('estado_global') == 'PARCIAL'), "pedidos_insuficientes": sum(1 for s in simulaciones if s.get('estado_global') == 'INSUFICIENTE'), "kg_pendientes_total": kg_pend_total, "kg_asignados_total": kg_asig_total, "kg_faltantes_total": kg_falt_total, "primer_fallo": primer_fallo or {}, "resumen_por_fecha": resumen_por_fecha, "faltantes_por_calibre": sorted(faltantes_rows, key=lambda r: (r["Primera fecha afectada"] or "9999-99-99", -r["Kg faltantes"])), "stock_restante_por_calibre": stock_restante, "recomendaciones": recomendaciones, "hay_fechas_validas": hay_fechas_validas}
 
 
-def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None) -> None:
+def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None, pedidos_detalle_horizonte: list[dict] | None = None) -> None:
     popup = tk.Toplevel(parent)
     popup.title("Simulación de asignación")
     popup.geometry("1300x750")
@@ -1284,8 +1310,15 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         tbl.tree.tag_configure("origen_campo_estimado", background="#e7d9f7")
         tbl.tree.tag_configure("origen_desconocido", background="#eeeeee")
 
+    pedidos_horizonte = list(pedidos_detalle_horizonte or pedidos)
+    logger.info(
+        "Horizonte pedidos entrada: filas=%s fechas=%s kg_total=%s",
+        len(pedidos_horizonte),
+        sorted(set(str(p.get("Fecha salida", p.get("fecha_salida", ""))) for p in pedidos_horizonte)),
+        sum(_to_float(p.get("Kg pendiente", p.get("kg_pendiente", 0))) for p in pedidos_horizonte),
+    )
     horizonte = calcular_horizonte_cobertura(
-        pedidos=pedidos,
+        pedidos=pedidos_horizonte,
         inventario_global=inventario_global_simulado,
         get_candidatos_cb=get_candidatos_cb,
         scoring=scoring,
