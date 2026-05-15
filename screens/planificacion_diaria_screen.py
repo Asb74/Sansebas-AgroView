@@ -34,6 +34,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.stock_almacen_rows: list[dict] = []
         self.stock_almacen_detalle_rows: list[dict] = []
         self.pedidos_pendientes_rows: list[dict] = []
+        self.pedidos_pendientes_rows_raw: list[dict] = []
         self.balance_rows: list[dict] = []
         self.balance_rows_all: list[dict] = []
         self.sim_policy_vars: dict[str, tk.BooleanVar] = {}
@@ -224,10 +225,12 @@ class PlanificacionDiariaScreen(ttk.Frame):
             modo_pedidos = self.pedidos_modo_var.get()
             try:
                 pedidos_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, modo_pedidos)
+                self.pedidos_pendientes_rows_raw = [dict(r) for r in pedidos_rows]
                 self._refresh_pedidos_local_filter_options(pedidos_rows)
                 self.pedidos_pendientes_rows, pedidos_kpi = self._apply_pedidos_local_filters(pedidos_rows, pedidos_kpi)
             except Exception as exc:
                 self.pedidos_pendientes_rows = []
+                self.pedidos_pendientes_rows_raw = []
                 logging.getLogger(__name__).warning("No se pudo cargar pedidos pendientes: %s", exc)
                 messagebox.showwarning("Pedidos pendientes", f"No se pudo cargar pedidos pendientes: {exc}")
         elif tab_activa == "Balance":
@@ -345,7 +348,25 @@ class PlanificacionDiariaScreen(ttk.Frame):
             )
             return pools
 
-        pedidos_detalle_horizonte = [dict(r) for r in self.pedidos_pendientes_rows]
+        if not self.pedidos_pendientes_rows_raw:
+            try:
+                modo_pedidos = self.pedidos_modo_var.get()
+                pedidos_rows, _kpi = self.service.load_pedidos_pendientes(self._filters_payload(), modo_pedidos)
+                self.pedidos_pendientes_rows_raw = [dict(r) for r in pedidos_rows]
+            except Exception:
+                logging.getLogger(__name__).exception("No se pudo cargar pedidos raw para horizonte")
+
+        logger = logging.getLogger(__name__)
+        pedidos_detalle_horizonte = [dict(r) for r in self.pedidos_pendientes_rows_raw]
+        if not pedidos_detalle_horizonte:
+            pedidos_detalle_horizonte = [dict(r) for r in self.pedidos_pendientes_rows]
+        logger.info(
+            "Simulación horizonte raw: filas=%s fechas=%s kg_total=%s",
+            len(pedidos_detalle_horizonte),
+            sorted(set(str(r.get("Fecha salida", "")) for r in pedidos_detalle_horizonte)),
+            sum(float(r.get("Kg pendiente", 0) or 0) for r in pedidos_detalle_horizonte),
+        )
+
         abrir_simulacion_asignacion(
             self,
             pedidos,
@@ -538,6 +559,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.stock_campo_rows = []
         self.stock_almacen_rows = []
         self.pedidos_pendientes_rows = []
+        self.pedidos_pendientes_rows_raw = []
         self._btn_actualizar_planificacion.configure(state="disabled", text="Actualizando...")
         try:
             ok, msg = self.service.actualizar_planificacion_hoy_en_adelante()
