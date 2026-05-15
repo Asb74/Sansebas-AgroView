@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import date, datetime
+import logging
 import tkinter as tk
 from tkinter import ttk
 import unicodedata
@@ -58,6 +59,7 @@ CONFIG_CALIDAD_OPERATIVA = {
     "DESCONOCIDO": {"primera_pct": 0.80, "segunda_pct": 0.20, "destrio_fallback_pct": 0.10, "usar_destrio_historico": False, "industria_recuperable_pct": 0.80},
 }
 _quality_service = OperationalQualityService()
+logger = logging.getLogger(__name__)
 
 
 def _norm_text(valor: object) -> str:
@@ -868,8 +870,28 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
 
     simulaciones, asignaciones_simuladas, _stock_simulado = simular_asignacion_global(pedidos, get_candidatos_cb, scoring=scoring)
     inventario_global_simulado = dict(_stock_simulado)
+    calibres_tecnicos = sorted({
+        str(p.get("calibre", "")).strip()
+        for p in inventario_global_simulado.values()
+        if str(p.get("calibre", "")).strip()
+    })
+    logger.debug(
+        "[DEBUG] pools_tecnicos=%s calibres_tecnicos=%s",
+        len(inventario_global_simulado),
+        calibres_tecnicos,
+    )
     if callable(get_inventario_global_cb):
         inventario_global_simulado = construir_inventario_global_simulado(get_inventario_global_cb() or [])
+        calibres_globales = sorted({
+            str(p.get("calibre", "")).strip()
+            for p in inventario_global_simulado.values()
+            if str(p.get("calibre", "")).strip()
+        })
+        logger.debug(
+            "[DEBUG] pools_inventario_global=%s calibres_globales=%s",
+            len(inventario_global_simulado),
+            calibres_globales,
+        )
         for asign in asignaciones_simuladas:
             pool = inventario_global_simulado.get(asign.get("pool_id", ""))
             if not pool:
@@ -956,6 +978,16 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Pool ID": pool_id,
             "__tags__": (tag,),
         })
+    calibres_sobrantes = sorted({
+        str(r.get("Calibre", "")).strip()
+        for r in sobrantes_rows
+        if str(r.get("Calibre", "")).strip()
+    })
+    logger.debug(
+        "[DEBUG] pools_sobrantes=%s calibres_sobrantes=%s",
+        len(sobrantes_rows),
+        calibres_sobrantes,
+    )
     resumen.configure(text=f"Cobertura global · Pedidos: {total_pedidos} · Totales: {totales} · Parciales: {parciales} · Insuficientes: {insuficientes} · Kg asignados simulados: {formatear_kg(kg_asig_total)} · Kg faltantes simulados: {formatear_kg(kg_falt_total)} · Kg sobrantes útiles: {formatear_kg(sob_total)}")
     detalle.configure(text=f"Necesidad recolección · Nº necesidades: {need_tot['n']} · Kg útiles faltantes: {formatear_kg(need_tot['kg_falt'])} · Kg campo estimados total: {formatear_kg(need_tot['kg_campo'])} · Sobrantes · Kg útiles sobrantes: {formatear_kg(sob_total)} · Orígenes con sobrante: {len(sob_origenes)}")
 
@@ -1037,6 +1069,18 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             if origen_filtro != "TODOS" and origen_row != origen_filtro:
                 continue
             sobrantes_filtrados.append(r)
+        calibres_ejecutivo = sorted({
+            str(r.get("Calibre", "")).strip()
+            for r in sobrantes_filtrados
+            if str(r.get("Calibre", "")).strip()
+        })
+        logger.debug(
+            "[DEBUG] pools_ejecutivo=%s origen_filtro=%s agrupar_por_grupo=%s calibres_ejecutivo=%s",
+            len(sobrantes_filtrados),
+            origen_filtro,
+            agrupar_por_grupo,
+            calibres_ejecutivo,
+        )
         kg_sobrantes_utiles = sum(_to_float(r.get("Kg restante total", 0)) for r in sobrantes_filtrados)
         kg_stock_total = sum(_to_float(r.get("Kg asignados primera", 0)) + _to_float(r.get("Kg asignados segunda", 0)) + _to_float(r.get("Kg restante total", 0)) for r in sobrantes_filtrados)
         kg_asignado = max(0.0, kg_stock_total - kg_sobrantes_utiles)
