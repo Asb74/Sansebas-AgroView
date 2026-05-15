@@ -954,6 +954,32 @@ def _pool_id_fisico(pool_id: str) -> str:
     return pid + "|FISICO" if pid else ""
 
 
+def _kg_pendiente_linea(pedido: dict) -> float:
+    for key in (
+        "Kg pendiente",
+        "Kg pendientes",
+        "Kg pedidos pendientes",
+        "kg_pendiente",
+        "kg_pendientes",
+        "Kg pedido teórico",
+    ):
+        if key in pedido and pedido.get(key) not in (None, ""):
+            return _to_float(pedido.get(key, 0))
+    return 0.0
+
+
+def _pedido_unico_key(pedido: dict) -> str:
+    pedido_id = str(pedido.get("IdPedidoLora", "") or "").strip()
+    if pedido_id:
+        return f"ID:{pedido_id}"
+    fecha = str(pedido.get("Fecha salida", pedido.get("fecha_salida", pedido.get("FechaSalida", ""))) or "").strip()
+    cliente = str(pedido.get("Cliente", "") or "").strip()
+    variedad = str(pedido.get("Variedad", "") or "").strip()
+    calibre = str(pedido.get("Calibre", "") or "").strip()
+    linea = str(pedido.get("Línea", pedido.get("Linea", pedido.get("linea", ""))) or "").strip()
+    return f"FB:{fecha}|{cliente}|{variedad}|{calibre}|{linea}"
+
+
 def calcular_horizonte_cobertura(
     pedidos: list[dict],
     inventario_global: dict[str, dict],
@@ -980,11 +1006,12 @@ def calcular_horizonte_cobertura(
         fecha_raw = ped.get("fecha_salida") or ped.get("Fecha salida") or ped.get("FechaSalida") or ped.get("fecha") or ped.get("salida")
         bloque = _bloque_temporal_horizonte(fecha_raw, ped.get("bloque_temporal", ""), date.today())
         key = (fecha, bloque)
-        reg = resumen_fecha.setdefault(key, {"Fecha salida": fecha, "Bloque temporal": bloque, "Nº pedidos": 0, "Kg pedidos": 0.0, "Kg cubiertos": 0.0, "Kg faltantes": 0.0, "Calibre crítico": "", "Grupo varietal crítico": "", "Grupo confección crítico": "", "Acción sugerida": "", "_fecha_critica": None})
-        reg["Nº pedidos"] += 1
-        reg["Kg pedidos"] += _to_float(sim.get("kg_necesario", 0))
+        reg = resumen_fecha.setdefault(key, {"Fecha salida": fecha, "Bloque temporal": bloque, "Nº pedidos": 0, "Nº líneas": 0, "Kg pedidos": 0.0, "Kg cubiertos": 0.0, "Kg faltantes": 0.0, "Calibre crítico": "", "Grupo varietal crítico": "", "Grupo confección crítico": "", "Acción sugerida": "", "_fecha_critica": None, "_pedidos_unicos": set()})
+        reg["Nº líneas"] += 1
+        reg["_pedidos_unicos"].add(_pedido_unico_key(ped))
+        reg["Kg pedidos"] += _kg_pendiente_linea(ped)
         reg["Kg cubiertos"] += _to_float(sim.get("kg_asignado_simulado", 0))
-        reg["Kg faltantes"] += _to_float(sim.get("kg_faltante_simulado", 0))
+        reg["Kg faltantes"] = max(0.0, reg["Kg pedidos"] - reg["Kg cubiertos"])
         falt = _to_float(sim.get("kg_faltante_simulado", 0))
         if falt > _to_float(reg.get("Kg faltantes", 0)):
             reg["Calibre crítico"] = str(ped.get("Calibre", ""))
@@ -1008,6 +1035,7 @@ def calcular_horizonte_cobertura(
     hay_fechas_validas = False
     hoy = date.today()
     for (fecha, _bloque), reg in fechas_ordenadas:
+        reg["Nº pedidos"] = len(reg.pop("_pedidos_unicos", set()))
         fecha_dt = _parse_fecha_salida(fecha)
         if fecha_dt:
             hay_fechas_validas = True
@@ -1033,6 +1061,15 @@ def calcular_horizonte_cobertura(
         else:
             reg["Acción sugerida"] = "Recolectar / buscar alternativa comercial"
         reg.pop("_fecha_critica", None)
+        logger.info(
+            "Horizonte fecha=%s pedidos_unicos=%s lineas=%s kg_pedidos=%s kg_cubiertos=%s kg_faltantes=%s",
+            fecha,
+            reg.get("Nº pedidos", 0),
+            reg.get("Nº líneas", 0),
+            reg.get("Kg pedidos", 0.0),
+            reg.get("Kg cubiertos", 0.0),
+            reg.get("Kg faltantes", 0.0),
+        )
         resumen_por_fecha.append(reg)
     limite_date = _parse_fecha_salida(fecha_limite) if fecha_limite else None
     if hay_fechas_validas:
@@ -1310,7 +1347,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         "Horizonte pedidos entrada: filas=%s fechas=%s kg_total=%s",
         len(pedidos_horizonte),
         sorted(set(str(p.get("Fecha salida", p.get("fecha_salida", ""))) for p in pedidos_horizonte)),
-        sum(_to_float(p.get("Kg pendiente", p.get("kg_pendiente", 0))) for p in pedidos_horizonte),
+        sum(_kg_pendiente_linea(p) for p in pedidos_horizonte),
     )
     horizonte = calcular_horizonte_cobertura(
         pedidos=pedidos_horizonte,
@@ -1355,7 +1392,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         ttk.Label(horizonte_frame, text=txt).grid(row=idx // 2, column=idx % 2, sticky="w", padx=(0, 16), pady=2)
     horizon_tbl = DataTable(
         horizonte_tab,
-        ["Fecha salida", "Bloque temporal", "Nº pedidos", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Estado", "Calibre crítico", "Grupo varietal crítico", "Acción sugerida"],
+        ["Fecha salida", "Bloque temporal", "Nº pedidos", "Nº líneas", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Estado", "Calibre crítico", "Grupo varietal crítico", "Acción sugerida"],
     )
     horizon_tbl.pack(fill="both", expand=True, pady=(6, 0))
     horizon_tbl.tree.tag_configure("estado_ok", background="#DDF4DD")
@@ -1422,6 +1459,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Fecha salida": r.get("Fecha salida", ""),
             "Bloque temporal": r.get("Bloque temporal", ""),
             "Nº pedidos": r.get("Nº pedidos", 0),
+            "Nº líneas": r.get("Nº líneas", 0),
             "Kg pedidos": formatear_kg(r.get("Kg pedidos", 0)),
             "Kg cubiertos": formatear_kg(r.get("Kg cubiertos", 0)),
             "Kg faltantes": formatear_kg(r.get("Kg faltantes", 0)),
