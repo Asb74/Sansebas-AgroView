@@ -996,9 +996,49 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     modo_frame = ttk.Frame(popup, padding=(8, 8, 8, 0))
     modo_frame.pack(fill="x")
     ttk.Label(modo_frame, text="Modo vista:").pack(side="left")
-    modo_var = tk.StringVar(value="Ejecutivo")
+    modo_var = tk.StringVar(value="Ejecutivo")  # Compatibilidad temporal; las pestañas son la navegación principal
     modo_combo = ttk.Combobox(modo_frame, state="readonly", textvariable=modo_var, values=["Ejecutivo", "Operativo", "Técnico"], width=14)
     modo_combo.pack(side="left", padx=(8, 0))
+
+    def _abrir_leyenda() -> None:
+        dlg = tk.Toplevel(popup)
+        dlg.title("Leyenda de simulación")
+        dlg.geometry("760x560")
+        dlg.transient(popup)
+        dlg.grab_set()
+        txt = tk.Text(dlg, wrap="word", padx=12, pady=12)
+        txt.pack(fill="both", expand=True)
+        leyenda = (
+            "A) Colores por origen\n"
+            "• Amarillo: ALMACEN_INDUSTRIAL\n"
+            "• Verde: ALMACEN_COMERCIAL\n"
+            "• Azul: CAMPO_REAL\n"
+            "• Morado: CAMPO_ESTIMADO\n"
+            "• Gris: DESCONOCIDO\n\n"
+            "B) Estados de cobertura\n"
+            "• Verde: OK / cubierto\n"
+            "• Amarillo: PARCIAL / vigilar\n"
+            "• Rojo: INSUFICIENTE / falta fruta\n\n"
+            "C) Estados comerciales\n"
+            "• NORMAL: stock sin alerta\n"
+            "• VIGILAR: stock relevante pendiente de salida\n"
+            "• SOBRANTE ALTO: mucho stock libre\n"
+            "• ROTACIÓN PRIORITARIA: stock industrial que conviene mover\n\n"
+            "D) Conceptos\n"
+            "• Kg stock total útil: stock disponible usado para la simulación.\n"
+            "• Kg asignados: kilos consumidos virtualmente por pedidos simulados.\n"
+            "• Kg libres: stock restante tras la simulación.\n"
+            "• % libre: porcentaje que queda sin asignar.\n"
+            "• Calidad útil: FISICO, PRIMERA, SEGUNDA o MIXTO según el contexto.\n"
+            "• Origen: procedencia operativa del stock.\n\n"
+            "E) Nota importante\n"
+            "La simulación no descuenta stock real ni reserva fruta. Solo ayuda a decidir.\n"
+        )
+        txt.insert("1.0", leyenda)
+        txt.configure(state="disabled")
+        ttk.Button(dlg, text="Cerrar", command=dlg.destroy).pack(pady=(0, 10))
+
+    ttk.Button(modo_frame, text="Leyenda", command=_abrir_leyenda).pack(side="right")
 
     top = ttk.LabelFrame(popup, text="Pedidos pendientes", padding=8)
     top.pack(fill="both", expand=True, padx=8, pady=(8, 4))
@@ -1183,7 +1223,11 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     needs_tbl.tree.tag_configure("prio_hoy", background="#f8d7da")
     needs_tbl.tree.tag_configure("prio_23", background="#fff3cd")
     needs_tbl.tree.tag_configure("prio_future", background="#dff0d8")
-    for tbl in (sobrantes_tbl, cand_tbl):
+    top_sob_tbl.tree.tag_configure("estado_normal", background="#DDF4DD")
+    top_sob_tbl.tree.tag_configure("estado_vigilar", background="#FFF3C4")
+    top_sob_tbl.tree.tag_configure("estado_sobrante_alto", background="#FFE4B5")
+    top_sob_tbl.tree.tag_configure("estado_rotacion_prioritaria", background="#FFDDAA")
+    for tbl in (sobrantes_tbl, cand_tbl, top_sob_tbl):
         tbl.tree.tag_configure("origen_industrial", background="#fff3cd")
         tbl.tree.tag_configure("origen_comercial", background="#dff0d8")
         tbl.tree.tag_configure("origen_campo_real", background="#d9edf7")
@@ -1216,6 +1260,14 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             f"Recolección necesaria: {'Sí' if horizonte.get('kg_faltantes_total', 0) > 0 else 'No'}"
         ),
     ).pack(anchor="w")
+    horizon_tbl = DataTable(
+        horizonte_tab,
+        ["Fecha salida", "Bloque temporal", "Nº pedidos", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Estado", "Calibre crítico", "Acción sugerida"],
+    )
+    horizon_tbl.pack(fill="both", expand=True, pady=(6, 0))
+    horizon_tbl.tree.tag_configure("estado_ok", background="#DDF4DD")
+    horizon_tbl.tree.tag_configure("estado_parcial", background="#FFF3C4")
+    horizon_tbl.tree.tag_configure("estado_insuf", background="#F8D7DA")
 
     filtros_exec = ttk.LabelFrame(sobrantes_tab, text="Configuración sobrantes", padding=8)
     filtros_exec.pack(fill="x", pady=(0, 6))
@@ -1238,7 +1290,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         values=["Todos", "ALMACEN_INDUSTRIAL", "ALMACEN_COMERCIAL", "CAMPO_REAL", "CAMPO_ESTIMADO", "DESCONOCIDO"],
         width=22,
     )
-    origen_sobrantes_combo.grid(row=0, column=3, sticky="w", padx=(8, 0))
+    origen_sobrantes_combo.grid(row=0, column=3, sticky="w", padx=(8, 16))
+    mostrar_detalle_tecnico_var = tk.BooleanVar(value=False)
+    ttk.Checkbutton(filtros_exec, text="Mostrar detalle técnico", variable=mostrar_detalle_tecnico_var).grid(row=0, column=4, sticky="w")
 
     exec_estado = ttk.LabelFrame(resumen_tab, text="Estado global", padding=8)
     exec_estado.pack(fill="x", pady=(0, 6))
@@ -1251,21 +1305,13 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
 
     tablas_exec = ttk.Frame(sobrantes_tab)
     tablas_exec.pack(fill="both", expand=True)
-    top_sob_tbl = DataTable(tablas_exec, ["Agrupación", "Calibre", "Calidad útil", "Origen", "Kg stock total útil", "Kg asignados", "Kg libres", "% libre", "Acción sugerida"])
+    top_sob_tbl = DataTable(tablas_exec, ["Agrupación", "Calibre", "Calidad útil", "Origen", "Kg stock total útil", "Kg asignados", "Kg libres", "% libre", "Estado comercial", "Acción sugerida"])
     top_nec_tbl = DataTable(tablas_exec, ["Variedad", "Grupo varietal", "Calibre necesario", "Calidad necesaria", "Kg faltantes", "Kg campo estimados", "Prioridad temporal", "Acción sugerida"])
-    timeline_tbl = DataTable(
-        tablas_exec,
-        ["Fecha salida", "Bloque temporal", "Nº pedidos", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Estado", "Calibre crítico", "Acción sugerida"],
-    )
     top_sob_tbl.pack(fill="both", expand=True, pady=(0, 4))
-    timeline_tbl.pack(fill="both", expand=True, pady=(4, 4))
     top_nec_tbl.pack_forget()
     acciones_box = ttk.LabelFrame(resumen_tab, text="Acciones sugeridas principales", padding=8)
     acciones_box.pack(fill="x", pady=(6, 0))
     ttk.Label(acciones_box, text="\n".join([f"- {a}" for a in acciones])).pack(anchor="w")
-    timeline_tbl.tree.tag_configure("estado_ok", background="#dcedc8")
-    timeline_tbl.tree.tag_configure("estado_parcial", background="#fff3cd")
-    timeline_tbl.tree.tag_configure("estado_insuf", background="#f8d7da")
     timeline_rows = []
     for r in horizonte.get("resumen_por_fecha", []):
         estado = r.get("Estado día", "")
@@ -1282,7 +1328,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Acción sugerida": r.get("Acción sugerida", ""),
             "__tags__": (tag,),
         })
-    timeline_tbl.set_rows(timeline_rows)
+    horizon_tbl.set_rows(timeline_rows)
 
     def _accion_sobrante(calidad_util: str, origen: str) -> str:
         calidad_norm = _norm_text(calidad_util)
@@ -1345,11 +1391,35 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             rec["total"] += asign + libre
             rec["libre"] += libre
         top_sobrantes = []
-        for (agrupador, calibre, calidad, origen), valores in sorted(agrupados.items(), key=lambda it: it[1]["libre"], reverse=True)[:10]:
+        for (agrupador, calibre, calidad, origen), valores in sorted(agrupados.items(), key=lambda it: it[1]["libre"], reverse=True):
             kg_total = valores["total"]
             kg_libre = valores["libre"]
             kg_asig = max(0.0, kg_total - kg_libre)
             pct_libre = (kg_libre / kg_total * 100.0) if kg_total > 0 else 0.0
+            estado_comercial = "NORMAL"
+            if _canonicalizar_origen(origen) == "ALMACEN_INDUSTRIAL" and kg_libre > 30000:
+                estado_comercial = "ROTACIÓN PRIORITARIA"
+            elif kg_libre > 50000 and pct_libre > 80:
+                estado_comercial = "SOBRANTE ALTO"
+            elif kg_libre > 10000:
+                estado_comercial = "VIGILAR"
+            estado_tag = "estado_normal"
+            if estado_comercial == "VIGILAR":
+                estado_tag = "estado_vigilar"
+            elif estado_comercial == "SOBRANTE ALTO":
+                estado_tag = "estado_sobrante_alto"
+            elif estado_comercial == "ROTACIÓN PRIORITARIA":
+                estado_tag = "estado_rotacion_prioritaria"
+            origen_tag = "origen_desconocido"
+            oc = _canonicalizar_origen(origen)
+            if oc == "ALMACEN_COMERCIAL":
+                origen_tag = "origen_comercial"
+            elif oc == "ALMACEN_INDUSTRIAL":
+                origen_tag = "origen_industrial"
+            elif oc == "CAMPO_REAL":
+                origen_tag = "origen_campo_real"
+            elif oc == "CAMPO_ESTIMADO":
+                origen_tag = "origen_campo_estimado"
             top_sobrantes.append({
                 group_key: agrupador,
                 "Agrupación": agrupador,
@@ -1360,9 +1430,22 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
                 "Kg asignados": formatear_kg(kg_asig),
                 "Kg libres": formatear_kg(kg_libre),
                 "% libre": f"{pct_libre:.1f}%",
+                "Estado comercial": estado_comercial,
                 "Acción sugerida": _accion_sobrante(calidad, origen),
+                "__tags__": (estado_tag, origen_tag),
             })
         top_sob_tbl.set_rows(top_sobrantes)
+
+    def _toggle_detalle_tecnico(*_args) -> None:
+        if mostrar_detalle_tecnico_var.get():
+            if not sobrantes_tbl.winfo_manager():
+                sobrantes_tbl.pack(fill="both", expand=True, pady=(4, 0))
+        else:
+            if sobrantes_tbl.winfo_manager():
+                sobrantes_tbl.pack_forget()
+
+    _toggle_detalle_tecnico()
+    mostrar_detalle_tecnico_var.trace_add("write", _toggle_detalle_tecnico)
 
     agrupar_sobrantes_combo.bind("<<ComboboxSelected>>", _refresh_resumen_ejecutivo)
     origen_sobrantes_combo.bind("<<ComboboxSelected>>", _refresh_resumen_ejecutivo)
