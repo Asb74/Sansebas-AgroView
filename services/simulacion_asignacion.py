@@ -907,6 +907,87 @@ def _pool_id_fisico(pool_id: str) -> str:
     return pid + "|FISICO" if pid else ""
 
 
+def calcular_horizonte_cobertura(
+    pedidos: list[dict],
+    inventario_global: dict[str, dict],
+    get_candidatos_cb,
+    scoring: dict | None = None,
+    policy: dict | None = None,
+) -> dict:
+    politica = dict(policy or {})
+    incluir_campo_real = bool(politica.get("allow_campo_real", True))
+    incluir_campo_estimado = bool(politica.get("allow_campo_estimado", False))
+    simulaciones, _asignaciones, stock_simulado = simular_asignacion_global(pedidos, get_candidatos_cb, scoring=scoring)
+    if inventario_global:
+        stock_simulado = deepcopy(inventario_global)
+    kg_pend_total = sum(_to_float(s.get("kg_necesario", 0)) for s in simulaciones)
+    kg_asig_total = sum(_to_float(s.get("kg_asignado_simulado", 0)) for s in simulaciones)
+    kg_falt_total = sum(_to_float(s.get("kg_faltante_simulado", 0)) for s in simulaciones)
+    resumen_fecha: dict[tuple[str, str], dict] = {}
+    primer_fallo = None
+    faltantes: dict[tuple[str, str, str, str, str, str], dict] = {}
+    for sim in simulaciones:
+        ped = sim.get("pedido", {})
+        fecha = str(ped.get("fecha_salida", ped.get("Fecha salida", "")) or "")
+        bloque = str(ped.get("bloque_temporal", ""))
+        key = (fecha, bloque)
+        reg = resumen_fecha.setdefault(key, {"Fecha salida": fecha, "Bloque temporal": bloque, "Nº pedidos": 0, "Kg pedidos": 0.0, "Kg cubiertos": 0.0, "Kg faltantes": 0.0, "Calibre crítico": "", "Grupo varietal crítico": "", "Acción sugerida": ""})
+        reg["Nº pedidos"] += 1
+        reg["Kg pedidos"] += _to_float(sim.get("kg_necesario", 0))
+        reg["Kg cubiertos"] += _to_float(sim.get("kg_asignado_simulado", 0))
+        reg["Kg faltantes"] += _to_float(sim.get("kg_faltante_simulado", 0))
+        falt = _to_float(sim.get("kg_faltante_simulado", 0))
+        if falt > 0 and not primer_fallo:
+            primer_fallo = {"Fecha salida": fecha, "Cliente": ped.get("Cliente", ""), "Variedad": ped.get("Variedad", ""), "Grupo varietal": ped.get("Grupo varietal", ped.get("grupo_varietal", "")), "Calibre": ped.get("Calibre", ""), "Categoría": ped.get("Categoría", ""), "Grupo confección": ped.get("grupo_confeccion", ped.get("GrupoConfeccion", "")), "Kg faltantes": falt, "Motivo probable": f"Falta {ped.get('Calibre', '')} {ped.get('Categoría', '')} en {ped.get('Grupo varietal', ped.get('grupo_varietal', ''))}"}
+        if falt > 0:
+            perfil_key = (str(ped.get("Grupo varietal", ped.get("grupo_varietal", ""))), str(ped.get("Variedad", "")), str(ped.get("Calibre", "")), "PRIMERA" if _norm_text(ped.get("Categoría", "")) == "I" else "SEGUNDA", str(ped.get("Categoría", "")), str(ped.get("grupo_confeccion", ped.get("GrupoConfeccion", ""))))
+            agg = faltantes.setdefault(perfil_key, {"Kg faltantes": 0.0, "Primera fecha afectada": fecha or "", "Nº pedidos afectados": 0})
+            agg["Kg faltantes"] += falt
+            agg["Nº pedidos afectados"] += 1
+            if fecha and (not agg["Primera fecha afectada"] or fecha < agg["Primera fecha afectada"]):
+                agg["Primera fecha afectada"] = fecha
+    resumen_por_fecha = []
+    fechas_ordenadas = sorted(resumen_fecha.items(), key=lambda x: x[0][0] or "9999-99-99")
+    fecha_limite = None
+    for (fecha, _bloque), reg in fechas_ordenadas:
+        if reg["Kg faltantes"] <= 0:
+            estado = "OK"
+            fecha_limite = fecha or fecha_limite
+        elif reg["Kg cubiertos"] > 0:
+            estado = "PARCIAL"
+        else:
+            estado = "INSUFICIENTE"
+        reg["Estado día"] = estado
+        if reg["Kg faltantes"] > 0:
+            reg["Acción sugerida"] = "Recolectar fruta del calibre/grupo crítico"
+        resumen_por_fecha.append(reg)
+    today = date.today()
+    limite_date = _parse_fecha_salida(fecha_limite) if fecha_limite else None
+    dias_autonomia = max(0, (limite_date - today).days) if limite_date else 0
+    estado_horizonte = "OK" if kg_falt_total <= 0 else "RIESGO" if kg_asig_total > 0 else "INSUFICIENTE"
+    faltantes_rows = []
+    for k, v in faltantes.items():
+        gvar, var, cal, calidad, cat, gconf = k
+        accion = "Recolectar/seleccionar fruta con mayor porcentaje de primera" if calidad == "PRIMERA" else "Usar segunda disponible o estándar"
+        if "MALLA" in _norm_text(gconf):
+            accion = "Puede cubrirse con primera + segunda"
+        faltantes_rows.append({"Grupo varietal": gvar, "Variedad": var, "Calibre": cal, "Calidad necesaria": calidad, "Categoría": cat, "Grupo confección": gconf, "Kg faltantes": v["Kg faltantes"], "Primera fecha afectada": v["Primera fecha afectada"], "Nº pedidos afectados": v["Nº pedidos afectados"], "Acción sugerida": accion})
+    stock_restante = []
+    for pool_id, pool in (stock_simulado or {}).items():
+        kg_ini = _to_float(pool.get("kg_utiles_finales", pool.get("kg_fisicos", 0)))
+        kg_res = _to_float(pool.get("kg_restante_simulado", kg_ini))
+        kg_asig = max(0.0, kg_ini - kg_res)
+        stock_restante.append({"Origen": pool.get("origen", ""), "Grupo varietal": pool.get("grupo_varietal", ""), "Variedad": pool.get("variedad", ""), "Calibre": pool.get("calibre", ""), "Calidad útil / FISICO": pool.get("subpool_calidad", "FISICO"), "Kg iniciales": kg_ini, "Kg asignados": kg_asig, "Kg restantes": kg_res, "% restante": (kg_res / kg_ini * 100.0) if kg_ini > 0 else 0.0, "Pool ID": pool_id})
+    recomendaciones = []
+    if kg_falt_total > 0:
+        recomendaciones.append("Sí, se requiere recolección para ampliar cobertura.")
+    else:
+        recomendaciones.append("No es necesario recolectar para cubrir pedidos simulados.")
+    recomendaciones.append(f"Política campo real: {'habilitado' if incluir_campo_real else 'deshabilitado'}")
+    recomendaciones.append(f"Política campo estimado: {'habilitado' if incluir_campo_estimado else 'deshabilitado'}")
+    return {"fecha_limite_cubierta": fecha_limite, "dias_autonomia": dias_autonomia, "estado_horizonte": estado_horizonte, "pedidos_cubiertos": sum(1 for s in simulaciones if s.get('estado_global') == 'TOTAL'), "pedidos_parciales": sum(1 for s in simulaciones if s.get('estado_global') == 'PARCIAL'), "pedidos_insuficientes": sum(1 for s in simulaciones if s.get('estado_global') == 'INSUFICIENTE'), "kg_pendientes_total": kg_pend_total, "kg_asignados_total": kg_asig_total, "kg_faltantes_total": kg_falt_total, "primer_fallo": primer_fallo or {}, "resumen_por_fecha": resumen_por_fecha, "faltantes_por_calibre": sorted(faltantes_rows, key=lambda r: (r["Primera fecha afectada"] or "9999-99-99", -r["Kg faltantes"])), "stock_restante_por_calibre": stock_restante, "recomendaciones": recomendaciones}
+
+
 def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None) -> None:
     popup = tk.Toplevel(parent)
     popup.title("Simulación de asignación")
@@ -1105,8 +1186,32 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     sobrantes_tbl.tree.tag_configure("sob_campo", background="#d9edf7")
     sobrantes_tbl.tree.tag_configure("sob_desconocido", background="#eeeeee")
 
+    horizonte = calcular_horizonte_cobertura(
+        pedidos=pedidos,
+        inventario_global=inventario_global_simulado,
+        get_candidatos_cb=get_candidatos_cb,
+        scoring=scoring,
+    )
     diagnostico = generar_diagnostico_operativo(resumen_rows, necesidades_rows, sobrantes_rows)
     acciones = generar_acciones_sugeridas(diagnostico)
+
+    horizonte_frame = ttk.LabelFrame(ejecutivo_frame, text="Horizonte de cobertura", padding=8)
+    horizonte_frame.pack(fill="x", pady=(0, 6))
+    hoy_estado = "OK"
+    if horizonte.get("resumen_por_fecha"):
+        hoy_estado = horizonte["resumen_por_fecha"][0].get("Estado día", "OK")
+    primer_fallo = horizonte.get("primer_fallo", {})
+    ttk.Label(
+        horizonte_frame,
+        text=(
+            f"Pedidos hoy: {hoy_estado} · "
+            f"Autonomía estimada: {horizonte.get('dias_autonomia', 0)} días · "
+            f"Cubierto hasta: {horizonte.get('fecha_limite_cubierta') or 'N/D'} · "
+            f"Primer fallo: {primer_fallo.get('Fecha salida', 'N/D')} / {primer_fallo.get('Calibre', 'N/D')} · "
+            f"Kg faltantes próximos 10 días: {formatear_kg(horizonte.get('kg_faltantes_total', 0))} · "
+            f"Recolección necesaria: {'Sí' if horizonte.get('kg_faltantes_total', 0) > 0 else 'No'}"
+        ),
+    ).pack(anchor="w")
 
     filtros_exec = ttk.LabelFrame(ejecutivo_frame, text="Configuración sobrantes", padding=8)
     filtros_exec.pack(fill="x", pady=(0, 6))
@@ -1144,11 +1249,36 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     tablas_exec.pack(fill="both", expand=True)
     top_sob_tbl = DataTable(tablas_exec, ["Agrupación", "Calibre", "Calidad útil", "Origen", "Kg stock total útil", "Kg asignados", "Kg libres", "% libre", "Acción sugerida"])
     top_nec_tbl = DataTable(tablas_exec, ["Variedad", "Calibre necesario", "Calidad necesaria", "Kg faltantes", "Kg campo estimados", "Prioridad temporal", "Acción sugerida"])
+    timeline_tbl = DataTable(
+        tablas_exec,
+        ["Fecha salida", "Bloque temporal", "Nº pedidos", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Estado", "Calibre crítico", "Acción sugerida"],
+    )
     top_sob_tbl.pack(fill="both", expand=True, pady=(0, 4))
     top_nec_tbl.pack(fill="both", expand=True)
+    timeline_tbl.pack(fill="both", expand=True, pady=(4, 0))
     acciones_box = ttk.LabelFrame(ejecutivo_frame, text="Acciones sugeridas", padding=8)
     acciones_box.pack(fill="x", pady=(6, 0))
     ttk.Label(acciones_box, text="\n".join([f"- {a}" for a in acciones])).pack(anchor="w")
+    timeline_tbl.tree.tag_configure("estado_ok", background="#dcedc8")
+    timeline_tbl.tree.tag_configure("estado_parcial", background="#fff3cd")
+    timeline_tbl.tree.tag_configure("estado_insuf", background="#f8d7da")
+    timeline_rows = []
+    for r in horizonte.get("resumen_por_fecha", []):
+        estado = r.get("Estado día", "")
+        tag = "estado_ok" if estado == "OK" else "estado_parcial" if estado == "PARCIAL" else "estado_insuf"
+        timeline_rows.append({
+            "Fecha salida": r.get("Fecha salida", ""),
+            "Bloque temporal": r.get("Bloque temporal", ""),
+            "Nº pedidos": r.get("Nº pedidos", 0),
+            "Kg pedidos": formatear_kg(r.get("Kg pedidos", 0)),
+            "Kg cubiertos": formatear_kg(r.get("Kg cubiertos", 0)),
+            "Kg faltantes": formatear_kg(r.get("Kg faltantes", 0)),
+            "Estado": estado,
+            "Calibre crítico": r.get("Calibre crítico", ""),
+            "Acción sugerida": r.get("Acción sugerida", ""),
+            "__tags__": (tag,),
+        })
+    timeline_tbl.set_rows(timeline_rows)
 
     def _accion_sobrante(calidad_util: str, origen: str) -> str:
         calidad_norm = _norm_text(calidad_util)
