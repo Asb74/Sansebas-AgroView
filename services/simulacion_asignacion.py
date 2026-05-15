@@ -859,34 +859,52 @@ def construir_inventario_global_simulado(candidatos_globales: list[dict]) -> dic
         sorted(set(str(p.get("Origen", "")) for p in pools_normalizados)),
     )
     for cand in pools_normalizados:
-        perfil_stock = cand.get("perfil_stock", "") or detectar_perfil_stock(cand)
-        utilidad = calcular_utilidad_operativa({}, cand)
-        cand.update(utilidad)
-        if perfil_stock == "ALMACEN_INDUSTRIAL":
-            subcands = [
-                dict(cand, subpool_calidad="SEGUNDA", categoria_util="II", kg_utiles_finales=_to_float(cand.get("kg_segunda_estimado", 0))),
-                dict(cand, subpool_calidad="PRIMERA", categoria_util="I", kg_utiles_finales=_to_float(cand.get("kg_primera_estimado", 0))),
-            ]
-        else:
-            subcands = [dict(cand, subpool_calidad="MIXTO", categoria_util=cand.get("Categoría", ""), kg_utiles_finales=_to_float(cand.get("kg_utiles_estimados", 0)))]
-        for sc in subcands:
-            pool_id = _build_pool_id(sc) + f"|{_norm_text(sc.get('subpool_calidad', 'MIXTO'))}"
-            if pool_id in inventario:
-                continue
+        origen = _canonicalizar_origen(cand.get("Origen", cand.get("origen", "")))
+        kg_fisicos = _to_float(
+            cand.get(
+                "Kg disponibles",
+                cand.get("kg_disponibles", cand.get("kg_fisicos", cand.get("Kg stock", 0))),
+            )
+        )
+        if kg_fisicos <= 0:
+            continue
+        cand["Origen"] = origen
+        cand["origen"] = origen
+        pool_id = _build_pool_id(cand) + "|FISICO"
+        if pool_id not in inventario:
             inventario[pool_id] = {
-                "kg_fisicos": _to_float(sc.get("kg_fisicos", 0)),
-                "kg_primera_inicial": _to_float(sc.get("kg_primera_estimado", 0)),
-                "kg_segunda_inicial": _to_float(sc.get("kg_segunda_estimado", 0)),
-                "kg_utiles_finales": _to_float(sc.get("kg_utiles_finales", 0)),
-                "kg_restante_simulado": _to_float(sc.get("kg_utiles_finales", 0)),
-                "origen": sc.get("Origen", sc.get("origen", "")),
-                "variedad": sc.get("Variedad stock", sc.get("variedad_stock", "")),
-                "grupo_varietal": sc.get("Grupo varietal stock", sc.get("Grupo varietal", sc.get("GrupoVarietal", sc.get("grupo_varietal", "")))),
-                "calibre": sc.get("Calibre stock", sc.get("calibre_stock", "")),
-                "categoria": sc.get("Categoría", sc.get("categoria_stock", "")),
-                "subpool_calidad": sc.get("subpool_calidad", "MIXTO"),
+                "kg_fisicos": 0.0,
+                "kg_primera_inicial": 0.0,
+                "kg_segunda_inicial": 0.0,
+                "kg_utiles_finales": 0.0,
+                "kg_restante_simulado": 0.0,
+                "origen": origen,
+                "variedad": cand.get("Variedad stock", cand.get("variedad_stock", "")),
+                "grupo_varietal": cand.get("Grupo varietal stock", cand.get("Grupo varietal", cand.get("GrupoVarietal", cand.get("grupo_varietal", "")))),
+                "calibre": cand.get("Calibre stock", cand.get("calibre_stock", "")),
+                "categoria": cand.get("Categoría", cand.get("categoria_stock", "")),
+                "subpool_calidad": "FISICO",
             }
+        inventario[pool_id]["kg_fisicos"] += kg_fisicos
+        inventario[pool_id]["kg_utiles_finales"] += kg_fisicos
+        inventario[pool_id]["kg_restante_simulado"] += kg_fisicos
+    logger.info(
+        "Inventario físico global construido: pools=%s kg_total=%s kg_libre=%s calibres=%s origenes=%s",
+        len(inventario),
+        sum(_to_float(p.get("kg_fisicos", 0)) for p in inventario.values()),
+        sum(_to_float(p.get("kg_restante_simulado", 0)) for p in inventario.values()),
+        sorted(set(str(p.get("calibre", "")) for p in inventario.values())),
+        sorted(set(str(p.get("origen", "")) for p in inventario.values())),
+    )
     return inventario
+
+
+def _pool_id_fisico(pool_id: str) -> str:
+    pid = str(pool_id or "")
+    for sufijo in ("|PRIMERA", "|SEGUNDA", "|MIXTO", "|FISICO"):
+        if pid.endswith(sufijo):
+            return pid[: -len(sufijo)] + "|FISICO"
+    return pid + "|FISICO" if pid else ""
 
 
 def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None) -> None:
@@ -966,10 +984,21 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             calibres_globales,
         )
         for asign in asignaciones_simuladas:
-            pool = inventario_global_simulado.get(asign.get("pool_id", ""))
+            pool_id_fisico = _pool_id_fisico(asign.get("pool_id", ""))
+            pool = inventario_global_simulado.get(pool_id_fisico)
             if not pool:
+                logger.warning("No se encontró pool físico para asignación pool_id=%s pool_id_fisico=%s", asign.get("pool_id", ""), pool_id_fisico)
                 continue
             pool["kg_restante_simulado"] = max(0.0, _to_float(pool.get("kg_restante_simulado", 0)) - _to_float(asign.get("kg_asignados", 0)))
+        kg_total = sum(_to_float(p.get("kg_fisicos", 0)) for p in inventario_global_simulado.values())
+        kg_libre = sum(_to_float(p.get("kg_restante_simulado", 0)) for p in inventario_global_simulado.values())
+        kg_asignado = max(0.0, kg_total - kg_libre)
+        logger.info(
+            "Inventario físico tras asignaciones: kg_total=%s kg_asignado=%s kg_libre=%s",
+            kg_total,
+            kg_asignado,
+            kg_libre,
+        )
     necesidades_rows, need_tot = _calcular_necesidades(simulaciones)
     resumen_rows: list[dict] = []
     def _grupo_pedido(p: dict) -> str:
@@ -1042,10 +1071,10 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Kg físicos iniciales": formatear_kg(pool.get("kg_fisicos", 0)),
             "Kg primera inicial": formatear_kg(pool.get("kg_primera_inicial", 0)),
             "Kg segunda inicial": formatear_kg(pool.get("kg_segunda_inicial", 0)),
-            "Kg asignados primera": formatear_kg(max(0.0, inicial - restante) if pool.get("subpool_calidad") == "PRIMERA" else 0),
-            "Kg asignados segunda": formatear_kg(max(0.0, inicial - restante) if pool.get("subpool_calidad") == "SEGUNDA" else 0),
-            "Kg restante primera": formatear_kg(restante if pool.get("subpool_calidad") == "PRIMERA" else 0),
-            "Kg restante segunda": formatear_kg(restante if pool.get("subpool_calidad") == "SEGUNDA" else 0),
+            "Kg asignados primera": formatear_kg(0),
+            "Kg asignados segunda": formatear_kg(0),
+            "Kg restante primera": formatear_kg(0),
+            "Kg restante segunda": formatear_kg(0),
             "Kg restante total": formatear_kg(restante),
             "% restante": f"{pct_rest:.1f}%",
             "Pool ID": pool_id,
@@ -1162,11 +1191,11 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             calibres_ejecutivo,
         )
         kg_sobrantes_utiles = sum(_to_float(r.get("Kg restante total", 0)) for r in sobrantes_filtrados)
-        kg_stock_total = sum(_to_float(r.get("Kg asignados primera", 0)) + _to_float(r.get("Kg asignados segunda", 0)) + _to_float(r.get("Kg restante total", 0)) for r in sobrantes_filtrados)
+        kg_stock_total = sum(_to_float(r.get("Kg físicos iniciales", 0)) for r in sobrantes_filtrados)
         kg_asignado = max(0.0, kg_stock_total - kg_sobrantes_utiles)
         estado_txt = (
             f"Pedidos: {diagnostico['total_cubiertos']} cubiertos · {diagnostico['total_parciales']} parciales · {diagnostico['total_insuficientes']} insuficientes\n"
-            f"Sobrante operativo: {formatear_kg(sum(_to_float(r.get('Kg restante total', 0)) for r in sobrantes_rows if _to_float(r.get('Kg asignados primera', 0)) + _to_float(r.get('Kg asignados segunda', 0)) > 0))}\n"
+            f"Sobrante operativo: {formatear_kg(sum(_to_float(r.get('Kg restante total', 0)) for r in sobrantes_rows))}\n"
             f"Stock libre total: {formatear_kg(kg_sobrantes_utiles)} · Stock total útil: {formatear_kg(kg_stock_total)} · Stock asignado: {formatear_kg(kg_asignado)}\n"
             f"Estado: {'SIN NECESIDAD DE RECOLECCIÓN' if diagnostico['kg_faltantes'] == 0 else 'FALTA FRUTA'}"
         )
@@ -1177,7 +1206,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         for row in sobrantes_filtrados:
             key = (row.get(group_key, ""), row.get("Calibre", ""), row.get("Calidad útil", ""), _canonicalizar_origen(row.get("Origen", "")))
             rec = agrupados.setdefault(key, {"total": 0.0, "libre": 0.0})
-            asign = _to_float(row.get("Kg asignados primera", 0)) + _to_float(row.get("Kg asignados segunda", 0))
+            asign = max(0.0, _to_float(row.get("Kg físicos iniciales", 0)) - _to_float(row.get("Kg restante total", 0)))
             libre = _to_float(row.get("Kg restante total", 0))
             rec["total"] += asign + libre
             rec["libre"] += libre
