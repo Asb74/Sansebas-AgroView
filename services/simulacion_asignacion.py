@@ -1004,35 +1004,35 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     top.pack(fill="both", expand=True, padx=8, pady=(8, 4))
     notebook = ttk.Notebook(popup)
     notebook.pack(fill="both", expand=True, padx=8, pady=(4, 8))
-    bottom = ttk.Frame(notebook, padding=8)
-    pedidos_frame = ttk.Frame(notebook, padding=8)
-    needs_frame = ttk.Frame(notebook, padding=8)
-    sobrantes_frame = ttk.Frame(notebook, padding=8)
-    ejecutivo_frame = ttk.Frame(notebook, padding=8)
+    resumen_tab = ttk.Frame(notebook, padding=8)
+    horizonte_tab = ttk.Frame(notebook, padding=8)
+    sobrantes_tab = ttk.Frame(notebook, padding=8)
+    necesidades_tab = ttk.Frame(notebook, padding=8)
+    riesgos_tab = ttk.Frame(notebook, padding=8)
+    tecnico_tab = ttk.Frame(notebook, padding=8)
 
     pedidos_cols = ["Fecha salida", "Bloque temporal", "Prioridad manual", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Kg potencial físico", "Kg potencial útil"]
     pedidos_tbl = DataTable(top, pedidos_cols)
     pedidos_tbl.pack(fill="both", expand=True)
     pedidos_op_cols = ["Fecha salida", "Bloque temporal", "Variedad", "Calibre", "Categoría", "Grupo confección", "Kg pendientes", "Kg asignado global", "Kg faltante global", "Estado global"]
-    pedidos_op_tbl = DataTable(pedidos_frame, pedidos_op_cols)
+    pedidos_op_tbl = DataTable(tecnico_tab, pedidos_op_cols)
     pedidos_op_tbl.pack(fill="both", expand=True)
 
     cand_cols = ["Origen", "Tipo cobertura", "Variedad stock", "Grupo varietal stock", "Grupo varietal pedido", "Compatibilidad variedad", "Calibre stock", "Categoría", "Subpool calidad", "Kg físicos", "% destrío", "Kg destrío", "% primera", "Kg primera", "% segunda", "Kg segunda", "Kg industria", "Kg podrido", "Kg útiles finales", "Kg restante antes", "Kg asignado simulado", "Kg restante después", "Pool ID", "Compartido", "Riesgo", "Motivo riesgo", "Score compat.", "Score total", "Flexibilidad aplicada", "Cobertura acumulada"]
-    cand_tbl = DataTable(bottom, cand_cols)
-    cand_tbl.pack(fill="both", expand=True)
+    ttk.Label(tecnico_tab, text="Vista técnica para revisión y depuración.", anchor="w", foreground="#666666").pack(fill="x", pady=(0, 6))
+    cand_tbl = DataTable(tecnico_tab, cand_cols)
+    cand_tbl.pack(fill="both", expand=True, pady=(0, 6))
     needs_cols = ["Prioridad temporal", "Fecha límite", "Variedad", "Grupo varietal", "Calibre necesario", "Categoría", "Calidad necesaria", "Grupo confección", "Perfil confección", "Kg útiles faltantes", "Kg campo estimados", "% aprovechamiento esperado", "% destrío esperado", "Perfil recomendado", "Pedidos afectados"]
-    needs_tbl = DataTable(needs_frame, needs_cols)
+    needs_tbl = DataTable(necesidades_tab, needs_cols)
     needs_tbl.pack(fill="both", expand=True)
     sobrantes_cols = ["Origen", "Variedad", "Grupo varietal", "Calibre", "Categoría stock", "Calidad útil", "Kg físicos iniciales", "Kg primera inicial", "Kg segunda inicial", "Kg asignados primera", "Kg asignados segunda", "Kg restante primera", "Kg restante segunda", "Kg restante total", "% restante", "Pool ID"]
-    sobrantes_tbl = DataTable(sobrantes_frame, sobrantes_cols)
+    sobrantes_tbl = DataTable(sobrantes_tab, sobrantes_cols)
     sobrantes_tbl.pack(fill="both", expand=True)
 
     resumen = ttk.Label(popup, text="", anchor="w")
     resumen.pack(fill="x", padx=10, pady=(0, 4))
     detalle = ttk.Label(popup, text="", anchor="w")
     detalle.pack(fill="x", padx=10, pady=(0, 8))
-    tecnico_label = ttk.Label(popup, text="Vista técnica para revisión y depuración", anchor="w", foreground="#666666")
-
     pedidos_tbl.tree.tag_configure("estado_total", background="#dcedc8")
     pedidos_tbl.tree.tag_configure("estado_parcial", background="#fff3cd")
     pedidos_tbl.tree.tag_configure("estado_insuf", background="#f8d7da")
@@ -1134,14 +1134,16 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         sob_total += restante
         sob_origenes.add(origen)
         pct_rest = (restante / inicial * 100.0) if inicial > 0 else 0.0
-        tag = "sob_desconocido"
+        tag = "origen_desconocido"
         o = _canonicalizar_origen(origen)
         if o == "ALMACEN_COMERCIAL":
-            tag = "sob_comercial"
+            tag = "origen_comercial"
         elif o == "ALMACEN_INDUSTRIAL":
-            tag = "sob_industrial"
+            tag = "origen_industrial"
         elif o == "CAMPO_REAL":
-            tag = "sob_campo"
+            tag = "origen_campo_real"
+        elif o == "CAMPO_ESTIMADO":
+            tag = "origen_campo_estimado"
         sobrantes_rows.append({
             "Origen": origen,
             "Variedad": pool.get("variedad", ""),
@@ -1181,10 +1183,12 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     needs_tbl.tree.tag_configure("prio_hoy", background="#f8d7da")
     needs_tbl.tree.tag_configure("prio_23", background="#fff3cd")
     needs_tbl.tree.tag_configure("prio_future", background="#dff0d8")
-    sobrantes_tbl.tree.tag_configure("sob_comercial", background="#dff0d8")
-    sobrantes_tbl.tree.tag_configure("sob_industrial", background="#fff3cd")
-    sobrantes_tbl.tree.tag_configure("sob_campo", background="#d9edf7")
-    sobrantes_tbl.tree.tag_configure("sob_desconocido", background="#eeeeee")
+    for tbl in (sobrantes_tbl, cand_tbl):
+        tbl.tree.tag_configure("origen_industrial", background="#fff3cd")
+        tbl.tree.tag_configure("origen_comercial", background="#dff0d8")
+        tbl.tree.tag_configure("origen_campo_real", background="#d9edf7")
+        tbl.tree.tag_configure("origen_campo_estimado", background="#e7d9f7")
+        tbl.tree.tag_configure("origen_desconocido", background="#eeeeee")
 
     horizonte = calcular_horizonte_cobertura(
         pedidos=pedidos,
@@ -1195,7 +1199,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     diagnostico = generar_diagnostico_operativo(resumen_rows, necesidades_rows, sobrantes_rows)
     acciones = generar_acciones_sugeridas(diagnostico)
 
-    horizonte_frame = ttk.LabelFrame(ejecutivo_frame, text="Horizonte de cobertura", padding=8)
+    horizonte_frame = ttk.LabelFrame(horizonte_tab, text="Horizonte de cobertura", padding=8)
     horizonte_frame.pack(fill="x", pady=(0, 6))
     hoy_estado = "OK"
     if horizonte.get("resumen_por_fecha"):
@@ -1213,7 +1217,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         ),
     ).pack(anchor="w")
 
-    filtros_exec = ttk.LabelFrame(ejecutivo_frame, text="Configuración sobrantes", padding=8)
+    filtros_exec = ttk.LabelFrame(sobrantes_tab, text="Configuración sobrantes", padding=8)
     filtros_exec.pack(fill="x", pady=(0, 6))
     ttk.Label(filtros_exec, text="Agrupar sobrantes por:").grid(row=0, column=0, sticky="w")
     agrupar_sobrantes_var = tk.StringVar(value="Grupo varietal")
@@ -1236,27 +1240,27 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     )
     origen_sobrantes_combo.grid(row=0, column=3, sticky="w", padx=(8, 0))
 
-    exec_estado = ttk.LabelFrame(ejecutivo_frame, text="Estado global", padding=8)
+    exec_estado = ttk.LabelFrame(resumen_tab, text="Estado global", padding=8)
     exec_estado.pack(fill="x", pady=(0, 6))
     estado_lbl = ttk.Label(exec_estado, text="", foreground=("#2e7d32" if diagnostico["kg_faltantes"] == 0 else "#c62828"))
     estado_lbl.pack(anchor="w")
-    diag_frame = ttk.LabelFrame(ejecutivo_frame, text="Diagnóstico automático", padding=8)
+    diag_frame = ttk.LabelFrame(resumen_tab, text="Diagnóstico automático resumido", padding=8)
     diag_frame.pack(fill="x", pady=(0, 6))
     diag_lines = [diagnostico.get("resumen", "")] + diagnostico.get("alertas", [])
     ttk.Label(diag_frame, text="\n".join([f"• {x}" for x in diag_lines if x])).pack(anchor="w")
 
-    tablas_exec = ttk.Frame(ejecutivo_frame)
+    tablas_exec = ttk.Frame(sobrantes_tab)
     tablas_exec.pack(fill="both", expand=True)
     top_sob_tbl = DataTable(tablas_exec, ["Agrupación", "Calibre", "Calidad útil", "Origen", "Kg stock total útil", "Kg asignados", "Kg libres", "% libre", "Acción sugerida"])
-    top_nec_tbl = DataTable(tablas_exec, ["Variedad", "Calibre necesario", "Calidad necesaria", "Kg faltantes", "Kg campo estimados", "Prioridad temporal", "Acción sugerida"])
+    top_nec_tbl = DataTable(tablas_exec, ["Variedad", "Grupo varietal", "Calibre necesario", "Calidad necesaria", "Kg faltantes", "Kg campo estimados", "Prioridad temporal", "Acción sugerida"])
     timeline_tbl = DataTable(
         tablas_exec,
         ["Fecha salida", "Bloque temporal", "Nº pedidos", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Estado", "Calibre crítico", "Acción sugerida"],
     )
     top_sob_tbl.pack(fill="both", expand=True, pady=(0, 4))
-    top_nec_tbl.pack(fill="both", expand=True)
-    timeline_tbl.pack(fill="both", expand=True, pady=(4, 0))
-    acciones_box = ttk.LabelFrame(ejecutivo_frame, text="Acciones sugeridas", padding=8)
+    timeline_tbl.pack(fill="both", expand=True, pady=(4, 4))
+    top_nec_tbl.pack_forget()
+    acciones_box = ttk.LabelFrame(resumen_tab, text="Acciones sugeridas principales", padding=8)
     acciones_box.pack(fill="x", pady=(6, 0))
     ttk.Label(acciones_box, text="\n".join([f"- {a}" for a in acciones])).pack(anchor="w")
     timeline_tbl.tree.tag_configure("estado_ok", background="#dcedc8")
@@ -1368,31 +1372,27 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         accion = "Recolectar/seleccionar fruta con mayor primera" if _norm_text(row.get("Calidad necesaria", "")) == "PRIMERA" else "Usar segunda disponible o estándar"
         if _norm_text(row.get("Grupo confección", "")) == "MALLA":
             accion = "Puede cubrirse con primera + segunda"
-        top_necesidades.append({"Variedad": row.get("Variedad", ""), "Calibre necesario": row.get("Calibre necesario", ""), "Calidad necesaria": row.get("Calidad necesaria", ""), "Kg faltantes": row.get("Kg útiles faltantes", ""), "Kg campo estimados": row.get("Kg campo estimados", ""), "Prioridad temporal": row.get("Prioridad temporal", ""), "Acción sugerida": accion})
+        top_necesidades.append({"Variedad": row.get("Variedad", ""), "Grupo varietal": row.get("Grupo varietal", ""), "Calibre necesario": row.get("Calibre necesario", ""), "Calidad necesaria": row.get("Calidad necesaria", ""), "Kg faltantes": row.get("Kg útiles faltantes", ""), "Kg campo estimados": row.get("Kg campo estimados", ""), "Prioridad temporal": row.get("Prioridad temporal", ""), "Acción sugerida": accion})
     if top_necesidades:
         top_nec_tbl.set_rows(top_necesidades)
     else:
-        top_nec_tbl.set_rows([{"Variedad": "No hay necesidades de recolección para los pedidos actuales.", "Calibre necesario": "", "Calidad necesaria": "", "Kg faltantes": "", "Kg campo estimados": "", "Prioridad temporal": "", "Acción sugerida": ""}])
+        top_nec_tbl.set_rows([{"Variedad": "No hay necesidades de recolección para los pedidos incluidos en la simulación.", "Grupo varietal": "", "Calibre necesario": "", "Calidad necesaria": "", "Kg faltantes": "", "Kg campo estimados": "", "Prioridad temporal": "", "Acción sugerida": ""}])
 
-    def _set_tabs_por_modo(modo: str) -> None:
-        for tab in notebook.tabs():
-            notebook.forget(tab)
-        tecnico_label.pack_forget()
-        if modo == "Ejecutivo":
-            notebook.add(ejecutivo_frame, text="Resumen ejecutivo")
-        elif modo == "Operativo":
-            notebook.add(pedidos_frame, text="Pedidos")
-            notebook.add(needs_frame, text="Necesidades")
-            notebook.add(sobrantes_frame, text="Sobrantes")
-        else:
-            notebook.add(bottom, text="Candidatos")
-            notebook.add(needs_frame, text="Necesidades")
-            notebook.add(sobrantes_frame, text="Sobrantes")
-            notebook.add(pedidos_frame, text="Pools / detalle técnico")
-            tecnico_label.pack(fill="x", padx=10, pady=(0, 8))
+    riesgos_box = ttk.LabelFrame(riesgos_tab, text="Diagnóstico automático completo", padding=8)
+    riesgos_box.pack(fill="both", expand=True)
+    riesgos_texto = [diagnostico.get("resumen", "")]
+    riesgos_texto.extend([f"Alerta: {x}" for x in diagnostico.get("alertas", [])])
+    riesgos_texto.extend([f"Comercial: {x}" for x in diagnostico.get("recomendaciones_comerciales", [])])
+    riesgos_texto.extend([f"Campo: {x}" for x in diagnostico.get("recomendaciones_campo", [])])
+    riesgos_texto.extend([f"Producción: {x}" for x in diagnostico.get("recomendaciones_produccion", [])])
+    ttk.Label(riesgos_box, text="\n".join([f"• {x}" for x in riesgos_texto if x]), justify="left").pack(anchor="w")
 
-    _set_tabs_por_modo("Ejecutivo")
-    modo_combo.bind("<<ComboboxSelected>>", lambda _e: _set_tabs_por_modo(modo_var.get()))
+    notebook.add(resumen_tab, text="Resumen")
+    notebook.add(horizonte_tab, text="Horizonte")
+    notebook.add(sobrantes_tab, text="Sobrantes")
+    notebook.add(necesidades_tab, text="Necesidades")
+    notebook.add(riesgos_tab, text="Riesgos / Diagnóstico")
+    notebook.add(tecnico_tab, text="Técnico")
 
     def render_candidatos(index: int) -> None:
         if index < 0 or index >= len(simulaciones):
@@ -1402,6 +1402,16 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         for c in simulaciones[index]["candidatos"]:
             riesgo = c.get("riesgo_operativo", "ALTO")
             tag_score = "riesgo_bajo" if riesgo == "BAJO" else "riesgo_medio" if riesgo == "MEDIO" else "riesgo_alto"
+            origen_tag = "origen_desconocido"
+            origen_canon = _canonicalizar_origen(c.get("Origen", ""))
+            if origen_canon == "ALMACEN_INDUSTRIAL":
+                origen_tag = "origen_industrial"
+            elif origen_canon == "ALMACEN_COMERCIAL":
+                origen_tag = "origen_comercial"
+            elif origen_canon == "CAMPO_REAL":
+                origen_tag = "origen_campo_real"
+            elif origen_canon == "CAMPO_ESTIMADO":
+                origen_tag = "origen_campo_estimado"
             rows.append({
                 "Origen": c.get("Origen", ""),
                 "Tipo cobertura": c.get("Tipo cobertura", ""),
@@ -1433,7 +1443,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
                 "Score total": int(_to_float(c.get("score_total", 0))),
                 "Flexibilidad aplicada": c.get("flexibilidad_usada_simulacion", ""),
                 "Cobertura acumulada": formatear_kg(c.get("cobertura_acumulada", 0)),
-                "__tags__": (tag_score,),
+                "__tags__": (tag_score, origen_tag),
             })
         cand_tbl.set_rows(rows)
         sim = simulaciones[index]
