@@ -603,7 +603,8 @@ def simular_asignacion_pedido(pedido: dict, candidatos: list[dict], scoring: dic
 def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None) -> tuple[list[dict], list[dict], dict]:
     hoy = date.today()
     pedidos_meta = []
-    for pedido in pedidos:
+    for pedido_raw in pedidos:
+        pedido = normalizar_pedido_para_simulacion(pedido_raw)
         fecha_salida = _normalizar_fecha_salida(pedido)
         dias_hasta, bloque = _calcular_bloque_temporal(fecha_salida, hoy)
         prioridad_manual = int(_to_float(pedido.get("prioridad_manual", 0)))
@@ -687,7 +688,7 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             acumulado_potencial += _to_float(cand.get("kg_utiles_finales", 0))
             cand["cobertura_acumulada"] = acumulado_potencial
 
-        kg_necesario = _to_float(pedido.get("Kg pedidos pendientes", pedido.get("kg_pendientes", 0)))
+        kg_necesario = _kg_pendiente_linea(pedido)
         pendiente = kg_necesario
         asignado = 0.0
         for cand in candidatos:
@@ -968,6 +969,20 @@ def _kg_pendiente_linea(pedido: dict) -> float:
     return 0.0
 
 
+def normalizar_pedido_para_simulacion(pedido: dict) -> dict:
+    item = dict(pedido or {})
+    item["Variedad"] = item.get("Variedad") or item.get("Variedad Coop") or item.get("variedad", "")
+    item["Grupo varietal"] = item.get("Grupo varietal") or item.get("grupo_varietal", "")
+    item["Categoría"] = item.get("Categoría") or item.get("Categoria") or item.get("categoria", "")
+    kg_pend = _kg_pendiente_linea(item)
+    item["Kg pedidos pendientes"] = kg_pend
+    item["Kg pendiente"] = kg_pend
+    item["kg_pendiente"] = kg_pend
+    item["kg_pendientes"] = kg_pend
+    item["Tipo línea"] = "Pedido"
+    return item
+
+
 def _pedido_unico_key(pedido: dict) -> str:
     pedido_id = str(pedido.get("IdPedidoLora", "") or "").strip()
     if pedido_id:
@@ -990,9 +1005,20 @@ def calcular_horizonte_cobertura(
     politica = dict(policy or {})
     incluir_campo_real = bool(politica.get("allow_campo_real", True))
     incluir_campo_estimado = bool(politica.get("allow_campo_estimado", False))
+    logger.info(
+        "Horizonte input: pedidos=%s inventario_pools=%s kg_pedidos=%s",
+        len(pedidos or []),
+        len(inventario_global or {}),
+        sum(_kg_pendiente_linea(p) for p in (pedidos or [])),
+    )
     simulaciones, _asignaciones, stock_simulado = simular_asignacion_global(pedidos, get_candidatos_cb, scoring=scoring)
-    if inventario_global:
-        stock_simulado = deepcopy(inventario_global)
+    logger.info(
+        "Horizonte simulaciones: pedidos=%s kg_necesario=%s kg_asignado=%s kg_faltante=%s",
+        len(simulaciones),
+        sum(_to_float(s.get("kg_necesario", 0)) for s in simulaciones),
+        sum(_to_float(s.get("kg_asignado_simulado", 0)) for s in simulaciones),
+        sum(_to_float(s.get("kg_faltante_simulado", 0)) for s in simulaciones),
+    )
     kg_pend_total = sum(_to_float(s.get("kg_necesario", 0)) for s in simulaciones)
     kg_asig_total = sum(_to_float(s.get("kg_asignado_simulado", 0)) for s in simulaciones)
     kg_falt_total = sum(_to_float(s.get("kg_faltante_simulado", 0)) for s in simulaciones)
@@ -1011,8 +1037,8 @@ def calcular_horizonte_cobertura(
         reg["_pedidos_unicos"].add(_pedido_unico_key(ped))
         reg["Kg pedidos"] += _kg_pendiente_linea(ped)
         reg["Kg cubiertos"] += _to_float(sim.get("kg_asignado_simulado", 0))
-        reg["Kg faltantes"] = max(0.0, reg["Kg pedidos"] - reg["Kg cubiertos"])
         falt = _to_float(sim.get("kg_faltante_simulado", 0))
+        reg["Kg faltantes"] += falt
         if falt > _to_float(reg.get("Kg faltantes", 0)):
             reg["Calibre crítico"] = str(ped.get("Calibre", ""))
             reg["Grupo varietal crítico"] = str(ped.get("Grupo varietal", ped.get("grupo_varietal", "")))
@@ -1057,18 +1083,19 @@ def calcular_horizonte_cobertura(
         elif "MALLA" in _norm_text(reg.get("Grupo confección crítico", "")):
             reg["Acción sugerida"] = "Puede revisarse uso de primera + segunda"
         elif estado == "PARCIAL":
-            reg["Acción sugerida"] = "Revisar stock o recolectar calibre crítico"
+            reg["Acción sugerida"] = "Revisar faltantes / recolectar calibre crítico"
         else:
-            reg["Acción sugerida"] = "Recolectar / buscar alternativa comercial"
+            reg["Acción sugerida"] = "Recolectar / buscar alternativa"
         reg.pop("_fecha_critica", None)
         logger.info(
-            "Horizonte fecha=%s pedidos_unicos=%s lineas=%s kg_pedidos=%s kg_cubiertos=%s kg_faltantes=%s",
+            "Horizonte fecha=%s pedidos=%s lineas=%s kg_pedidos=%s kg_cubiertos=%s kg_faltantes=%s estado=%s",
             fecha,
             reg.get("Nº pedidos", 0),
             reg.get("Nº líneas", 0),
             reg.get("Kg pedidos", 0.0),
             reg.get("Kg cubiertos", 0.0),
             reg.get("Kg faltantes", 0.0),
+            reg.get("Estado día", ""),
         )
         resumen_por_fecha.append(reg)
     limite_date = _parse_fecha_salida(fecha_limite) if fecha_limite else None
@@ -1095,7 +1122,7 @@ def calcular_horizonte_cobertura(
     if kg_falt_total > 0:
         recomendaciones.append("Sí, se requiere recolección para ampliar cobertura.")
     else:
-        recomendaciones.append("No es necesario recolectar para cubrir pedidos simulados.")
+        recomendaciones.append("No es necesario recolectar para cubrir los pedidos seleccionados.")
     recomendaciones.append(f"Política campo real: {'habilitado' if incluir_campo_real else 'deshabilitado'}")
     recomendaciones.append(f"Política campo estimado: {'habilitado' if incluir_campo_estimado else 'deshabilitado'}")
     logger.info(
