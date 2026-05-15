@@ -1073,13 +1073,6 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     popup.title("Simulación de asignación")
     popup.geometry("1300x750")
 
-    modo_frame = ttk.Frame(popup, padding=(8, 8, 8, 0))
-    modo_frame.pack(fill="x")
-    ttk.Label(modo_frame, text="Modo vista:").pack(side="left")
-    modo_var = tk.StringVar(value="Ejecutivo")  # Compatibilidad temporal; las pestañas son la navegación principal
-    modo_combo = ttk.Combobox(modo_frame, state="readonly", textvariable=modo_var, values=["Ejecutivo", "Operativo", "Técnico"], width=14)
-    modo_combo.pack(side="left", padx=(8, 0))
-
     def _abrir_leyenda() -> None:
         dlg = tk.Toplevel(popup)
         dlg.title("Leyenda de simulación")
@@ -1118,7 +1111,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         txt.configure(state="disabled")
         ttk.Button(dlg, text="Cerrar", command=dlg.destroy).pack(pady=(0, 10))
 
-    ttk.Button(modo_frame, text="Leyenda", command=_abrir_leyenda).pack(side="right")
+    top_actions = ttk.Frame(popup, padding=(8, 8, 8, 0))
+    top_actions.pack(fill="x")
+    ttk.Button(top_actions, text="Leyenda", command=_abrir_leyenda).pack(side="right")
 
     top = ttk.LabelFrame(popup, text="Pedidos pendientes", padding=8)
     top.pack(fill="both", expand=True, padx=8, pady=(8, 4))
