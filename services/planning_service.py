@@ -36,6 +36,9 @@ class PlanningService:
     def get_balance_cobertura_detalle(self, filters: dict, balance_row: dict, policy: dict | None = None) -> list[dict]:
         return self.repo.get_balance_cobertura_detalle(filters, balance_row, policy=policy)
 
+    def get_inventario_operativo_global(self, filters: dict, policy: dict | None = None) -> list[dict]:
+        return self.repo.get_inventario_operativo_global(filters, policy=policy)
+
     def get_pedidos_pendientes(self, filters: dict, modo: str = "10_dias") -> tuple[list[dict], dict]:
         return self.load_pedidos_pendientes(filters, modo_pedidos=modo)
 

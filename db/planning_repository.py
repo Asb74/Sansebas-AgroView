@@ -1661,6 +1661,92 @@ class PlanningRepository:
             row.pop("__orden", None)
         return out
 
+    def get_inventario_operativo_global(self, filters: dict, policy: dict | None = None) -> list[dict]:
+        policy_cfg = self._merge_policy(policy)
+        detalle_rows = self.get_stock_almacen_detalle_palets(filters)
+        stock_campo_rows, _, _ = self.get_stock_campo(filters)
+
+        pools: list[dict] = []
+        for row in detalle_rows:
+            confe = str(row.get("Confeccion", "") or "").strip()
+            id_confeccion = str(row.get("IdConfeccion", "") or "").strip()
+            is_ind = self._is_stock_industrial(row.get("Pedido"), confe, id_confeccion)
+            is_sp = self._is_stock_sp_comercial(row.get("Pedido"), confe, id_confeccion)
+            if not ((policy_cfg["usar_stock_industrial"] and is_ind) or (policy_cfg["usar_stock_comercial"] and is_sp)):
+                continue
+            kg_fisicos = float(row.get("Neto", 0) or 0)
+            if kg_fisicos <= 0:
+                continue
+            origen = "ALMACEN_COMERCIAL" if is_sp else "ALMACEN_INDUSTRIAL"
+            calibre = str(row.get("Calibre", "") or "").strip()
+            categoria = str(row.get("Categoria", "") or "").strip()
+            pools.append({
+                "pool_id": f"{origen}|{row.get('Cultivo','')}|{row.get('Campana','')}|{row.get('GrupoVarietal','')}|{row.get('Variedad','')}|{calibre}|{categoria}|{id_confeccion}|{row.get('IdPalet','')}",
+                "origen": origen,
+                "tipo_stock": "COMERCIAL" if is_sp else "INDUSTRIAL",
+                "variedad": str(row.get("Variedad", "") or "").strip(),
+                "grupo_varietal": str(row.get("GrupoVarietal", "") or "").strip(),
+                "calibre": calibre,
+                "categoria": categoria,
+                "kg_utiles_finales": round(kg_fisicos, 2),
+                "kg_restante_simulado": round(kg_fisicos, 2),
+                "destrio_pct": 0.0,
+                "coef_primera": 1.0,
+                "Origen": origen,
+                "Cultivo": str(row.get("Cultivo", "") or "").strip(),
+                "Campaña": str(row.get("Campana", "") or "").strip(),
+                "Grupo varietal": str(row.get("GrupoVarietal", "") or "").strip(),
+                "Variedad stock": str(row.get("Variedad", "") or "").strip(),
+                "Calibre stock": calibre,
+                "Categoría": categoria,
+                "Marca stock": str(row.get("Marca", "") or "").strip(),
+                "IdConfeccion stock": id_confeccion,
+                "Confección stock": str(row.get("Confeccion", "") or "").strip(),
+                "Kg disponibles": round(kg_fisicos, 2),
+                "kg_fisicos": round(kg_fisicos, 2),
+                "kg_utiles_estimados": round(kg_fisicos, 2),
+                "kg_primera_estimado": round(kg_fisicos, 2),
+                "kg_segunda_estimado": 0.0,
+            })
+
+        if policy_cfg["usar_entrada_estimada"]:
+            campo_real_rows, _ = self._get_pesosfres_campo_disponibilidad_real(stock_campo_rows, filters)
+            for row in campo_real_rows:
+                kg_fisicos = float(row.get("Kg disponibles", 0) or 0)
+                if kg_fisicos <= 0:
+                    continue
+                calibre = str(row.get("Calibre", "") or "").strip()
+                categoria = str(row.get("Categoría", "") or "").strip()
+                pools.append({
+                    "pool_id": f"CAMPO_REAL|{row.get('Cultivo','')}|{row.get('Campaña','')}|{row.get('Grupo varietal','')}|{row.get('Variedad','')}|{calibre}|{categoria}|{row.get('Boleta','')}",
+                    "origen": "CAMPO_REAL",
+                    "tipo_stock": "CAMPO",
+                    "variedad": str(row.get("Variedad", "") or "").strip(),
+                    "grupo_varietal": str(row.get("Grupo varietal", "") or "").strip(),
+                    "calibre": calibre,
+                    "categoria": categoria,
+                    "kg_utiles_finales": round(kg_fisicos, 2),
+                    "kg_restante_simulado": round(kg_fisicos, 2),
+                    "destrio_pct": 0.0,
+                    "coef_primera": 1.0,
+                    "Origen": "CAMPO_REAL",
+                    "Cultivo": str(row.get("Cultivo", "") or "").strip(),
+                    "Campaña": str(row.get("Campaña", "") or "").strip(),
+                    "Grupo varietal": str(row.get("Grupo varietal", "") or "").strip(),
+                    "Variedad stock": str(row.get("Variedad", "") or "").strip(),
+                    "Calibre stock": calibre,
+                    "Categoría": categoria,
+                    "Marca stock": "",
+                    "IdConfeccion stock": "",
+                    "Confección stock": "",
+                    "Kg disponibles": round(kg_fisicos, 2),
+                    "kg_fisicos": round(kg_fisicos, 2),
+                    "kg_utiles_estimados": round(kg_fisicos, 2),
+                    "kg_primera_estimado": round(kg_fisicos, 2),
+                    "kg_segunda_estimado": 0.0,
+                })
+        return pools
+
     @staticmethod
     def _ensure_planning_indexes(conn: sqlite3.Connection) -> None:
         conn.execute('CREATE INDEX IF NOT EXISTS bdloteado.idx_loteado_pedido_linea ON Loteado(Pedido, Linea)')
