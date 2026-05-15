@@ -328,7 +328,15 @@ class PlanificacionDiariaScreen(ttk.Frame):
         def _candidatos_de_pedido(pedido: dict) -> list[dict]:
             return self.service.get_balance_cobertura_detalle(self._filters_payload(), pedido, policy=self._build_sim_policy())
 
-        abrir_simulacion_asignacion(self, pedidos, _candidatos_de_pedido)
+        def _inventario_global() -> list[dict]:
+            policy = self._build_sim_policy()
+            rows = [r for r in self.balance_rows_all if str(r.get("Tipo línea", "")).strip() == "Pedido"]
+            inventario = []
+            for row in rows:
+                inventario.extend(self.service.get_balance_cobertura_detalle(self._filters_payload(), row, policy=policy))
+            return inventario
+
+        abrir_simulacion_asignacion(self, pedidos, _candidatos_de_pedido, get_inventario_global_cb=_inventario_global)
 
     def _open_selected_balance_coverage(self) -> None:
         sel = self.balance_table.tree.selection()

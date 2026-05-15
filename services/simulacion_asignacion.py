@@ -781,7 +781,40 @@ def generar_acciones_sugeridas(diagnostico: dict) -> list[str]:
     return acciones
 
 
-def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None) -> None:
+def construir_inventario_global_simulado(candidatos_globales: list[dict]) -> dict[str, dict]:
+    inventario: dict[str, dict] = {}
+    for cand in deepcopy(candidatos_globales or []):
+        perfil_stock = cand.get("perfil_stock", "") or detectar_perfil_stock(cand)
+        utilidad = calcular_utilidad_operativa({}, cand)
+        cand.update(utilidad)
+        if perfil_stock == "ALMACEN_INDUSTRIAL":
+            subcands = [
+                dict(cand, subpool_calidad="SEGUNDA", categoria_util="II", kg_utiles_finales=_to_float(cand.get("kg_segunda_estimado", 0))),
+                dict(cand, subpool_calidad="PRIMERA", categoria_util="I", kg_utiles_finales=_to_float(cand.get("kg_primera_estimado", 0))),
+            ]
+        else:
+            subcands = [dict(cand, subpool_calidad="MIXTO", categoria_util=cand.get("Categoría", ""), kg_utiles_finales=_to_float(cand.get("kg_utiles_estimados", 0)))]
+        for sc in subcands:
+            pool_id = _build_pool_id(sc) + f"|{_norm_text(sc.get('subpool_calidad', 'MIXTO'))}"
+            if pool_id in inventario:
+                continue
+            inventario[pool_id] = {
+                "kg_fisicos": _to_float(sc.get("kg_fisicos", 0)),
+                "kg_primera_inicial": _to_float(sc.get("kg_primera_estimado", 0)),
+                "kg_segunda_inicial": _to_float(sc.get("kg_segunda_estimado", 0)),
+                "kg_utiles_finales": _to_float(sc.get("kg_utiles_finales", 0)),
+                "kg_restante_simulado": _to_float(sc.get("kg_utiles_finales", 0)),
+                "origen": sc.get("Origen", sc.get("origen", "")),
+                "variedad": sc.get("Variedad stock", sc.get("variedad_stock", "")),
+                "grupo_varietal": sc.get("Grupo varietal stock", ""),
+                "calibre": sc.get("Calibre stock", sc.get("calibre_stock", "")),
+                "categoria": sc.get("Categoría", sc.get("categoria_stock", "")),
+                "subpool_calidad": sc.get("subpool_calidad", "MIXTO"),
+            }
+    return inventario
+
+
+def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None) -> None:
     popup = tk.Toplevel(parent)
     popup.title("Simulación de asignación")
     popup.geometry("1300x750")
@@ -834,6 +867,14 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     cand_tbl.tree.tag_configure("riesgo_alto", background="#f8d7da")
 
     simulaciones, asignaciones_simuladas, _stock_simulado = simular_asignacion_global(pedidos, get_candidatos_cb, scoring=scoring)
+    inventario_global_simulado = dict(_stock_simulado)
+    if callable(get_inventario_global_cb):
+        inventario_global_simulado = construir_inventario_global_simulado(get_inventario_global_cb() or [])
+        for asign in asignaciones_simuladas:
+            pool = inventario_global_simulado.get(asign.get("pool_id", ""))
+            if not pool:
+                continue
+            pool["kg_restante_simulado"] = max(0.0, _to_float(pool.get("kg_restante_simulado", 0)) - _to_float(asign.get("kg_asignados", 0)))
     necesidades_rows, need_tot = _calcular_necesidades(simulaciones)
     resumen_rows: list[dict] = []
     def _grupo_pedido(p: dict) -> str:
@@ -879,7 +920,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     sobrantes_rows = []
     sob_total = 0.0
     sob_origenes = set()
-    for pool_id, pool in _stock_simulado.items():
+    for pool_id, pool in inventario_global_simulado.items():
         restante = _to_float(pool.get("kg_restante_simulado", 0))
         inicial = _to_float(pool.get("kg_utiles_finales", 0))
         if restante <= 0:
@@ -967,7 +1008,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
 
     tablas_exec = ttk.Frame(ejecutivo_frame)
     tablas_exec.pack(fill="both", expand=True)
-    top_sob_tbl = DataTable(tablas_exec, ["Agrupación", "Calibre", "Calidad útil", "Origen", "Kg sobrantes", "Acción sugerida"])
+    top_sob_tbl = DataTable(tablas_exec, ["Agrupación", "Calibre", "Calidad útil", "Origen", "Kg stock total útil", "Kg asignados", "Kg libres", "% libre", "Acción sugerida"])
     top_nec_tbl = DataTable(tablas_exec, ["Variedad", "Calibre necesario", "Calidad necesaria", "Kg faltantes", "Kg campo estimados", "Prioridad temporal", "Acción sugerida"])
     top_sob_tbl.pack(fill="both", expand=True, pady=(0, 4))
     top_nec_tbl.pack(fill="both", expand=True)
@@ -997,27 +1038,41 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
                 continue
             sobrantes_filtrados.append(r)
         kg_sobrantes_utiles = sum(_to_float(r.get("Kg restante total", 0)) for r in sobrantes_filtrados)
+        kg_stock_total = sum(_to_float(r.get("Kg asignados primera", 0)) + _to_float(r.get("Kg asignados segunda", 0)) + _to_float(r.get("Kg restante total", 0)) for r in sobrantes_filtrados)
+        kg_asignado = max(0.0, kg_stock_total - kg_sobrantes_utiles)
         estado_txt = (
             f"Pedidos: {diagnostico['total_cubiertos']} cubiertos · {diagnostico['total_parciales']} parciales · {diagnostico['total_insuficientes']} insuficientes\n"
-            f"Stock sobrante útil: {formatear_kg(kg_sobrantes_utiles)}\n"
+            f"Sobrante operativo: {formatear_kg(sum(_to_float(r.get('Kg restante total', 0)) for r in sobrantes_rows if _to_float(r.get('Kg asignados primera', 0)) + _to_float(r.get('Kg asignados segunda', 0)) > 0))}\n"
+            f"Stock libre total: {formatear_kg(kg_sobrantes_utiles)} · Stock total útil: {formatear_kg(kg_stock_total)} · Stock asignado: {formatear_kg(kg_asignado)}\n"
             f"Estado: {'SIN NECESIDAD DE RECOLECCIÓN' if diagnostico['kg_faltantes'] == 0 else 'FALTA FRUTA'}"
         )
         estado_lbl.configure(text=estado_txt)
         group_key = "Grupo varietal" if agrupar_por_grupo else "Variedad"
         top_sob_tbl.tree.heading("Agrupación", text=group_key)
-        agrupados: dict[tuple, float] = {}
+        agrupados: dict[tuple, dict[str, float]] = {}
         for row in sobrantes_filtrados:
             key = (row.get(group_key, ""), row.get("Calibre", ""), row.get("Calidad útil", ""), _canonicalizar_origen(row.get("Origen", "")))
-            agrupados[key] = agrupados.get(key, 0.0) + _to_float(row.get("Kg restante total", 0))
+            rec = agrupados.setdefault(key, {"total": 0.0, "libre": 0.0})
+            asign = _to_float(row.get("Kg asignados primera", 0)) + _to_float(row.get("Kg asignados segunda", 0))
+            libre = _to_float(row.get("Kg restante total", 0))
+            rec["total"] += asign + libre
+            rec["libre"] += libre
         top_sobrantes = []
-        for (agrupador, calibre, calidad, origen), kg in sorted(agrupados.items(), key=lambda it: it[1], reverse=True)[:10]:
+        for (agrupador, calibre, calidad, origen), valores in sorted(agrupados.items(), key=lambda it: it[1]["libre"], reverse=True)[:10]:
+            kg_total = valores["total"]
+            kg_libre = valores["libre"]
+            kg_asig = max(0.0, kg_total - kg_libre)
+            pct_libre = (kg_libre / kg_total * 100.0) if kg_total > 0 else 0.0
             top_sobrantes.append({
                 group_key: agrupador,
                 "Agrupación": agrupador,
                 "Calibre": calibre,
                 "Calidad útil": calidad,
                 "Origen": origen,
-                "Kg sobrantes": formatear_kg(kg),
+                "Kg stock total útil": formatear_kg(kg_total),
+                "Kg asignados": formatear_kg(kg_asig),
+                "Kg libres": formatear_kg(kg_libre),
+                "% libre": f"{pct_libre:.1f}%",
                 "Acción sugerida": _accion_sobrante(calidad, origen),
             })
         top_sob_tbl.set_rows(top_sobrantes)
