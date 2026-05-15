@@ -167,6 +167,32 @@ def _calcular_bloque_temporal(fecha: date | None, hoy: date) -> tuple[int, str]:
     return dias, "FUTURO"
 
 
+def _texto_fecha_horizonte(fecha_raw: object) -> str:
+    fecha_dt = _parse_fecha_salida(fecha_raw)
+    if not fecha_dt:
+        return "Fecha no disponible"
+    return fecha_dt.strftime("%d/%m/%Y")
+
+
+def _bloque_temporal_horizonte(fecha_raw: object, bloque_actual: object, hoy: date) -> str:
+    bloque_txt = str(bloque_actual or "").strip()
+    if bloque_txt and _norm_text(bloque_txt) not in {"", "N/D", "NA", "N A", "SIN FECHA", "GENERICO", "GENERAL"}:
+        return bloque_txt
+    fecha_dt = _parse_fecha_salida(fecha_raw)
+    if not fecha_dt:
+        return "FUTURO"
+    dias = (fecha_dt - hoy).days
+    if dias <= 0:
+        return "HOY"
+    if dias == 1:
+        return "MAÑANA"
+    if dias <= 3:
+        return "2-3 DÍAS"
+    if dias <= 7:
+        return "4-7 DÍAS"
+    return "FUTURO"
+
+
 def _build_pool_id(candidato: dict) -> str:
     campos = [
         candidato.get("Origen", candidato.get("origen", "")),
@@ -928,15 +954,21 @@ def calcular_horizonte_cobertura(
     faltantes: dict[tuple[str, str, str, str, str, str], dict] = {}
     for sim in simulaciones:
         ped = sim.get("pedido", {})
-        fecha = str(ped.get("fecha_salida", ped.get("Fecha salida", "")) or "")
-        bloque = str(ped.get("bloque_temporal", ""))
+        fecha_raw = ped.get("fecha_salida") or ped.get("Fecha salida") or ped.get("FechaSalida") or ped.get("fecha") or ped.get("salida")
+        fecha = str(fecha_raw or "").strip()
+        bloque = _bloque_temporal_horizonte(fecha_raw, ped.get("bloque_temporal", ""), date.today())
         key = (fecha, bloque)
-        reg = resumen_fecha.setdefault(key, {"Fecha salida": fecha, "Bloque temporal": bloque, "Nº pedidos": 0, "Kg pedidos": 0.0, "Kg cubiertos": 0.0, "Kg faltantes": 0.0, "Calibre crítico": "", "Grupo varietal crítico": "", "Acción sugerida": ""})
+        reg = resumen_fecha.setdefault(key, {"Fecha salida": fecha, "Bloque temporal": bloque, "Nº pedidos": 0, "Kg pedidos": 0.0, "Kg cubiertos": 0.0, "Kg faltantes": 0.0, "Calibre crítico": "", "Grupo varietal crítico": "", "Grupo confección crítico": "", "Acción sugerida": "", "_fecha_critica": None})
         reg["Nº pedidos"] += 1
         reg["Kg pedidos"] += _to_float(sim.get("kg_necesario", 0))
         reg["Kg cubiertos"] += _to_float(sim.get("kg_asignado_simulado", 0))
         reg["Kg faltantes"] += _to_float(sim.get("kg_faltante_simulado", 0))
         falt = _to_float(sim.get("kg_faltante_simulado", 0))
+        if falt > _to_float(reg.get("Kg faltantes", 0)):
+            reg["Calibre crítico"] = str(ped.get("Calibre", ""))
+            reg["Grupo varietal crítico"] = str(ped.get("Grupo varietal", ped.get("grupo_varietal", "")))
+            reg["Grupo confección crítico"] = str(ped.get("grupo_confeccion", ped.get("GrupoConfeccion", "")))
+            reg["_fecha_critica"] = fecha
         if falt > 0 and not primer_fallo:
             primer_fallo = {"Fecha salida": fecha, "Cliente": ped.get("Cliente", ""), "Variedad": ped.get("Variedad", ""), "Grupo varietal": ped.get("Grupo varietal", ped.get("grupo_varietal", "")), "Calibre": ped.get("Calibre", ""), "Categoría": ped.get("Categoría", ""), "Grupo confección": ped.get("grupo_confeccion", ped.get("GrupoConfeccion", "")), "Kg faltantes": falt, "Motivo probable": f"Falta {ped.get('Calibre', '')} {ped.get('Categoría', '')} en {ped.get('Grupo varietal', ped.get('grupo_varietal', ''))}"}
         if falt > 0:
@@ -949,21 +981,43 @@ def calcular_horizonte_cobertura(
     resumen_por_fecha = []
     fechas_ordenadas = sorted(resumen_fecha.items(), key=lambda x: x[0][0] or "9999-99-99")
     fecha_limite = None
+    fecha_limite_dt = None
+    dias_cubiertos = 0
+    hay_fechas_validas = False
+    hoy = date.today()
     for (fecha, _bloque), reg in fechas_ordenadas:
+        fecha_dt = _parse_fecha_salida(fecha)
+        if fecha_dt:
+            hay_fechas_validas = True
         if reg["Kg faltantes"] <= 0:
             estado = "OK"
             fecha_limite = fecha or fecha_limite
+            if fecha_dt:
+                dias_cubiertos += 1
+                fecha_limite_dt = fecha_dt
         elif reg["Kg cubiertos"] > 0:
             estado = "PARCIAL"
         else:
             estado = "INSUFICIENTE"
         reg["Estado día"] = estado
-        if reg["Kg faltantes"] > 0:
-            reg["Acción sugerida"] = "Recolectar fruta del calibre/grupo crítico"
+        if reg["Kg faltantes"] <= 0:
+            reg["Acción sugerida"] = "Día cubierto con stock actual"
+        elif "6/7" in _norm_text(reg.get("Calibre crítico", "")):
+            reg["Acción sugerida"] = "Recolectar o buscar stock compatible CAL 6/7"
+        elif "MALLA" in _norm_text(reg.get("Grupo confección crítico", "")):
+            reg["Acción sugerida"] = "Puede revisarse uso de primera + segunda"
+        elif estado == "PARCIAL":
+            reg["Acción sugerida"] = "Revisar stock o recolectar calibre crítico"
+        else:
+            reg["Acción sugerida"] = "Recolectar / buscar alternativa comercial"
+        reg.pop("_fecha_critica", None)
         resumen_por_fecha.append(reg)
-    today = date.today()
     limite_date = _parse_fecha_salida(fecha_limite) if fecha_limite else None
-    dias_autonomia = max(0, (limite_date - today).days) if limite_date else 0
+    if hay_fechas_validas:
+        dias_autonomia = dias_cubiertos
+    else:
+        dias_autonomia = None
+    fecha_limite_display = fecha_limite_dt.strftime("%d/%m/%Y") if fecha_limite_dt else ("Fecha no disponible" if not hay_fechas_validas else "")
     estado_horizonte = "OK" if kg_falt_total <= 0 else "RIESGO" if kg_asig_total > 0 else "INSUFICIENTE"
     faltantes_rows = []
     for k, v in faltantes.items():
@@ -985,7 +1039,7 @@ def calcular_horizonte_cobertura(
         recomendaciones.append("No es necesario recolectar para cubrir pedidos simulados.")
     recomendaciones.append(f"Política campo real: {'habilitado' if incluir_campo_real else 'deshabilitado'}")
     recomendaciones.append(f"Política campo estimado: {'habilitado' if incluir_campo_estimado else 'deshabilitado'}")
-    return {"fecha_limite_cubierta": fecha_limite, "dias_autonomia": dias_autonomia, "estado_horizonte": estado_horizonte, "pedidos_cubiertos": sum(1 for s in simulaciones if s.get('estado_global') == 'TOTAL'), "pedidos_parciales": sum(1 for s in simulaciones if s.get('estado_global') == 'PARCIAL'), "pedidos_insuficientes": sum(1 for s in simulaciones if s.get('estado_global') == 'INSUFICIENTE'), "kg_pendientes_total": kg_pend_total, "kg_asignados_total": kg_asig_total, "kg_faltantes_total": kg_falt_total, "primer_fallo": primer_fallo or {}, "resumen_por_fecha": resumen_por_fecha, "faltantes_por_calibre": sorted(faltantes_rows, key=lambda r: (r["Primera fecha afectada"] or "9999-99-99", -r["Kg faltantes"])), "stock_restante_por_calibre": stock_restante, "recomendaciones": recomendaciones}
+    return {"fecha_limite_cubierta": fecha_limite_display, "dias_autonomia": dias_autonomia, "estado_horizonte": estado_horizonte, "pedidos_cubiertos": sum(1 for s in simulaciones if s.get('estado_global') == 'TOTAL'), "pedidos_parciales": sum(1 for s in simulaciones if s.get('estado_global') == 'PARCIAL'), "pedidos_insuficientes": sum(1 for s in simulaciones if s.get('estado_global') == 'INSUFICIENTE'), "kg_pendientes_total": kg_pend_total, "kg_asignados_total": kg_asig_total, "kg_faltantes_total": kg_falt_total, "primer_fallo": primer_fallo or {}, "resumen_por_fecha": resumen_por_fecha, "faltantes_por_calibre": sorted(faltantes_rows, key=lambda r: (r["Primera fecha afectada"] or "9999-99-99", -r["Kg faltantes"])), "stock_restante_por_calibre": stock_restante, "recomendaciones": recomendaciones, "hay_fechas_validas": hay_fechas_validas}
 
 
 def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None) -> None:
@@ -1243,22 +1297,37 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     horizonte_frame.pack(fill="x", pady=(0, 6))
     hoy_estado = "OK"
     if horizonte.get("resumen_por_fecha"):
-        hoy_estado = horizonte["resumen_por_fecha"][0].get("Estado día", "OK")
+        hoy_rows = [r for r in horizonte["resumen_por_fecha"] if _norm_text(r.get("Bloque temporal", "")) == "HOY"]
+        if hoy_rows:
+            if any(_to_float(r.get("Kg faltantes", 0)) > 0 and _to_float(r.get("Kg cubiertos", 0)) <= 0 for r in hoy_rows):
+                hoy_estado = "FALTA"
+            elif any(_to_float(r.get("Kg faltantes", 0)) > 0 for r in hoy_rows):
+                hoy_estado = "PARCIAL"
+            else:
+                hoy_estado = "OK"
     primer_fallo = horizonte.get("primer_fallo", {})
-    ttk.Label(
-        horizonte_frame,
-        text=(
-            f"Pedidos hoy: {hoy_estado} · "
-            f"Autonomía estimada: {horizonte.get('dias_autonomia', 0)} días · "
-            f"Cubierto hasta: {horizonte.get('fecha_limite_cubierta') or 'N/D'} · "
-            f"Primer fallo: {primer_fallo.get('Fecha salida', 'N/D')} / {primer_fallo.get('Calibre', 'N/D')} · "
-            f"Kg faltantes próximos 10 días: {formatear_kg(horizonte.get('kg_faltantes_total', 0))} · "
-            f"Recolección necesaria: {'Sí' if horizonte.get('kg_faltantes_total', 0) > 0 else 'No'}"
-        ),
-    ).pack(anchor="w")
+    autonomia_txt = f"{horizonte.get('dias_autonomia', 0)} días" if horizonte.get("dias_autonomia") is not None else "No calculable por falta de fecha"
+    primer_fallo_txt = "Sin fallo en el rango seleccionado"
+    if primer_fallo:
+        primer_fallo_txt = (
+            f"{_texto_fecha_horizonte(primer_fallo.get('Fecha salida'))} · "
+            f"{primer_fallo.get('Calibre', '')} · {primer_fallo.get('Grupo varietal', '')} · "
+            f"faltan {formatear_kg(primer_fallo.get('Kg faltantes', 0))} kg"
+        )
+    kg_falt_10 = sum(_to_float(r.get("Kg faltantes", 0)) for r in horizonte.get("resumen_por_fecha", [])[:10])
+    resumen_labels = [
+        f"Pedidos hoy: {hoy_estado}",
+        f"Autonomía estimada: {autonomia_txt}",
+        f"Cubierto hasta: {horizonte.get('fecha_limite_cubierta') or 'Fecha no disponible'}",
+        f"Primer fallo: {primer_fallo_txt}",
+        f"Kg faltantes próximos 10 días: {formatear_kg(kg_falt_10)}",
+        f"Recolección necesaria: {'Sí' if horizonte.get('kg_faltantes_total', 0) > 0 else 'No'}",
+    ]
+    for idx, txt in enumerate(resumen_labels):
+        ttk.Label(horizonte_frame, text=txt).grid(row=idx // 2, column=idx % 2, sticky="w", padx=(0, 16), pady=2)
     horizon_tbl = DataTable(
         horizonte_tab,
-        ["Fecha salida", "Bloque temporal", "Nº pedidos", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Estado", "Calibre crítico", "Acción sugerida"],
+        ["Fecha salida", "Bloque temporal", "Nº pedidos", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Estado", "Calibre crítico", "Grupo varietal crítico", "Acción sugerida"],
     )
     horizon_tbl.pack(fill="both", expand=True, pady=(6, 0))
     horizon_tbl.tree.tag_configure("estado_ok", background="#DDF4DD")
@@ -1330,10 +1399,31 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Kg faltantes": formatear_kg(r.get("Kg faltantes", 0)),
             "Estado": estado,
             "Calibre crítico": r.get("Calibre crítico", ""),
+            "Grupo varietal crítico": r.get("Grupo varietal crítico", ""),
             "Acción sugerida": r.get("Acción sugerida", ""),
             "__tags__": (tag,),
         })
     horizon_tbl.set_rows(timeline_rows)
+
+    recolectar_frame = ttk.LabelFrame(horizonte_tab, text="Necesidad de recolección para ampliar cobertura", padding=8)
+    recolectar_frame.pack(fill="both", expand=False, pady=(6, 0))
+    recolectar_cols = ["Grupo varietal", "Variedad", "Calibre objetivo", "Calidad necesaria", "Kg útiles faltantes", "Primera fecha afectada", "Prioridad", "Acción"]
+    recolectar_tbl = DataTable(recolectar_frame, recolectar_cols)
+    recolectar_tbl.pack(fill="both", expand=True)
+    faltantes_rows = horizonte.get("faltantes_por_calibre", [])
+    if faltantes_rows:
+        recolectar_tbl.set_rows([{
+            "Grupo varietal": r.get("Grupo varietal", ""),
+            "Variedad": r.get("Variedad", ""),
+            "Calibre objetivo": r.get("Calibre", ""),
+            "Calidad necesaria": r.get("Calidad necesaria", ""),
+            "Kg útiles faltantes": formatear_kg(r.get("Kg faltantes", 0)),
+            "Primera fecha afectada": _texto_fecha_horizonte(r.get("Primera fecha afectada")),
+            "Prioridad": "ALTA" if _parse_fecha_salida(r.get("Primera fecha afectada")) and (_parse_fecha_salida(r.get("Primera fecha afectada")) - date.today()).days <= 1 else "MEDIA",
+            "Acción": r.get("Acción sugerida", ""),
+        } for r in faltantes_rows])
+    else:
+        recolectar_tbl.set_rows([{"Grupo varietal": "No es necesario recolectar para cubrir los pedidos incluidos en la simulación.", "Variedad": "", "Calibre objetivo": "", "Calidad necesaria": "", "Kg útiles faltantes": "", "Primera fecha afectada": "", "Prioridad": "", "Acción": ""}])
 
     def _accion_sobrante(calidad_util: str, origen: str) -> str:
         calidad_norm = _norm_text(calidad_util)
