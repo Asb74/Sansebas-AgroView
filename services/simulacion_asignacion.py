@@ -69,11 +69,73 @@ def _norm_text(valor: object) -> str:
 
 
 def _to_float(valor: object) -> float:
+    if valor is None:
+        return 0.0
+    if isinstance(valor, (int, float)):
+        return float(valor)
+    txt = str(valor).strip()
+    if not txt:
+        return 0.0
+    txt = txt.replace(" ", " ").replace(" ", "")
+    txt = txt.replace("%", "")
+    txt = "".join(ch for ch in txt if ch.isdigit() or ch in ".,-")
+    if not txt:
+        return 0.0
+    if "," in txt and "." in txt:
+        if txt.rfind(",") > txt.rfind("."):
+            txt = txt.replace(".", "").replace(",", ".")
+        else:
+            txt = txt.replace(",", "")
+    elif "," in txt:
+        txt = txt.replace(".", "").replace(",", ".")
     try:
-        return float(valor or 0)
+        return float(txt)
     except (TypeError, ValueError):
         return 0.0
 
+
+
+
+def _pick_first(row: dict, keys: tuple[str, ...], default: object = "") -> object:
+    for key in keys:
+        val = row.get(key)
+        if val is None:
+            continue
+        if isinstance(val, str) and not val.strip():
+            continue
+        return val
+    return default
+
+
+def normalizar_pool_inventario_global(row: dict) -> dict:
+    origen = _pick_first(row, ("origen", "Origen"), "")
+    variedad = _pick_first(row, ("variedad", "Variedad", "Variedad stock"), "")
+    grupo_varietal = _pick_first(row, ("grupo_varietal", "Grupo varietal", "Grupo varietal stock", "GrupoVarietal"), "")
+    calibre = _pick_first(row, ("calibre", "Calibre", "Calibre stock"), "")
+    categoria = _pick_first(row, ("categoria", "Categoría", "Categoria", "Categoría stock"), "")
+    kg_disponibles = _to_float(_pick_first(row, ("kg_fisicos", "Kg físicos", "Kg disponibles", "Kg stock", "kg_disponibles", "kg_stock"), 0))
+    kg_utiles_finales = _to_float(_pick_first(row, ("kg_utiles_finales", "Kg útiles finales", "Kg stock total útil", "Kg libres", "Kg restante total"), kg_disponibles))
+
+    row_norm = dict(row)
+    row_norm.update({
+        "Origen": str(origen or "").strip(),
+        "origen": str(origen or "").strip(),
+        "Variedad stock": str(variedad or "").strip(),
+        "variedad": str(variedad or "").strip(),
+        "Grupo varietal stock": str(grupo_varietal or "").strip(),
+        "grupo_varietal": str(grupo_varietal or "").strip(),
+        "Calibre stock": str(calibre or "").strip(),
+        "calibre": str(calibre or "").strip(),
+        "Categoría": str(categoria or "").strip(),
+        "categoria": str(categoria or "").strip(),
+        "Kg disponibles": kg_disponibles,
+        "kg_fisicos": kg_disponibles,
+        "kg_disponibles": kg_disponibles,
+        "kg_stock": kg_disponibles,
+        "kg_utiles_finales": kg_utiles_finales,
+        "kg_utiles_estimados": kg_utiles_finales,
+    })
+    return row_norm
 
 def formatear_kg(valor: object) -> str:
     num = _to_float(valor)
@@ -785,7 +847,18 @@ def generar_acciones_sugeridas(diagnostico: dict) -> list[str]:
 
 def construir_inventario_global_simulado(candidatos_globales: list[dict]) -> dict[str, dict]:
     inventario: dict[str, dict] = {}
-    for cand in deepcopy(candidatos_globales or []):
+    rows = deepcopy(candidatos_globales or [])
+    logger.info("Inventario global raw ejemplo=%s", rows[0] if rows else None)
+    pools_normalizados = [normalizar_pool_inventario_global(c) for c in rows]
+    logger.info(
+        "Inventario global normalizado pools=%s total_kg=%s calibres=%s grupos=%s origenes=%s",
+        len(pools_normalizados),
+        sum(float(p.get("Kg disponibles", 0) or 0) for p in pools_normalizados),
+        sorted(set(str(p.get("Calibre stock", "")) for p in pools_normalizados)),
+        sorted(set(str(p.get("Grupo varietal stock", "")) for p in pools_normalizados)),
+        sorted(set(str(p.get("Origen", "")) for p in pools_normalizados)),
+    )
+    for cand in pools_normalizados:
         perfil_stock = cand.get("perfil_stock", "") or detectar_perfil_stock(cand)
         utilidad = calcular_utilidad_operativa({}, cand)
         cand.update(utilidad)
@@ -808,7 +881,7 @@ def construir_inventario_global_simulado(candidatos_globales: list[dict]) -> dic
                 "kg_restante_simulado": _to_float(sc.get("kg_utiles_finales", 0)),
                 "origen": sc.get("Origen", sc.get("origen", "")),
                 "variedad": sc.get("Variedad stock", sc.get("variedad_stock", "")),
-                "grupo_varietal": sc.get("Grupo varietal stock", ""),
+                "grupo_varietal": sc.get("Grupo varietal stock", sc.get("Grupo varietal", sc.get("GrupoVarietal", sc.get("grupo_varietal", "")))),
                 "calibre": sc.get("Calibre stock", sc.get("calibre_stock", "")),
                 "categoria": sc.get("Categoría", sc.get("categoria_stock", "")),
                 "subpool_calidad": sc.get("subpool_calidad", "MIXTO"),
@@ -1059,6 +1132,13 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         elif origen_norm == "CAMPO_REAL":
             partes.append("No recolectar salvo nuevo pedido")
         return " · ".join(partes)
+
+    logger.info(
+        "Sobrantes ejecutivos rows=%s kg_total=%s kg_libre=%s",
+        len(sobrantes_rows),
+        sum(_to_float(r.get("Kg stock total útil", _to_float(r.get("Kg asignados primera", 0)) + _to_float(r.get("Kg asignados segunda", 0)) + _to_float(r.get("Kg restante total", 0)))) for r in sobrantes_rows),
+        sum(_to_float(r.get("Kg libres", r.get("Kg restante total", 0))) for r in sobrantes_rows),
+    )
 
     def _refresh_resumen_ejecutivo(*_args) -> None:
         origen_filtro = _norm_text(origen_sobrantes_var.get())
