@@ -1504,9 +1504,13 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     resumen.pack(fill="x", padx=10, pady=(0, 4))
     detalle = ttk.Label(popup, text="", anchor="w")
     detalle.pack(fill="x", padx=10, pady=(0, 8))
-    pedidos_tbl.tree.tag_configure("estado_total", background="#dcedc8")
-    pedidos_tbl.tree.tag_configure("estado_parcial", background="#fff3cd")
-    pedidos_tbl.tree.tag_configure("estado_insuf", background="#f8d7da")
+    pedidos_tbl.tree.tag_configure("estado_total", background="#DDF4DD")
+    pedidos_tbl.tree.tag_configure("estado_cubierto", background="#DDF4DD")
+    pedidos_tbl.tree.tag_configure("estado_flexible", background="#FFF3C4")
+    pedidos_tbl.tree.tag_configure("estado_parcial", background="#FFD9A8")
+    pedidos_tbl.tree.tag_configure("estado_insuf", background="#F8D0D0")
+    pedidos_tbl.tree.tag_configure("estado_falta", background="#F8D0D0")
+    pedidos_tbl.tree.tag_configure("estado_neutro", background="#E6EEF5")
     cand_tbl.tree.tag_configure("riesgo_bajo", background="#d0f0c0")
     cand_tbl.tree.tag_configure("riesgo_medio", background="#fff8b3")
     cand_tbl.tree.tag_configure("riesgo_alto", background="#f8d7da")
@@ -1571,7 +1575,17 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     for simulacion in simulaciones:
         pedido = simulacion["pedido"]
         estado = simulacion["estado_global"]
-        tag_estado = "estado_total" if estado == "TOTAL" else "estado_parcial" if estado == "PARCIAL" else "estado_insuf"
+        estado_norm = _norm_text(estado)
+        if estado_norm in ("TOTAL", "OK", "CUBIERTO", "CUBIERTO EXACTO"):
+            tag_estado = "estado_total"
+        elif estado_norm == "CUBIERTO FLEXIBLE":
+            tag_estado = "estado_flexible"
+        elif estado_norm == "PARCIAL":
+            tag_estado = "estado_parcial"
+        elif estado_norm in ("INSUFICIENTE", "FALTA"):
+            tag_estado = "estado_insuf"
+        else:
+            tag_estado = "estado_neutro"
         grupo_conf = _grupo_pedido(pedido)
         perfil_conf = _perfil_pedido(pedido, grupo_conf)
         resumen_rows.append({
@@ -1739,9 +1753,14 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         ["Fecha salida", "Bloque temporal", "Prioridad total", "Prioridad media", "Prioridad máxima", "Motivo prioridad principal", "Nº pedidos", "Nº líneas", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Estado", "Calibre crítico", "Grupo varietal crítico", "Acción sugerida"],
     )
     horizon_tbl.pack(fill="both", expand=True, pady=(6, 0))
+    horizon_tbl.tree.tag_configure("estado_total", background="#DDF4DD")
     horizon_tbl.tree.tag_configure("estado_ok", background="#DDF4DD")
-    horizon_tbl.tree.tag_configure("estado_parcial", background="#FFF3C4")
-    horizon_tbl.tree.tag_configure("estado_insuf", background="#F8D7DA")
+    horizon_tbl.tree.tag_configure("estado_cubierto", background="#DDF4DD")
+    horizon_tbl.tree.tag_configure("estado_flexible", background="#FFF3C4")
+    horizon_tbl.tree.tag_configure("estado_parcial", background="#FFD9A8")
+    horizon_tbl.tree.tag_configure("estado_insuf", background="#F8D0D0")
+    horizon_tbl.tree.tag_configure("estado_falta", background="#F8D0D0")
+    horizon_tbl.tree.tag_configure("estado_neutro", background="#E6EEF5")
 
     filtros_exec = ttk.LabelFrame(sobrantes_tab, text="Configuración sobrantes", padding=8)
     filtros_exec.pack(fill="x", pady=(0, 6))
@@ -1798,7 +1817,17 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     timeline_rows = []
     for r in horizonte.get("resumen_por_fecha", []):
         estado = r.get("Estado día", "")
-        tag = "estado_ok" if estado == "OK" else "estado_parcial" if estado == "PARCIAL" else "estado_insuf"
+        estado_norm = _norm_text(estado)
+        if estado_norm in ("TOTAL", "OK", "CUBIERTO", "CUBIERTO EXACTO"):
+            tag = "estado_ok"
+        elif estado_norm == "CUBIERTO FLEXIBLE":
+            tag = "estado_flexible"
+        elif estado_norm == "PARCIAL":
+            tag = "estado_parcial"
+        elif estado_norm in ("INSUFICIENTE", "FALTA"):
+            tag = "estado_insuf"
+        else:
+            tag = "estado_neutro"
         timeline_rows.append({
             "Fecha salida": r.get("Fecha salida", ""),
             "Bloque temporal": r.get("Bloque temporal", ""),
@@ -2169,7 +2198,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     matriz_cols = ["Grupo varietal", "Variedad", "Calibre", "Categoría / calidad útil", "Origen principal", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Kg stock útil", "Kg sobrantes", "% cobertura", "Estado cobertura", "Tipo compatibilidad", "Penalización", "Riesgo compatibilidad", "Motivo compatibilidad", "Riesgo", "Acción recomendada"]
     matriz_tbl = DataTable(matriz_tab, matriz_cols)
     matriz_tbl.pack(fill="both", expand=True)
-    for estado, color in [("cubierto_exacto", "#DDF4DD"), ("cubierto_flexible", "#FFF8CC"), ("parcial", "#FFD9A8"), ("falta", "#F8D0D0"), ("sobrante", "#FFD9A8"), ("sin_pedido", "#E6EEF5")]:
+    for estado, color in [("cubierto_exacto", "#DDF4DD"), ("cubierto_flexible", "#FFF3C4"), ("parcial", "#FFD9A8"), ("falta", "#F8D0D0"), ("sobrante", "#FFD9A8"), ("sin_pedido", "#E6EEF5")]:
         matriz_tbl.tree.tag_configure(f"estado_{estado}", background=color)
     matriz_tbl.tree.tag_configure("sobrante_alto", background="#FFD9A8")
     matriz_tbl.tree.tag_configure("riesgo_alto", foreground="#C62828")
