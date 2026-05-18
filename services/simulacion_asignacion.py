@@ -1187,6 +1187,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     horizonte_tab = ttk.Frame(notebook, padding=8)
     sobrantes_tab = ttk.Frame(notebook, padding=8)
     necesidades_tab = ttk.Frame(notebook, padding=8)
+    plan_operativo_tab = ttk.Frame(notebook, padding=8)
     riesgos_tab = ttk.Frame(notebook, padding=8)
     tecnico_tab = ttk.Frame(notebook, padding=8)
 
@@ -1207,6 +1208,13 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     sobrantes_cols = ["Origen", "Variedad", "Grupo varietal", "Calibre", "Categoría stock", "Calidad útil", "Kg físicos iniciales", "Kg primera inicial", "Kg segunda inicial", "Kg asignados primera", "Kg asignados segunda", "Kg restante primera", "Kg restante segunda", "Kg restante total", "% restante", "Pool ID"]
     sobrantes_tbl = DataTable(sobrantes_tab, sobrantes_cols)
     sobrantes_tbl.pack(fill="both", expand=True)
+    plan_resumen_box = ttk.LabelFrame(plan_operativo_tab, text="Plan operativo", padding=8)
+    plan_resumen_box.pack(fill="x", pady=(0, 6))
+    plan_resumen_lbl = ttk.Label(plan_resumen_box, text="", anchor="w", justify="left")
+    plan_resumen_lbl.pack(fill="x")
+    plan_cols = ["Prioridad", "Tipo acción", "Origen", "Grupo varietal", "Variedad", "Calibre", "Kg afectados", "Fecha límite", "Motivo", "Acción recomendada"]
+    plan_tbl = DataTable(plan_operativo_tab, plan_cols)
+    plan_tbl.pack(fill="both", expand=True)
 
     resumen = ttk.Label(popup, text="", anchor="w")
     resumen.pack(fill="x", padx=10, pady=(0, 4))
@@ -1649,6 +1657,72 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     else:
         top_nec_tbl.set_rows([{"Variedad": "No hay necesidades de recolección para los pedidos incluidos en la simulación.", "Grupo varietal": "", "Calibre necesario": "", "Calidad necesaria": "", "Kg faltantes": "", "Kg campo estimados": "", "Prioridad temporal": "", "Acción sugerida": ""}])
 
+    plan_actions = []
+    for need in necesidades_rows:
+        kg_falt = _to_float(need.get("Kg útiles faltantes", 0))
+        if kg_falt > 0:
+            plan_actions.append({
+                "Prioridad": "ALTA",
+                "Tipo acción": "RECOLECTAR",
+                "Origen": "CAMPO_ESTIMADO",
+                "Grupo varietal": need.get("Grupo varietal", ""),
+                "Variedad": need.get("Variedad", ""),
+                "Calibre": need.get("Calibre necesario", ""),
+                "Kg afectados": formatear_kg(kg_falt),
+                "Fecha límite": need.get("Fecha límite", ""),
+                "Motivo": "Faltantes en horizonte/necesidades",
+                "Acción recomendada": f"Recolectar {need.get('Grupo varietal', '')} / {need.get('Variedad', '')} / CAL {need.get('Calibre necesario', '')}",
+            })
+    for r in sobrantes_rows:
+        kg_libre = _to_float(r.get("Kg restante total", 0))
+        kg_total = _to_float(r.get("Kg físicos iniciales", 0))
+        pct_libre = (kg_libre / kg_total * 100.0) if kg_total > 0 else 0.0
+        origen = _canonicalizar_origen(r.get("Origen", ""))
+        if kg_libre > 50000 and pct_libre > 80:
+            plan_actions.append({"Prioridad": "MEDIA", "Tipo acción": "NO RECOLECTAR", "Origen": r.get("Origen", ""), "Grupo varietal": r.get("Grupo varietal", ""), "Variedad": r.get("Variedad", ""), "Calibre": r.get("Calibre", ""), "Kg afectados": formatear_kg(kg_libre), "Fecha límite": "", "Motivo": "Stock libre suficiente", "Acción recomendada": "Evitar recolectar más de este perfil salvo necesidad comercial."})
+        if (origen == "ALMACEN_INDUSTRIAL" and kg_libre > 50000) or (kg_libre > 50000 and pct_libre > 80):
+            prioridad = "ALTA" if origen == "ALMACEN_INDUSTRIAL" and kg_libre > 50000 else "MEDIA"
+            plan_actions.append({"Prioridad": prioridad, "Tipo acción": "DAR SALIDA", "Origen": r.get("Origen", ""), "Grupo varietal": r.get("Grupo varietal", ""), "Variedad": r.get("Variedad", ""), "Calibre": r.get("Calibre", ""), "Kg afectados": formatear_kg(kg_libre), "Fecha límite": "", "Motivo": "ROTACIÓN PRIORITARIA" if prioridad == "ALTA" else "SOBRANTE ALTO", "Acción recomendada": f"Priorizar salida {r.get('Origen', '')} · {r.get('Grupo varietal', '')} · CAL {r.get('Calibre', '')} · {formatear_kg(kg_libre)} libres."})
+        if 10000 <= kg_libre <= 50000:
+            plan_actions.append({"Prioridad": "MEDIA", "Tipo acción": "VIGILAR", "Origen": r.get("Origen", ""), "Grupo varietal": r.get("Grupo varietal", ""), "Variedad": r.get("Variedad", ""), "Calibre": r.get("Calibre", ""), "Kg afectados": formatear_kg(kg_libre), "Fecha límite": "", "Motivo": "Sobrante medio", "Acción recomendada": f"Vigilar CAL {r.get('Calibre', '')}: stock libre alto y pocos pedidos próximos."})
+        if kg_libre > 10000:
+            calidad = _norm_text(r.get("Calidad útil", ""))
+            accion = "Revisar salida compatible por calibre."
+            if calidad == "SEGUNDA":
+                accion = "Buscar pedidos categoría II o malla."
+            elif calidad == "PRIMERA":
+                accion = "Buscar pedidos exigentes o comerciales."
+            plan_actions.append({"Prioridad": "MEDIA", "Tipo acción": "OPORTUNIDAD", "Origen": r.get("Origen", ""), "Grupo varietal": r.get("Grupo varietal", ""), "Variedad": r.get("Variedad", ""), "Calibre": r.get("Calibre", ""), "Kg afectados": formatear_kg(kg_libre), "Fecha límite": "", "Motivo": "Sobrante aprovechable", "Acción recomendada": accion})
+    if not any(a.get("Tipo acción") == "RECOLECTAR" for a in plan_actions):
+        plan_actions.append({"Prioridad": "BAJA", "Tipo acción": "RECOLECTAR", "Origen": "", "Grupo varietal": "", "Variedad": "", "Calibre": "", "Kg afectados": "0", "Fecha límite": "", "Motivo": "Sin faltantes", "Acción recomendada": "No es necesario recolectar para cubrir los pedidos seleccionados."})
+    plan_actions.sort(key=lambda r: ({"ALTA": 0, "MEDIA": 1, "BAJA": 2}.get(r.get("Prioridad", "BAJA"), 9), {"RECOLECTAR": 0, "NO RECOLECTAR": 1, "DAR SALIDA": 2, "VIGILAR": 3, "OPORTUNIDAD": 4}.get(r.get("Tipo acción", ""), 9)))
+    plan_tbl.set_rows(plan_actions)
+    plan_tbl.tree.tag_configure("accion_recolectar", background="#FFE0B2")
+    plan_tbl.tree.tag_configure("accion_no_recolectar", background="#E3EDF7")
+    plan_tbl.tree.tag_configure("accion_dar_salida", background="#FFF9C4")
+    plan_tbl.tree.tag_configure("accion_vigilar", background="#D9EDF7")
+    plan_tbl.tree.tag_configure("accion_oportunidad", background="#DFF0D8")
+    for item in plan_tbl.tree.get_children():
+        vals = plan_tbl.tree.item(item, "values")
+        t = vals[1] if len(vals) > 1 else ""
+        tag = "accion_oportunidad"
+        if t == "RECOLECTAR":
+            tag = "accion_recolectar"
+        elif t == "NO RECOLECTAR":
+            tag = "accion_no_recolectar"
+        elif t == "DAR SALIDA":
+            tag = "accion_dar_salida"
+        elif t == "VIGILAR":
+            tag = "accion_vigilar"
+        plan_tbl.tree.item(item, tags=(tag,))
+    sobrante_principal = max(sobrantes_rows, key=lambda rr: _to_float(rr.get("Kg restante total", 0)), default={})
+    primer_riesgo = horizonte.get("primer_fallo", {})
+    plan_resumen_lbl.configure(text="Plan operativo generado a partir de pedidos, horizonte y sobrantes.\n"
+                                   f"Recolección necesaria: {'Sí' if any(a.get('Tipo acción') == 'RECOLECTAR' and _to_float(a.get('Kg afectados', 0)) > 0 for a in plan_actions) else 'No'}\n"
+                                   f"Acciones prioritarias: {sum(1 for a in plan_actions if a.get('Prioridad') == 'ALTA')}\n"
+                                   f"Sobrante principal: {sobrante_principal.get('Calibre', '-')} / {sobrante_principal.get('Grupo varietal', '-')}\n"
+                                   f"Primer riesgo: {primer_riesgo.get('Fecha salida', 'Sin riesgo') if primer_riesgo else 'Sin riesgo'}")
+
     riesgos_box = ttk.LabelFrame(riesgos_tab, text="Diagnóstico automático completo", padding=8)
     riesgos_box.pack(fill="both", expand=True)
     riesgos_texto = [diagnostico.get("resumen", "")]
@@ -1660,6 +1734,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
 
     notebook.add(resumen_tab, text="Resumen")
     notebook.add(horizonte_tab, text="Horizonte")
+    notebook.add(plan_operativo_tab, text="Plan operativo")
     notebook.add(sobrantes_tab, text="Sobrantes")
     notebook.add(necesidades_tab, text="Necesidades")
     notebook.add(riesgos_tab, text="Riesgos / Diagnóstico")
