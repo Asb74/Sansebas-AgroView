@@ -2043,10 +2043,15 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     riesgos_texto.extend([f"Producción: {x}" for x in diagnostico.get("recomendaciones_produccion", [])])
     ttk.Label(riesgos_box, text="\n".join([f"• {x}" for x in riesgos_texto if x]), justify="left").pack(anchor="w")
 
+    MOSTRAR_PESTANAS_AVANZADAS = False
     notebook.add(resumen_tab, text="Resumen")
     notebook.add(horizonte_tab, text="Horizonte")
-    notebook.add(plan_operativo_tab, text="Plan operativo")
-    notebook.add(matriz_tab, text="Matriz cobertura")
+    # Pestañas avanzadas ocultas temporalmente
+    # Se reactivarán cuando se defina mejor el flujo operativo
+    # NO eliminar lógica interna
+    if MOSTRAR_PESTANAS_AVANZADAS:
+        notebook.add(plan_operativo_tab, text="Plan operativo")
+        notebook.add(matriz_tab, text="Matriz cobertura")
     notebook.add(sobrantes_tab, text="Sobrantes")
     notebook.add(necesidades_tab, text="Necesidades")
     notebook.add(riesgos_tab, text="Riesgos / Diagnóstico")
