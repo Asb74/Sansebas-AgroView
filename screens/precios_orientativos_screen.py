@@ -1,13 +1,18 @@
+import json
+from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from db.connection import db_exists, get_db_path
 from services.precios_orientativos_service import PreciosOrientativosService
 from widgets.data_table import DataTable
+from widgets.multi_select_filter import MultiSelectFilter
 from widgets.screen_header import ScreenHeader
 
 
 class PreciosOrientativosScreen(ttk.Frame):
+    FILTERS_FILE = Path("config") / "filtros_precios.json"
+    FILTER_KEYS = ["campana", "cultivo", "empresa", "semana", "cliente", "var_coop", "grupo_varietal", "estado_precio"]
     TABLE_COLUMNS = [
         "IdPedidoLora",
         "Linea",
@@ -51,16 +56,7 @@ class PreciosOrientativosScreen(ttk.Frame):
         self.service = PreciosOrientativosService()
         self.rows: list[dict] = []
 
-        self.filters = {
-            "campana": tk.StringVar(),
-            "cultivo": tk.StringVar(),
-            "empresa": tk.StringVar(),
-            "semana": tk.StringVar(),
-            "cliente": tk.StringVar(),
-            "var_coop": tk.StringVar(),
-            "grupo_varietal": tk.StringVar(),
-            "estado_precio": tk.StringVar(value="TODOS"),
-        }
+        self.filter_widgets: dict[str, MultiSelectFilter] = {}
         self.status_var = tk.StringVar(value="")
         self.counter_var = tk.StringVar(value="0 pedidos pendientes")
         self.coverage_var = tk.StringVar(value="Cobertura precio orientativo: 0,00%")
@@ -68,6 +64,8 @@ class PreciosOrientativosScreen(ttk.Frame):
         self.last_summary: dict | None = None
 
         self._build_ui()
+        self._load_filters()
+        self._refresh_filter_options()
         schema_warnings = self.service.init_schema()
         if schema_warnings:
             self.status_var.set(" | ".join(schema_warnings))
@@ -92,20 +90,17 @@ class PreciosOrientativosScreen(ttk.Frame):
         ]
         for idx, (label, key) in enumerate(fields):
             ttk.Label(filters, text=label).grid(row=(idx // 3) * 2, column=idx % 3, padx=6, sticky="w")
-            ttk.Entry(filters, textvariable=self.filters[key], width=24).grid(
-                row=(idx // 3) * 2 + 1, column=idx % 3, padx=6, pady=(0, 8), sticky="ew"
-            )
+            w = MultiSelectFilter(filters, title=label, on_apply=lambda k=key: self._on_filter_changed(k), width=24)
+            w.grid(row=(idx // 3) * 2 + 1, column=idx % 3, padx=6, pady=(0, 8), sticky="ew")
+            self.filter_widgets[key] = w
             filters.grid_columnconfigure(idx % 3, weight=1)
 
         row_base = ((len(fields) - 1) // 3) * 2 + 2
         ttk.Label(filters, text="Estado precio").grid(row=row_base, column=0, padx=6, sticky="w")
-        ttk.Combobox(
-            filters,
-            textvariable=self.filters["estado_precio"],
-            values=["TODOS", "SIN_PRECIO", "CON_ORIGINAL", "ESTIMADO_GUARDADO", "PENDIENTE_ESTIMAR", "SIN_DATOS", "ERROR_DATOS"],
-            state="readonly",
-            width=24,
-        ).grid(row=row_base + 1, column=0, padx=6, pady=(0, 8), sticky="ew")
+        w_estado = MultiSelectFilter(filters, title="Estado precio", on_apply=lambda: self._on_filter_changed("estado_precio"), width=24)
+        w_estado.grid(row=row_base + 1, column=0, padx=6, pady=(0, 8), sticky="ew")
+        w_estado.set_options(["TODOS", "SIN_PRECIO", "CON_PRECIO", "ESTIMADO", "ORIGINAL"])
+        self.filter_widgets["estado_precio"] = w_estado
 
         actions = ttk.Frame(filters)
         actions.grid(row=row_base + 2, column=0, columnspan=3, sticky="w", pady=(4, 0))
@@ -129,8 +124,20 @@ class PreciosOrientativosScreen(ttk.Frame):
         ttk.Label(self, textvariable=self.counter_var, style="KPI.TLabel").grid(row=4, column=0, sticky="w", pady=(8, 0))
         ttk.Label(self, textvariable=self.status_var, foreground="#b00020").grid(row=5, column=0, sticky="w", pady=(4, 0))
 
-    def _get_filters(self) -> dict[str, str]:
-        return {k: v.get().strip() for k, v in self.filters.items()}
+    def _get_filters(self) -> dict[str, list[str]]:
+        return {k: self.filter_widgets[k].get_selected() for k in self.FILTER_KEYS}
+
+    def _on_filter_changed(self, _changed_key: str) -> None:
+        self._refresh_filter_options()
+        self._save_filters()
+
+    def _refresh_filter_options(self) -> None:
+        current = self._get_filters()
+        for key in [k for k in self.FILTER_KEYS if k != "estado_precio"]:
+            options = self.service.get_filter_options(current, key)
+            selected = self.filter_widgets[key].get_selected()
+            self.filter_widgets[key].set_options(options)
+            self.filter_widgets[key].set_selected([v for v in selected if v in set(options)])
 
     def buscar_pendientes(self) -> None:
         if not db_exists():
@@ -183,8 +190,10 @@ class PreciosOrientativosScreen(ttk.Frame):
         self.status_var.set(msg)
 
     def limpiar(self) -> None:
-        for var in self.filters.values():
-            var.set("")
+        for key in self.FILTER_KEYS:
+            self.filter_widgets[key].clear()
+        self._refresh_filter_options()
+        self._save_filters()
         self.rows = []
         self.table.set_rows([])
         self.counter_var.set("0 pedidos pendientes")
@@ -195,7 +204,7 @@ class PreciosOrientativosScreen(ttk.Frame):
 
     def eliminar_calculos_guardados(self) -> None:
         filters = self._get_filters()
-        has_filters = any(str(v or "").strip() for v in filters.values())
+        has_filters = any(bool(v) for v in filters.values())
         if has_filters:
             msg = (
                 "Se van a eliminar los precios orientativos calculados guardados para el filtro actual. "
@@ -262,14 +271,33 @@ class PreciosOrientativosScreen(ttk.Frame):
             self.status_var.set("No hay datos para generar resumen semanal.")
             return
         semanal = self.service.generar_resumen_semanal(self.rows)
-        win = tk.Toplevel(self)
-        win.title("Resumen semanal")
-        win.geometry("820x420")
-        frame = ttk.Frame(win, padding=10)
-        frame.pack(fill="both", expand=True)
-        frame.grid_rowconfigure(0, weight=1)
-        frame.grid_columnconfigure(0, weight=1)
-        cols = ["Semana", "Total líneas", "Con precio", "Estimadas", "Sin precio", "Cobertura %", "Grupo varietal principal"]
-        table = DataTable(frame, columns=cols)
-        table.grid(row=0, column=0, sticky="nsew")
-        table.set_rows(semanal)
+        if not semanal:
+            self.summary_var.set("Sin datos semanales")
+            return
+        lines = []
+        for row in semanal[:12]:
+            cov = float(row.get("Cobertura %", 0))
+            color = "🟢" if cov >= 80 else ("🟡" if cov >= 50 else "🔴")
+            lines.append(
+                f"{color} Sem {row.get('Semana','')}: pedidos={row.get('Total líneas',0)} | kg={float(row.get('Kg',0)):,.0f} | cobertura={cov:.2f}% | sin precio={row.get('Sin precio',0)} | importe={float(row.get('Importe afectado',0)):,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+            )
+        self.summary_var.set("\n".join(lines))
+
+    def _save_filters(self) -> None:
+        self.FILTERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with self.FILTERS_FILE.open("w", encoding="utf-8") as f:
+            json.dump(self._get_filters(), f, ensure_ascii=False, indent=2)
+
+    def _load_filters(self) -> None:
+        if not self.FILTERS_FILE.exists():
+            self.filter_widgets["estado_precio"].set_selected(["TODOS"])
+            return
+        try:
+            data = json.loads(self.FILTERS_FILE.read_text(encoding="utf-8"))
+            for key in self.FILTER_KEYS:
+                raw = data.get(key, [])
+                if isinstance(raw, str):
+                    raw = [raw] if raw.strip() else []
+                self.filter_widgets[key].set_selected(raw)
+        except Exception:
+            self.filter_widgets["estado_precio"].set_selected(["TODOS"])

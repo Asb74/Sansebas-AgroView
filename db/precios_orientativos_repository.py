@@ -49,8 +49,8 @@ class PreciosOrientativosRepository:
             cols = self._get_columns(conn, self.TABLE_PEDIDOS)
             where_sql, filter_params, warn, applied_filters = self._build_where(filters, cols)
             warnings.extend(warn)
-            filtro_grupo_varietal = str(filters.get("grupo_varietal", "") or "").strip().lower()
-            filtro_estado_precio = str(filters.get("estado_precio", "") or "").strip().upper()
+            filtro_grupo_varietal = self._first_filter_value(filters.get("grupo_varietal")).lower()
+            filtro_estado_precio = self._first_filter_value(filters.get("estado_precio")).upper()
             logger.info("Columnas detectadas en Pedidos: %s", ", ".join(sorted(cols)))
             logger.info("Filtros recibidos: %s", filters)
             logger.info("Filtros aplicados: %s", applied_filters)
@@ -136,9 +136,8 @@ class PreciosOrientativosRepository:
                 row["EstadoPrecio"] = self._estado_precio(row)
                 if filtro_grupo_varietal and filtro_grupo_varietal not in str(row.get("GrupoVarietal", "")).lower():
                     continue
-                if filtro_estado_precio and filtro_estado_precio not in {"", "TODOS"} and row["EstadoPrecio"] != filtro_estado_precio:
-                    if not (filtro_estado_precio == "PENDIENTE_ESTIMAR" and row["EstadoPrecio"] in {"SIN_PRECIO", "SIN_DATOS", "ERROR_DATOS"}):
-                        continue
+                if not self._match_estado_filter(filtro_estado_precio, row["EstadoPrecio"]):
+                    continue
                 filtered_rows.append(row)
             logger.info("Total filas cargadas (PENDIENTES): %s", len(filtered_rows))
             return filtered_rows, warnings
@@ -152,8 +151,8 @@ class PreciosOrientativosRepository:
             cols = self._get_columns(conn, self.TABLE_PEDIDOS)
             where_sql, filter_params, warn, applied_filters = self._build_where(filters, cols)
             warnings.extend(warn)
-            filtro_grupo_varietal = str(filters.get("grupo_varietal", "") or "").strip().lower()
-            filtro_estado_precio = str(filters.get("estado_precio", "") or "").strip().upper()
+            filtro_grupo_varietal = self._first_filter_value(filters.get("grupo_varietal")).lower()
+            filtro_estado_precio = self._first_filter_value(filters.get("estado_precio")).upper()
             cancelado_sql, cancelado_params = self._cancelado_filter_for_pedidos(cols)
             logger.info("Columnas detectadas en Pedidos: %s", ", ".join(sorted(cols)))
             logger.info("Filtros recibidos: %s", filters)
@@ -233,12 +232,81 @@ class PreciosOrientativosRepository:
                 row["EstadoPrecio"] = self._estado_precio(row)
                 if filtro_grupo_varietal and filtro_grupo_varietal not in str(row.get("GrupoVarietal", "")).lower():
                     continue
-                if filtro_estado_precio and filtro_estado_precio not in {"", "TODOS"} and row["EstadoPrecio"] != filtro_estado_precio:
-                    if not (filtro_estado_precio == "PENDIENTE_ESTIMAR" and row["EstadoPrecio"] in {"SIN_PRECIO", "SIN_DATOS", "ERROR_DATOS"}):
-                        continue
+                if not self._match_estado_filter(filtro_estado_precio, row["EstadoPrecio"]):
+                    continue
                 out_rows.append(row)
             logger.info("Total filas cargadas (RECALCULO_TOTAL): %s", len(out_rows))
             return out_rows, warnings
+
+    def get_filter_options(self, filters: dict[str, Any], target_filter: str) -> list[str]:
+        field_map = {
+            "campana": "Campaña",
+            "cultivo": "Cultivo",
+            "empresa": "EMPRESA",
+            "semana": "Semana",
+            "cliente": "Cliente",
+            "var_coop": "VarCoop",
+        }
+        if target_filter == "grupo_varietal":
+            return self._get_grupo_varietal_options(filters)
+        if target_filter not in field_map:
+            return []
+        target_col = field_map[target_filter]
+        effective_filters = {k: v for k, v in filters.items() if k != target_filter}
+        where_sql, params = build_pedidos_where(effective_filters, alias="p", include_base=True)
+        order_sql = f'ORDER BY CAST(p."{target_col}" AS TEXT) ASC'
+        if target_filter == "semana":
+            order_sql = (
+                'ORDER BY CASE WHEN CAST(p."Semana" AS INTEGER) >= 36 '
+                'THEN CAST(p."Semana" AS INTEGER) - 35 ELSE CAST(p."Semana" AS INTEGER) + 17 END ASC'
+            )
+        elif target_filter == "empresa":
+            order_sql = 'ORDER BY CAST(p."EMPRESA" AS INTEGER) ASC'
+        query = f'''
+            SELECT DISTINCT CAST(p."{target_col}" AS TEXT) AS value
+            FROM "{self.TABLE_PEDIDOS}" p
+            {where_sql}
+              AND COALESCE(TRIM(CAST(p."{target_col}" AS TEXT)), '') <> ''
+            {order_sql}
+        '''
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [str(r["value"]).strip() for r in rows if str(r["value"] or "").strip()]
+
+    def _get_grupo_varietal_options(self, filters: dict[str, Any]) -> list[str]:
+        with self._connect() as conn:
+            cols = self._get_columns(conn, self.TABLE_PEDIDOS)
+            where_sql, params, _warn, _applied = self._build_where(filters, cols)
+            query = f'SELECT "VarCoop", "Cultivo", "GrupoVarietal" FROM "{self.TABLE_PEDIDOS}"'
+            if where_sql:
+                query += f" WHERE {where_sql}"
+            rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+        grupo_var_map, _ = self._load_grupos_varietales()
+        grupos: set[str] = set()
+        for row in rows:
+            direct = str(row.get("GrupoVarietal") or "").strip()
+            if direct:
+                grupos.add(direct)
+                continue
+            vc = str(row.get("VarCoop") or "").strip()
+            cult = str(row.get("Cultivo") or "").strip()
+            mapped = str(grupo_var_map.get((vc, cult), "")).strip()
+            if mapped:
+                grupos.add(mapped)
+        return sorted(grupos)
+
+    @staticmethod
+    def _match_estado_filter(selected: str, current: str) -> bool:
+        selected = str(selected or "").strip().upper()
+        if selected in {"", "TODOS"}:
+            return True
+        if selected == "CON_PRECIO":
+            return current in {"CON_ORIGINAL", "ESTIMADO_GUARDADO"}
+        if selected == "ESTIMADO":
+            return current == "ESTIMADO_GUARDADO"
+        if selected == "ORIGINAL":
+            return current == "CON_ORIGINAL"
+        return current == selected
 
     def calculate_estimations(self, rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
         warnings: list[str] = []
@@ -1078,6 +1146,18 @@ class PreciosOrientativosRepository:
             return float(str(value).strip().replace(",", "."))
         except Exception:
             return None
+
+    @staticmethod
+    def _first_filter_value(raw: Any) -> str:
+        if raw is None:
+            return ""
+        if isinstance(raw, list):
+            for item in raw:
+                val = str(item or "").strip()
+                if val:
+                    return val
+            return ""
+        return str(raw or "").strip()
 
     @staticmethod
     def _to_int(value: Any, default: int | None = None) -> int | None:
