@@ -40,6 +40,17 @@ def normalizar_campana(valor: Any) -> str:
 def normalizar_categoria(valor: Any) -> str:
     return normalizar_texto(valor).upper()
 
+def normalizar_categoria_operativa(valor: Any) -> str:
+    txt = str(valor or "").strip().upper()
+    txt = txt.replace("ª", "").replace("º", "")
+    if txt in {"I", "1", "PRIMERA", "PRIMERA CATEGORIA", "CAT I", "CATEGORIA I"}:
+        return "PRIMERA"
+    if txt in {"II", "2", "SEGUNDA", "SEGUNDA CATEGORIA", "CAT II", "CATEGORIA II"}:
+        return "SEGUNDA"
+    if txt in {"NORMAL", "", "MIXTO"}:
+        return "MIXTO"
+    return txt
+
 def normalizar_codigo_confeccion(valor: Any) -> str:
     txt = normalizar_texto(valor)
     if not txt:
@@ -384,6 +395,126 @@ class PlanningRepository:
     def _is_stock_sp_comercial(self, pedido: Any, confeccion: Any, id_confeccion: Any = None) -> bool:
         pedido_norm = str(pedido or "").strip().upper().replace("/", "").replace(" ", "")
         return pedido_norm == "SP" and not self._is_stock_industrial(pedido, confeccion, id_confeccion)
+
+    def _categoria_compatible(self, categoria_pedido: Any, categoria_stock: Any, policy_cfg: dict[str, bool]) -> tuple[bool, str]:
+        pedido_norm = normalizar_categoria_operativa(categoria_pedido)
+        stock_norm = normalizar_categoria_operativa(categoria_stock)
+        if pedido_norm == "MIXTO":
+            return True, ""
+        if pedido_norm == "PRIMERA":
+            if stock_norm == "PRIMERA":
+                return True, ""
+            if stock_norm == "SEGUNDA" and policy_cfg["permitir_categoria_inferior"]:
+                return True, "Categoría inferior"
+            return False, "categoría incompatible"
+        if pedido_norm == "SEGUNDA":
+            if stock_norm in {"SEGUNDA", "PRIMERA"}:
+                if stock_norm == "PRIMERA" and policy_cfg["permitir_categoria_superior"]:
+                    return True, "Categoría superior"
+                if stock_norm == "PRIMERA" and not policy_cfg["permitir_categoria_superior"]:
+                    return True, ""
+                return True, ""
+            return False, "categoría incompatible"
+        return (pedido_norm == stock_norm), ("categoría incompatible" if pedido_norm != stock_norm else "")
+
+    def _calcular_stock_compatible_industrial(
+        self,
+        industrial_stock_map: dict[tuple, float],
+        cultivo: Any,
+        campana: Any,
+        grupo: Any,
+        variedad: Any,
+        calibre: Any,
+        categoria: Any,
+        policy_cfg: dict[str, bool],
+        calibre_map: dict[str, str],
+    ) -> dict[str, Any]:
+        kg_exacta = 0.0
+        kg_agrupada = 0.0
+        kg_solape = 0.0
+        variedades_stock: set[str] = set()
+        calibres_coincidentes: set[str] = set()
+        flex_aplicada: set[str] = set()
+
+        for ind_key, ind_kg in industrial_stock_map.items():
+            ind_cultivo, ind_campana, ind_grupo, ind_variedad, ind_calibre, ind_categoria = ind_key
+            mismo_cultivo = str(ind_cultivo).strip().upper() == str(cultivo).strip().upper()
+            if not mismo_cultivo:
+                continue
+            misma_campana = str(ind_campana).strip() == str(campana).strip()
+            if not misma_campana:
+                continue
+            mismo_grupo = str(ind_grupo).strip().upper() == str(grupo).strip().upper()
+            grupo_ok = mismo_grupo or policy_cfg["permitir_grupo_varietal_alternativo"]
+            if not grupo_ok:
+                logger.info(
+                    "MATCH DESCARTA motivo=%s pedido_calibre=%s stock_calibre=%s pedido_cat=%s stock_cat=%s",
+                    "grupo distinto", calibre, ind_calibre, categoria, ind_categoria
+                )
+                continue
+            if (not policy_cfg["permitir_variedad_alternativa"]) and str(ind_variedad).strip().upper() != str(variedad).strip().upper():
+                logger.info(
+                    "MATCH DESCARTA motivo=%s pedido_calibre=%s stock_calibre=%s pedido_cat=%s stock_cat=%s",
+                    "variedad distinta", calibre, ind_calibre, categoria, ind_categoria
+                )
+                continue
+            categoria_ok, flex_cat = self._categoria_compatible(categoria, ind_categoria, policy_cfg)
+            if not categoria_ok:
+                logger.info(
+                    "MATCH DESCARTA motivo=%s pedido_calibre=%s stock_calibre=%s pedido_cat=%s stock_cat=%s",
+                    "categoria distinta", calibre, ind_calibre, categoria, ind_categoria
+                )
+                continue
+
+            cmp_result = self.comparar_calibres_para_cobertura(calibre, ind_calibre, calibre_map=calibre_map)
+            if cmp_result["tipo"] == "SIN_COBERTURA":
+                logger.info(
+                    "MATCH DESCARTA motivo=%s pedido_calibre=%s stock_calibre=%s pedido_cat=%s stock_cat=%s",
+                    "calibre sin cobertura", calibre, ind_calibre, categoria, ind_categoria
+                )
+                continue
+            if cmp_result["tipo"] == "CALIBRE_ADMITIDO" and not policy_cfg["permitir_calibre_admitido"]:
+                continue
+            if cmp_result["tipo"] == "AGRUPADA" and not policy_cfg["permitir_calibre_agrupado"]:
+                continue
+            if cmp_result["tipo"] == "SOLAPE_PARCIAL" and not policy_cfg["permitir_solape_parcial"]:
+                continue
+
+            logger.info(
+                "MATCH OK stock grupo=%s variedad=%s calibre=%s categoria=%s kg=%s tipo=%s",
+                ind_grupo, ind_variedad, ind_calibre, ind_categoria, ind_kg, cmp_result["tipo"]
+            )
+            if flex_cat:
+                flex_aplicada.add(flex_cat)
+            variedades_stock.add(str(ind_variedad or "").strip())
+            calibres_coincidentes.update(cmp_result.get("coincidentes") or [])
+            if cmp_result["tipo"] == "EXACTA":
+                kg_exacta += ind_kg
+            elif cmp_result["tipo"] in {"AGRUPADA", "CALIBRE_ADMITIDO"}:
+                kg_agrupada += ind_kg
+            elif cmp_result["tipo"] == "SOLAPE_PARCIAL":
+                kg_solape += ind_kg
+
+        kg_exacta = round(kg_exacta, 2)
+        kg_agrupada = round(kg_agrupada, 2)
+        kg_solape = round(kg_solape, 2)
+        coincidencia = "Sin cobertura"
+        if kg_exacta > 0:
+            coincidencia = "Exacta"
+        elif kg_agrupada > 0:
+            coincidencia = "Cobertura por calibre admitido"
+        elif kg_solape > 0:
+            coincidencia = "Cobertura por solape parcial"
+        return {
+            "kg_exacta": kg_exacta,
+            "kg_agrupada": kg_agrupada,
+            "kg_solape": kg_solape,
+            "kg_total": round(kg_exacta + kg_agrupada + kg_solape, 2),
+            "variedades_stock": variedades_stock,
+            "coincidencia": coincidencia,
+            "calibres_coincidentes": ",".join(sorted(calibres_coincidentes, key=lambda x: int(x) if str(x).isdigit() else 9999)),
+            "flex_aplicada": sorted(flex_aplicada),
+        }
 
     @classmethod
     def calibres_solapan(cls, calibre_pedido: Any, calibre_stock: Any) -> bool:
@@ -1274,7 +1405,7 @@ class PlanningRepository:
             else:
                 estado_com = "Cubierto comercialmente"
 
-            kg_industrial_stock = round(industrial_stock_map.get(common_key, 0.0), 2)
+            kg_industrial_stock = 0.0
             kg_entrada_estimada_real = round(campo_real_map.get(common_key, 0.0), 2) if policy_cfg["usar_entrada_estimada"] else 0.0
             kg_entrada_estimada = kg_entrada_estimada_real
             kg_entrada_estimada_sin_datos = round(campo_map.get(base_key, 0.0), 2) if policy_cfg["usar_entrada_estimada"] else 0.0
@@ -1286,74 +1417,31 @@ class PlanningRepository:
             kg_cobertura_solape_parcial = 0.0
             variedades_stock_industrial: set[str] = set()
             coincidencia = "Sin cobertura"
+            flex: list[str] = []
+            compat: dict[str, Any] = {}
             if necesita_cobertura:
                 logger.info(
-                    "BALANCE DEBUG pedido faltante cultivo=%s campana=%s grupo=%s variedad=%s calibre=%s categoria=%s faltante=%s",
+                    "MATCH pedido cultivo=%s campana=%s grupo=%s variedad=%s calibre=%s categoria=%s faltante=%s",
                     cultivo, campana, grupo, variedad, calibre, categoria, abs(diff)
                 )
-                for ind_key, ind_kg in industrial_stock_map.items():
-                    logger.info(
-                        "BALANCE DEBUG compara pedido grupo=%s calibre=%s categoria=%s CON stock key=%s kg=%s",
-                        grupo, calibre, categoria, ind_key, ind_kg
-                    )
-                    mismo_cultivo = str(ind_key[0]).strip().upper() == str(cultivo).strip().upper()
-                    misma_campana = str(ind_key[1]).strip() == str(campana).strip()
-                    mismo_grupo = str(ind_key[2]).strip().upper() == str(grupo).strip().upper()
-                    grupo_ok = mismo_grupo or policy_cfg["permitir_grupo_varietal_alternativo"]
-                    categoria_stock = str(ind_key[5]).strip().upper()
-                    categoria_pedido = str(categoria).strip().upper()
-                    misma_categoria = categoria_stock == categoria_pedido
-                    cat_ok = misma_categoria or (policy_cfg["permitir_categoria_inferior"] and categoria_stock < categoria_pedido) or (policy_cfg["permitir_categoria_superior"] and categoria_stock > categoria_pedido)
-
-                    if not (mismo_cultivo and misma_campana and grupo_ok and cat_ok):
-                        if not mismo_cultivo:
-                            logger.info("BALANCE DEBUG descarta: cultivo distinto")
-                        elif not misma_campana:
-                            logger.info("BALANCE DEBUG descarta: campaña distinta")
-                        elif not grupo_ok:
-                            logger.info("BALANCE DEBUG descarta: grupo distinto")
-                        elif not misma_categoria:
-                            logger.info("BALANCE DEBUG descarta: categoría distinta")
-                        continue
-
-                    if (not policy_cfg["permitir_variedad_alternativa"]) and str(ind_key[3]).strip().upper() != str(variedad).strip().upper():
-                        continue
-                    cmp_result = self.comparar_calibres_para_cobertura(calibre, ind_key[4], calibre_map=calibre_map)
-                    if cmp_result["tipo"] == "SIN_COBERTURA":
-                        logger.info("BALANCE DEBUG descarta: calibre sin cobertura")
-                        continue
-
-                    if cmp_result["tipo"] == "CALIBRE_ADMITIDO" and not policy_cfg["permitir_calibre_admitido"]:
-                        continue
-                    if cmp_result["tipo"] == "AGRUPADA" and not policy_cfg["permitir_calibre_agrupado"]:
-                        continue
-                    if cmp_result["tipo"] == "SOLAPE_PARCIAL" and not policy_cfg["permitir_solape_parcial"]:
-                        continue
-                    if logger.isEnabledFor(logging.INFO) and (mismo_grupo or (mismo_cultivo and misma_campana)):
-                        logger.info(
-                            "Cobertura industrial candidato: pedido_grupo=%s pedido_variedad=%s pedido_calibre=%s pedido_cat=%s | stock_grupo=%s stock_variedad=%s stock_calibre=%s stock_cat=%s kg=%s comparacion=%s",
-                            grupo, variedad, calibre, categoria,
-                            ind_key[2], ind_key[3], ind_key[4], ind_key[5],
-                            ind_kg, cmp_result["tipo"]
-                        )
-
-                    variedades_stock_industrial.add(str(ind_key[3] or "").strip())
-                    if cmp_result["tipo"] == "EXACTA":
-                        kg_cobertura_exacta += ind_kg
-                    elif cmp_result["tipo"] in {"AGRUPADA", "CALIBRE_ADMITIDO"}:
-                        kg_cobertura_agrupada += ind_kg
-                    elif cmp_result["tipo"] == "SOLAPE_PARCIAL":
-                        kg_cobertura_solape_parcial += ind_kg
-
-                kg_cobertura_exacta = round(kg_cobertura_exacta, 2)
-                kg_cobertura_agrupada = round(kg_cobertura_agrupada, 2)
-                kg_cobertura_solape_parcial = round(kg_cobertura_solape_parcial, 2)
-                if kg_cobertura_exacta > 0:
-                    coincidencia = "Exacta"
-                elif kg_cobertura_agrupada > 0:
-                    coincidencia = "Cobertura por calibre admitido"
-                elif kg_cobertura_solape_parcial > 0:
-                    coincidencia = "Cobertura por solape parcial"
+                compat = self._calcular_stock_compatible_industrial(
+                    industrial_stock_map=industrial_stock_map,
+                    cultivo=cultivo,
+                    campana=campana,
+                    grupo=grupo,
+                    variedad=variedad,
+                    calibre=calibre,
+                    categoria=categoria,
+                    policy_cfg=policy_cfg,
+                    calibre_map=calibre_map,
+                )
+                kg_industrial_stock = compat["kg_total"]
+                kg_cobertura_exacta = compat["kg_exacta"]
+                kg_cobertura_agrupada = compat["kg_agrupada"]
+                kg_cobertura_solape_parcial = compat["kg_solape"]
+                coincidencia = compat["coincidencia"]
+                variedades_stock_industrial = compat["variedades_stock"]
+                flex.extend(compat.get("flex_aplicada", []))
 
                 if policy_cfg["usar_stock_comercial"] and necesita_cobertura:
                     for ckey, ckg in commercial_map.items():
@@ -1383,6 +1471,7 @@ class PlanningRepository:
                             kg_cobertura_agrupada += ckg
                         elif cmp_result["tipo"] == "SOLAPE_PARCIAL":
                             kg_cobertura_solape_parcial += ckg
+            kg_base_total_estimada = round(kg_industrial_stock + kg_entrada_estimada, 2)
 
             kg_cobertura_potencial = round(kg_cobertura_exacta + kg_cobertura_agrupada + kg_cobertura_solape_parcial, 2) if necesita_cobertura else 0.0
             faltante = abs(diff) if necesita_cobertura else 0.0
@@ -1426,7 +1515,6 @@ class PlanningRepository:
                 coincidencia = "No aplica"
 
             score = 0
-            flex = []
             if kg_cobertura_exacta > 0: score = 100
             elif kg_cobertura_agrupada > 0: score = 85 if "admitido" in coincidencia.lower() else 70
             elif kg_cobertura_solape_parcial > 0: score = 40
@@ -1469,7 +1557,7 @@ class PlanningRepository:
                 "Kg cobertura potencial total": kg_cobertura_potencial,
                 "Kg disponibilidad compatible": kg_cobertura_potencial,
                 "Mejor cobertura": coincidencia,
-                "Calibres coincidentes": "",
+                "Calibres coincidentes": compat["calibres_coincidentes"] if necesita_cobertura else "",
                 "Flexibilidad aplicada": ", ".join(flex),
                 "Score cobertura": score,
                 "Explicación": explicacion,
