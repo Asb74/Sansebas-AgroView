@@ -204,13 +204,51 @@ class PreciosOrientativosService:
         try:
             from reportlab.lib import colors
             from reportlab.lib.pagesizes import A4, landscape
-            from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
             from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
         except Exception:
             return None, "No se pudo generar PDF: falta dependencia 'reportlab'."
 
         styles = getSampleStyleSheet()
-        doc = SimpleDocTemplate(str(out_path), pagesize=landscape(A4))
+        doc = SimpleDocTemplate(
+            str(out_path),
+            pagesize=landscape(A4),
+            leftMargin=20,
+            rightMargin=20,
+            topMargin=20,
+            bottomMargin=20,
+        )
+        body_style = ParagraphStyle(
+            "PdfBody",
+            parent=styles["Normal"],
+            fontSize=7.5,
+            leading=9,
+            wordWrap="CJK",
+            spaceAfter=0,
+            spaceBefore=0,
+        )
+        header_style = ParagraphStyle(
+            "PdfHeader",
+            parent=styles["Normal"],
+            fontSize=8,
+            leading=9,
+            wordWrap="CJK",
+            alignment=1,
+        )
+        summary_style = ParagraphStyle(
+            "PdfSummary",
+            parent=styles["Normal"],
+            fontSize=8,
+            leading=9,
+            spaceAfter=1,
+        )
+        footer_style = ParagraphStyle(
+            "PdfFooter",
+            parent=styles["Italic"],
+            fontSize=7,
+            textColor=colors.grey,
+            leading=8,
+        )
 
         propuesta_vals = [self._to_float(r.get("€/kg propuesto")) for r in propuesta_rows]
         propuesta_vals = [v for v in propuesta_vals if v is not None]
@@ -235,34 +273,75 @@ class PreciosOrientativosService:
             f"Precio medio propuesto: {statistics.mean(propuesta_vals):.4f} €/kg" if propuesta_vals else "Precio medio propuesto: N/D",
         ]
 
-        elements = [Paragraph("Propuesta de precios orientativos pendientes", styles["Title"]), Spacer(1, 8)]
+        title_style = ParagraphStyle("PdfTitle", parent=styles["Title"], fontSize=13, leading=15, spaceAfter=3)
+        elements = [Paragraph("Propuesta de precios orientativos pendientes", title_style), Spacer(1, 4)]
         for line in header_lines:
-            elements.append(Paragraph(line, styles["Normal"]))
-        elements.append(Spacer(1, 8))
+            elements.append(Paragraph(line, summary_style))
+        elements.append(Spacer(1, 4))
         for line in summary_lines:
-            elements.append(Paragraph(line, styles["Normal"]))
-        elements.append(Spacer(1, 10))
+            elements.append(Paragraph(line, summary_style))
+        elements.append(Spacer(1, 6))
 
-        data = [["Pedido", "Línea", "Semana", "Fecha salida", "Cliente", "Variedad", "Calibre", "Confección", "Grupo confección", "NetoCliente", "Precio calculado", "€/kg propuesto", "Método"]]
+        headers = ["Pedido", "Línea", "Semana", "Fecha salida", "Cliente", "Variedad", "Calibre", "Confección", "Grupo confección", "NetoCliente", "Precio calculado", "€/kg propuesto", "Método"]
+        data = [[Paragraph(h, header_style) for h in headers]]
+
+        method_map = {
+            "FALLBACK": "FALLBACK",
+            "SIN_DATOS": "SIN_DATOS",
+            "MANUAL": "MANUAL",
+            "HISTÓRICO": "HISTÓRICO",
+            "HISTORICO": "HISTÓRICO",
+        }
+
+        def _metodo_resumido(value: Any) -> str:
+            raw = str(value or "").strip()
+            if not raw:
+                return ""
+            upper = raw.upper()
+            for key, mapped in method_map.items():
+                if key in upper:
+                    return mapped
+            if upper.startswith("FALLBACK_"):
+                return "FALLBACK"
+            return raw
+
         for r in propuesta_rows:
             data.append([
-                r.get("IdPedidoLora", ""), r.get("Línea", ""), r.get("Semana", ""), r.get("FechaSalida", ""),
-                r.get("Cliente", ""), r.get("Variedad Coop", ""), r.get("Calibre", ""), r.get("Confección", ""),
-                r.get("GrupoConfección", ""), f"{(self._to_float(r.get('NetoCliente')) or 0.0):.2f}",
-                "" if self._to_float(r.get("EurosOrientativosCalc")) is None else f"{self._to_float(r.get('EurosOrientativosCalc')):.4f}",
-                "" if self._to_float(r.get("€/kg propuesto")) is None else f"{self._to_float(r.get('€/kg propuesto')):.4f}",
-                r.get("Método", ""),
+                Paragraph(str(r.get("IdPedidoLora", "")), body_style),
+                Paragraph(str(r.get("Línea", "")), body_style),
+                Paragraph(str(r.get("Semana", "")), body_style),
+                Paragraph(str(r.get("FechaSalida", "")), body_style),
+                Paragraph(str(r.get("Cliente", "")), body_style),
+                Paragraph(str(r.get("Variedad Coop", "")), body_style),
+                Paragraph(str(r.get("Calibre", "")), body_style),
+                Paragraph(str(r.get("Confección", "")), body_style),
+                Paragraph(str(r.get("GrupoConfección", "")), body_style),
+                Paragraph(f"{(self._to_float(r.get('NetoCliente')) or 0.0):.2f}", body_style),
+                Paragraph("" if self._to_float(r.get("EurosOrientativosCalc")) is None else f"{self._to_float(r.get('EurosOrientativosCalc')):.4f}", body_style),
+                Paragraph("" if self._to_float(r.get("€/kg propuesto")) is None else f"{self._to_float(r.get('€/kg propuesto')):.4f}", body_style),
+                Paragraph(_metodo_resumido(r.get("Método", "")), body_style),
             ])
-        table = Table(data, repeatRows=1)
+        usable_width = doc.width
+        base_col_widths = [45, 25, 35, 60, 90, 70, 45, 45, 70, 50, 55, 55, 55]
+        scale = min(1.0, usable_width / sum(base_col_widths))
+        col_widths = [w * scale for w in base_col_widths]
+        table = Table(data, repeatRows=1, colWidths=col_widths, splitByRow=1)
         table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.grey),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("ALIGN", (9, 1), (11, -1), "RIGHT"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]),
         ]))
         elements.append(table)
-        elements.append(Spacer(1, 8))
-        elements.append(Paragraph("Documento informativo para revisión administrativa. No modifica automáticamente los precios reales.", styles["Italic"]))
+        elements.append(Spacer(1, 6))
+        elements.append(Paragraph("Documento informativo para revisión administrativa. No modifica automáticamente los precios reales.", footer_style))
 
         doc.build(elements)
         return out_path, None
