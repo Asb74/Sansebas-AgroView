@@ -193,7 +193,14 @@ class PreciosOrientativosService:
         export_dir = Path("exports") / "precios_orientativos"
         export_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M")
-        out_path = export_dir / f"propuesta_precios_orientativos_{ts}.pdf"
+        semanas = sorted({str(r.get("Semana") or "").strip() for r in propuesta_rows if str(r.get("Semana") or "").strip()}, key=lambda s: int(s) if s.isdigit() else s)
+        if len(semanas) == 1:
+            filename = f"propuesta_precios_orientativos_semana_{semanas[0]}_{ts}.pdf"
+        elif len(semanas) > 1:
+            filename = f"propuesta_precios_orientativos_semanas_{semanas[0]}-{semanas[-1]}_{ts}.pdf"
+        else:
+            filename = f"propuesta_precios_orientativos_{ts}.pdf"
+        out_path = export_dir / filename
         try:
             from reportlab.lib import colors
             from reportlab.lib.pagesizes import A4, landscape
