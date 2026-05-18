@@ -1611,12 +1611,6 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     timeline_rows.sort(key=lambda x: (x.get("Fecha salida", "9999-99-99"), -_to_float(x.get("Prioridad total", 0)), -_to_float(x.get("Kg faltantes", 0))))
     horizon_tbl.set_rows(timeline_rows)
     matriz_rows = _build_matriz_cobertura(simulaciones, inventario_global_simulado, horizonte)
-    matriz_tbl.set_rows(matriz_rows)
-    for estado, color in [("cubierto", "#DDF4DD"), ("parcial", "#FFF3C4"), ("falta", "#F8D7DA"), ("sobrante_alto", "#FFE4B5"), ("sin_pedido", "#E3EDF7")]:
-        matriz_tbl.tree.tag_configure(f"estado_{estado}", background=color)
-    matriz_tbl.tree.tag_configure("riesgo_alto", foreground="#C62828")
-    matriz_tbl.tree.tag_configure("riesgo_medio", foreground="#EF6C00")
-    matriz_tbl.tree.tag_configure("riesgo_bajo", foreground="#2E7D32")
 
     recolectar_frame = ttk.LabelFrame(horizonte_tab, text="Necesidad de recolección para ampliar cobertura", padding=8)
     recolectar_frame.pack(fill="both", expand=False, pady=(6, 0))
@@ -1937,3 +1931,10 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     matriz_cols = ["Grupo varietal", "Variedad", "Calibre", "Categoría / calidad útil", "Origen principal", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Kg stock útil", "Kg sobrantes", "% cobertura", "Estado cobertura", "Riesgo", "Acción recomendada"]
     matriz_tbl = DataTable(matriz_tab, matriz_cols)
     matriz_tbl.pack(fill="both", expand=True)
+    for estado, color in [("cubierto", "#DDF4DD"), ("parcial", "#FFF3C4"), ("falta", "#F8D0D0"), ("sobrante", "#FFD9A8"), ("sin_pedido", "#E6EEF5")]:
+        matriz_tbl.tree.tag_configure(f"estado_{estado}", background=color)
+    matriz_tbl.tree.tag_configure("sobrante_alto", background="#FFD9A8")
+    matriz_tbl.tree.tag_configure("riesgo_alto", foreground="#C62828")
+    matriz_tbl.tree.tag_configure("riesgo_medio", foreground="#EF6C00")
+    matriz_tbl.tree.tag_configure("riesgo_bajo", foreground="#2E7D32")
+    matriz_tbl.set_rows(matriz_rows)
