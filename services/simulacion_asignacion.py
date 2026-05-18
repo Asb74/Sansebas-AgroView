@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import date, datetime
+import json
 import logging
+from pathlib import Path
 import tkinter as tk
 from tkinter import ttk
 import unicodedata
@@ -60,6 +62,48 @@ CONFIG_CALIDAD_OPERATIVA = {
 }
 _quality_service = OperationalQualityService()
 logger = logging.getLogger(__name__)
+
+PRIORIDADES_PEDIDOS_PATH = Path("runtime_config/prioridades_pedidos.json")
+
+
+def _pedido_id_prioridad(pedido: dict) -> str:
+    pid = str(pedido.get("IdPedidoLora") or pedido.get("id_pedido") or "").strip()
+    if pid:
+        return pid
+    parts = [
+        str(pedido.get("Fecha salida", pedido.get("fecha_salida", "")) or "").strip(),
+        str(pedido.get("Cliente", "") or "").strip(),
+        str(pedido.get("Variedad", "") or "").strip(),
+        str(pedido.get("Calibre", "") or "").strip(),
+        str(pedido.get("Línea", pedido.get("linea", "")) or "").strip(),
+    ]
+    return "|".join(parts)
+
+
+def _cargar_prioridades_pedidos() -> dict[str, int]:
+    try:
+        if not PRIORIDADES_PEDIDOS_PATH.exists():
+            return {}
+        data = json.loads(PRIORIDADES_PEDIDOS_PATH.read_text(encoding="utf-8"))
+        out = {str(k): max(0, min(100, int(_to_float(v)))) for k, v in (data or {}).items()}
+        logger.info("Prioridades cargadas: %s pedidos", len(out))
+        return out
+    except Exception:
+        logger.exception("No se pudieron cargar prioridades manuales")
+        return {}
+
+
+def _guardar_prioridades_pedidos(prioridades: dict[str, int]) -> None:
+    PRIORIDADES_PEDIDOS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PRIORIDADES_PEDIDOS_PATH.write_text(json.dumps(prioridades, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _motivo_prioridad(pman: int, priesgo: int, bloque: str) -> str:
+    if pman >= 80:
+        return "Prioridad manual alta"
+    if priesgo >= 50:
+        return "Pedido con riesgo de falta"
+    return "Fecha próxima" if bloque in ("HOY", "MAÑANA") else "Prioridad temporal"
 
 
 def _norm_text(valor: object) -> str:
@@ -707,8 +751,11 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
         pedidos_meta.append(item)
     pedidos_meta.sort(
         key=lambda p: (
+            (p.get("dias_hasta_salida", 9999) >= 9999),
             p.get("dias_hasta_salida", 9999),
             -int(_to_float(p.get("prioridad_manual", 0))),
+            -int(_to_float(p.get("prioridad_riesgo", 0))),
+            -_to_float(p.get("Kg pedidos pendientes", 0)),
             str(p.get("IdPedidoLora", p.get("id_pedido", ""))),
             int(_to_float(p.get("Línea", p.get("linea", 0)))),
         )
@@ -1319,6 +1366,15 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     cand_tbl.tree.tag_configure("riesgo_medio", background="#fff8b3")
     cand_tbl.tree.tag_configure("riesgo_alto", background="#f8d7da")
 
+    prioridades_map = _cargar_prioridades_pedidos()
+    pedidos = [dict(p) for p in pedidos]
+    for p in pedidos:
+        p["prioridad_manual"] = prioridades_map.get(_pedido_id_prioridad(p), int(_to_float(p.get("prioridad_manual", 0))))
+    if pedidos_detalle_horizonte is not None:
+        pedidos_detalle_horizonte = [dict(p) for p in pedidos_detalle_horizonte]
+        for p in pedidos_detalle_horizonte:
+            p["prioridad_manual"] = prioridades_map.get(_pedido_id_prioridad(p), int(_to_float(p.get("prioridad_manual", 0))))
+
     simulaciones, asignaciones_simuladas, _stock_simulado = simular_asignacion_global(pedidos, get_candidatos_cb, scoring=scoring)
     inventario_global_simulado = dict(_stock_simulado)
     calibres_tecnicos = sorted({
@@ -1399,10 +1455,16 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         bloque = _bloque_temporal_horizonte(r.get("Fecha salida", ""), r.get("Bloque temporal", ""), date.today())
         ptemp = _prioridad_temporal_score(bloque)
         pman = int(_to_float(r.get("Prioridad manual", 0)))
-        priesgo = 50 if _to_float(s.get("kg_faltante_simulado", 0)) > 0 else 30 if s.get("estado_global") == "PARCIAL" else 60 if s.get("estado_global") == "INSUFICIENTE" else 0
+        priesgo = 0
+        if _to_float(s.get("kg_faltante_simulado", 0)) > 0:
+            priesgo += 50
+        if s.get("estado_global") == "PARCIAL":
+            priesgo += 30
+        elif s.get("estado_global") == "INSUFICIENTE":
+            priesgo += 60
         ptotal = ptemp + pman + priesgo
         r["Prioridad total"] = ptotal
-        r["Motivo prioridad"] = f"{bloque}({ptemp}) + manual({pman}) + riesgo({priesgo})"
+        r["Motivo prioridad"] = _motivo_prioridad(pman, priesgo, bloque)
 
     total_pedidos = len(simulaciones)
     totales = sum(1 for s in simulaciones if s["estado_global"] == "TOTAL")
@@ -1529,7 +1591,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         ttk.Label(horizonte_frame, text=txt).grid(row=idx // 2, column=idx % 2, sticky="w", padx=(0, 16), pady=2)
     horizon_tbl = DataTable(
         horizonte_tab,
-        ["Fecha salida", "Bloque temporal", "Prioridad total", "Motivo prioridad", "Nº pedidos", "Nº líneas", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Estado", "Calibre crítico", "Grupo varietal crítico", "Acción sugerida"],
+        ["Fecha salida", "Bloque temporal", "Prioridad total", "Prioridad media", "Prioridad máxima", "Motivo prioridad principal", "Nº pedidos", "Nº líneas", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Estado", "Calibre crítico", "Grupo varietal crítico", "Acción sugerida"],
     )
     horizon_tbl.pack(fill="both", expand=True, pady=(6, 0))
     horizon_tbl.tree.tag_configure("estado_ok", background="#DDF4DD")
@@ -1596,6 +1658,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Fecha salida": r.get("Fecha salida", ""),
             "Bloque temporal": r.get("Bloque temporal", ""),
             "Prioridad total": _prioridad_temporal_score(r.get("Bloque temporal", "")),
+            "Prioridad media": _to_float(r.get("Prioridad total", 0)),
+            "Prioridad máxima": _to_float(r.get("Prioridad total", 0)),
+            "Motivo prioridad principal": r.get("Motivo prioridad", "Temporal"),
             "Motivo prioridad": f"Temporal {r.get('Bloque temporal', '')}",
             "Nº pedidos": r.get("Nº pedidos", 0),
             "Nº líneas": r.get("Nº líneas", 0),
