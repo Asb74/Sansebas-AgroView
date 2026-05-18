@@ -207,6 +207,96 @@ def _bloque_temporal_horizonte(fecha_raw: object, bloque_actual: object, hoy: da
     return "FUTURO"
 
 
+def _prioridad_temporal_score(bloque: str) -> int:
+    b = _norm_text(bloque)
+    if b == "HOY":
+        return 100
+    if b == "MANANA":
+        return 80
+    if "2-3" in b:
+        return 60
+    if "4-7" in b:
+        return 40
+    return 20
+
+
+def _build_matriz_cobertura(simulaciones: list[dict], inventario_global_simulado: dict[str, dict], horizonte: dict) -> list[dict]:
+    matriz: dict[tuple[str, str, str, str, str], dict] = {}
+    for sim in simulaciones:
+        ped = sim.get("pedido", {})
+        key = (
+            str(ped.get("Grupo varietal", ped.get("grupo_varietal", ""))),
+            str(ped.get("Variedad", "")),
+            str(ped.get("Calibre", "")),
+            str(ped.get("Categoría", "")),
+            "PEDIDO",
+        )
+        rec = matriz.setdefault(key, {"Kg pedidos": 0.0, "Kg cubiertos": 0.0, "Kg faltantes": 0.0, "Kg stock útil": 0.0, "Kg sobrantes": 0.0})
+        rec["Kg pedidos"] += _to_float(sim.get("kg_necesario", 0))
+        rec["Kg cubiertos"] += _to_float(sim.get("kg_asignado_simulado", 0))
+        rec["Kg faltantes"] += _to_float(sim.get("kg_faltante_simulado", 0))
+    for pool in inventario_global_simulado.values():
+        key = (
+            str(pool.get("grupo_varietal", "")),
+            str(pool.get("variedad", "")),
+            str(pool.get("calibre", "")),
+            str(pool.get("categoria", "")),
+            str(pool.get("origen", "")),
+        )
+        rec = matriz.setdefault(key, {"Kg pedidos": 0.0, "Kg cubiertos": 0.0, "Kg faltantes": 0.0, "Kg stock útil": 0.0, "Kg sobrantes": 0.0})
+        rec["Kg stock útil"] += _to_float(pool.get("kg_utiles_finales", 0))
+        rec["Kg sobrantes"] += _to_float(pool.get("kg_restante_simulado", 0))
+    primer_fallo = horizonte.get("primer_fallo", {}) if horizonte else {}
+    rows = []
+    for (grupo, var, cal, cat, origen), rec in matriz.items():
+        pedidos = rec["Kg pedidos"]
+        cubiertos = rec["Kg cubiertos"]
+        falt = rec["Kg faltantes"]
+        stock = rec["Kg stock útil"]
+        sob = rec["Kg sobrantes"]
+        pct = (cubiertos / pedidos * 100.0) if pedidos > 0 else 0.0
+        if pedidos == 0 and stock > 0:
+            estado = "SIN PEDIDO"
+        elif falt > 0:
+            estado = "FALTA"
+        elif cubiertos < pedidos:
+            estado = "PARCIAL"
+        elif cubiertos >= pedidos and sob > 50000:
+            estado = "SOBRANTE ALTO"
+        else:
+            estado = "CUBIERTO"
+        riesgo = "BAJO"
+        if falt > 0 or (primer_fallo and _parse_fecha_salida(primer_fallo.get("Fecha salida")) and (_parse_fecha_salida(primer_fallo.get("Fecha salida")) - date.today()).days <= 2):
+            riesgo = "ALTO"
+        elif sob > 50000 or 10000 <= sob <= 50000:
+            riesgo = "MEDIO"
+        accion = "Mantener"
+        if estado in {"FALTA", "PARCIAL"}:
+            accion = f"Priorizar cobertura {cal} {cat}".strip()
+        elif estado == "SOBRANTE ALTO":
+            accion = "Priorizar salida comercial/industrial"
+        elif estado == "SIN PEDIDO":
+            accion = "No recolectar y buscar salida compatible"
+        rows.append({
+            "Grupo varietal": grupo,
+            "Variedad": var,
+            "Calibre": cal,
+            "Categoría / calidad útil": cat,
+            "Origen principal": origen,
+            "Kg pedidos": formatear_kg(pedidos),
+            "Kg cubiertos": formatear_kg(cubiertos),
+            "Kg faltantes": formatear_kg(falt),
+            "Kg stock útil": formatear_kg(stock),
+            "Kg sobrantes": formatear_kg(sob),
+            "% cobertura": f"{pct:.1f}%",
+            "Estado cobertura": estado,
+            "Riesgo": riesgo,
+            "Acción recomendada": accion,
+            "__tags__": (f"estado_{_norm_text(estado).lower().replace(' ', '_')}", f"riesgo_{riesgo.lower()}"),
+        })
+    return sorted(rows, key=lambda r: (-_to_float(r.get("Kg faltantes", 0)), -_to_float(r.get("Kg sobrantes", 0))))
+
+
 def _build_pool_id(candidato: dict) -> str:
     campos = [
         candidato.get("Origen", candidato.get("origen", "")),
@@ -1170,6 +1260,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "• Origen: procedencia operativa del stock.\n\n"
             "E) Nota importante\n"
             "La simulación no descuenta stock real ni reserva fruta. Solo ayuda a decidir.\n"
+            "Incluye matriz de cobertura, prioridad total y cuello de botella para decidir acciones.\n"
         )
         txt.insert("1.0", leyenda)
         txt.configure(state="disabled")
@@ -1185,13 +1276,14 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     notebook.pack(fill="both", expand=True, padx=8, pady=(4, 8))
     resumen_tab = ttk.Frame(notebook, padding=8)
     horizonte_tab = ttk.Frame(notebook, padding=8)
+    matriz_tab = ttk.Frame(notebook, padding=8)
     sobrantes_tab = ttk.Frame(notebook, padding=8)
     necesidades_tab = ttk.Frame(notebook, padding=8)
     plan_operativo_tab = ttk.Frame(notebook, padding=8)
     riesgos_tab = ttk.Frame(notebook, padding=8)
     tecnico_tab = ttk.Frame(notebook, padding=8)
 
-    pedidos_cols = ["Fecha salida", "Bloque temporal", "Prioridad manual", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Kg potencial físico", "Kg potencial útil"]
+    pedidos_cols = ["Fecha salida", "Bloque temporal", "Prioridad manual", "Prioridad total", "Motivo prioridad", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Kg potencial físico", "Kg potencial útil"]
     pedidos_tbl = DataTable(top, pedidos_cols)
     pedidos_tbl.pack(fill="both", expand=True)
     pedidos_op_cols = ["Fecha salida", "Bloque temporal", "Variedad", "Calibre", "Categoría", "Grupo confección", "Kg pendientes", "Kg asignado global", "Kg faltante global", "Estado global"]
@@ -1285,6 +1377,8 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Fecha salida": pedido.get("fecha_salida", pedido.get("Fecha salida", "")),
             "Bloque temporal": pedido.get("bloque_temporal", ""),
             "Prioridad manual": int(_to_float(pedido.get("prioridad_manual", 0))),
+            "Prioridad total": 0,
+            "Motivo prioridad": "",
             "Cliente": pedido.get("Cliente", ""),
             "Variedad": pedido.get("Variedad", ""),
             "Calibre": pedido.get("Calibre", ""),
@@ -1301,6 +1395,14 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Kg potencial útil": formatear_kg(simulacion["kg_potencial_util"]),
             "__tags__": (tag_estado,),
         })
+    for r, s in zip(resumen_rows, simulaciones):
+        bloque = _bloque_temporal_horizonte(r.get("Fecha salida", ""), r.get("Bloque temporal", ""), date.today())
+        ptemp = _prioridad_temporal_score(bloque)
+        pman = int(_to_float(r.get("Prioridad manual", 0)))
+        priesgo = 50 if _to_float(s.get("kg_faltante_simulado", 0)) > 0 else 30 if s.get("estado_global") == "PARCIAL" else 60 if s.get("estado_global") == "INSUFICIENTE" else 0
+        ptotal = ptemp + pman + priesgo
+        r["Prioridad total"] = ptotal
+        r["Motivo prioridad"] = f"{bloque}({ptemp}) + manual({pman}) + riesgo({priesgo})"
 
     total_pedidos = len(simulaciones)
     totales = sum(1 for s in simulaciones if s["estado_global"] == "TOTAL")
@@ -1427,7 +1529,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         ttk.Label(horizonte_frame, text=txt).grid(row=idx // 2, column=idx % 2, sticky="w", padx=(0, 16), pady=2)
     horizon_tbl = DataTable(
         horizonte_tab,
-        ["Fecha salida", "Bloque temporal", "Nº pedidos", "Nº líneas", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Estado", "Calibre crítico", "Grupo varietal crítico", "Acción sugerida"],
+        ["Fecha salida", "Bloque temporal", "Prioridad total", "Motivo prioridad", "Nº pedidos", "Nº líneas", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Estado", "Calibre crítico", "Grupo varietal crítico", "Acción sugerida"],
     )
     horizon_tbl.pack(fill="both", expand=True, pady=(6, 0))
     horizon_tbl.tree.tag_configure("estado_ok", background="#DDF4DD")
@@ -1493,6 +1595,8 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         timeline_rows.append({
             "Fecha salida": r.get("Fecha salida", ""),
             "Bloque temporal": r.get("Bloque temporal", ""),
+            "Prioridad total": _prioridad_temporal_score(r.get("Bloque temporal", "")),
+            "Motivo prioridad": f"Temporal {r.get('Bloque temporal', '')}",
             "Nº pedidos": r.get("Nº pedidos", 0),
             "Nº líneas": r.get("Nº líneas", 0),
             "Kg pedidos": formatear_kg(r.get("Kg pedidos", 0)),
@@ -1504,7 +1608,15 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Acción sugerida": r.get("Acción sugerida", ""),
             "__tags__": (tag,),
         })
+    timeline_rows.sort(key=lambda x: (x.get("Fecha salida", "9999-99-99"), -_to_float(x.get("Prioridad total", 0)), -_to_float(x.get("Kg faltantes", 0))))
     horizon_tbl.set_rows(timeline_rows)
+    matriz_rows = _build_matriz_cobertura(simulaciones, inventario_global_simulado, horizonte)
+    matriz_tbl.set_rows(matriz_rows)
+    for estado, color in [("cubierto", "#DDF4DD"), ("parcial", "#FFF3C4"), ("falta", "#F8D7DA"), ("sobrante_alto", "#FFE4B5"), ("sin_pedido", "#E3EDF7")]:
+        matriz_tbl.tree.tag_configure(f"estado_{estado}", background=color)
+    matriz_tbl.tree.tag_configure("riesgo_alto", foreground="#C62828")
+    matriz_tbl.tree.tag_configure("riesgo_medio", foreground="#EF6C00")
+    matriz_tbl.tree.tag_configure("riesgo_bajo", foreground="#2E7D32")
 
     recolectar_frame = ttk.LabelFrame(horizonte_tab, text="Necesidad de recolección para ampliar cobertura", padding=8)
     recolectar_frame.pack(fill="both", expand=False, pady=(6, 0))
@@ -1695,7 +1807,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             plan_actions.append({"Prioridad": "MEDIA", "Tipo acción": "OPORTUNIDAD", "Origen": r.get("Origen", ""), "Grupo varietal": r.get("Grupo varietal", ""), "Variedad": r.get("Variedad", ""), "Calibre": r.get("Calibre", ""), "Kg afectados": formatear_kg(kg_libre), "Fecha límite": "", "Motivo": "Sobrante aprovechable", "Acción recomendada": accion})
     if not any(a.get("Tipo acción") == "RECOLECTAR" for a in plan_actions):
         plan_actions.append({"Prioridad": "BAJA", "Tipo acción": "RECOLECTAR", "Origen": "", "Grupo varietal": "", "Variedad": "", "Calibre": "", "Kg afectados": "0", "Fecha límite": "", "Motivo": "Sin faltantes", "Acción recomendada": "No es necesario recolectar para cubrir los pedidos seleccionados."})
-    plan_actions.sort(key=lambda r: ({"ALTA": 0, "MEDIA": 1, "BAJA": 2}.get(r.get("Prioridad", "BAJA"), 9), {"RECOLECTAR": 0, "NO RECOLECTAR": 1, "DAR SALIDA": 2, "VIGILAR": 3, "OPORTUNIDAD": 4}.get(r.get("Tipo acción", ""), 9)))
+    plan_actions.sort(key=lambda r: (0 if r.get("Tipo acción") == "RECOLECTAR" else 1, {"ALTA": 0, "MEDIA": 1, "BAJA": 2}.get(r.get("Prioridad", "BAJA"), 9), r.get("Fecha límite", "9999-99-99"), -_to_float(r.get("Kg afectados", 0))))
     plan_tbl.set_rows(plan_actions)
     plan_tbl.tree.tag_configure("accion_recolectar", background="#FFE0B2")
     plan_tbl.tree.tag_configure("accion_no_recolectar", background="#E3EDF7")
@@ -1735,6 +1847,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     notebook.add(resumen_tab, text="Resumen")
     notebook.add(horizonte_tab, text="Horizonte")
     notebook.add(plan_operativo_tab, text="Plan operativo")
+    notebook.add(matriz_tab, text="Matriz cobertura")
     notebook.add(sobrantes_tab, text="Sobrantes")
     notebook.add(necesidades_tab, text="Necesidades")
     notebook.add(riesgos_tab, text="Riesgos / Diagnóstico")
@@ -1821,3 +1934,6 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         if first:
             pedidos_tbl.tree.selection_set(first[0])
             render_candidatos(0)
+    matriz_cols = ["Grupo varietal", "Variedad", "Calibre", "Categoría / calidad útil", "Origen principal", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Kg stock útil", "Kg sobrantes", "% cobertura", "Estado cobertura", "Riesgo", "Acción recomendada"]
+    matriz_tbl = DataTable(matriz_tab, matriz_cols)
+    matriz_tbl.pack(fill="both", expand=True)
