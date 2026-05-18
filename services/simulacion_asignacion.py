@@ -64,6 +64,50 @@ _quality_service = OperationalQualityService()
 logger = logging.getLogger(__name__)
 
 PRIORIDADES_PEDIDOS_PATH = Path("runtime_config/prioridades_pedidos.json")
+COMPATIBILIDADES_OPERATIVAS_PATH = Path("runtime_config/compatibilidades_operativas.json")
+
+
+def _default_reglas_compatibilidad_operativa() -> dict:
+    return {
+        "calibres": [
+            {"calibre_pedido": "7/8", "calibre_stock": "7/8", "compatibilidad": "EXACTA", "penalizacion": 0, "activo": True},
+            {"calibre_pedido": "7/8", "calibre_stock": "6/7", "compatibilidad": "FLEXIBLE", "penalizacion": 10, "activo": True},
+            {"calibre_pedido": "6/7", "calibre_stock": "7/8", "compatibilidad": "FLEXIBLE", "penalizacion": 10, "activo": True},
+            {"calibre_pedido": "4/5", "calibre_stock": "4", "compatibilidad": "FLEXIBLE", "penalizacion": 15, "activo": True},
+            {"calibre_pedido": "4/5", "calibre_stock": "5", "compatibilidad": "FLEXIBLE", "penalizacion": 15, "activo": True},
+            {"calibre_pedido": "2/3", "calibre_stock": "2", "compatibilidad": "FLEXIBLE", "penalizacion": 15, "activo": True},
+            {"calibre_pedido": "2/3", "calibre_stock": "3", "compatibilidad": "FLEXIBLE", "penalizacion": 15, "activo": True},
+        ],
+        "perfiles": [
+            {"perfil_pedido": "MALLA", "permite_flexible": True, "penalizacion_extra": 0},
+            {"perfil_pedido": "EXIGENTE", "permite_flexible": False, "penalizacion_extra": 50},
+        ],
+        "clientes": [
+            {"cliente": "LIDL", "permite_flexible": False},
+            {"cliente": "GENERICA", "permite_flexible": True},
+        ],
+    }
+
+
+def cargar_reglas_compatibilidad_operativa() -> dict:
+    reglas_default = _default_reglas_compatibilidad_operativa()
+    try:
+        if not COMPATIBILIDADES_OPERATIVAS_PATH.exists():
+            COMPATIBILIDADES_OPERATIVAS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            COMPATIBILIDADES_OPERATIVAS_PATH.write_text(json.dumps(reglas_default, ensure_ascii=False, indent=2), encoding="utf-8")
+            reglas = reglas_default
+        else:
+            reglas = json.loads(COMPATIBILIDADES_OPERATIVAS_PATH.read_text(encoding="utf-8")) or reglas_default
+    except Exception:
+        logger.exception("Fallo al cargar reglas de compatibilidad operativa; usando defaults en memoria")
+        reglas = reglas_default
+    logger.info(
+        "Reglas compatibilidad cargadas: calibres=%s perfiles=%s clientes=%s",
+        len(reglas.get("calibres", [])),
+        len(reglas.get("perfiles", [])),
+        len(reglas.get("clientes", [])),
+    )
+    return reglas
 
 
 def _pedido_id_prioridad(pedido: dict) -> str:
@@ -305,10 +349,12 @@ def _build_matriz_cobertura(simulaciones: list[dict], inventario_global_simulado
             estado = "FALTA"
         elif cubiertos < pedidos:
             estado = "PARCIAL"
+        elif any(s.get("estado_global") == "CUBIERTO FLEXIBLE" for s in simulaciones if str(s.get("pedido", {}).get("Calibre", "")) == cal and str(s.get("pedido", {}).get("Variedad", "")) == var):
+            estado = "CUBIERTO FLEXIBLE"
         elif cubiertos >= pedidos and sob > 50000:
             estado = "SOBRANTE ALTO"
         else:
-            estado = "CUBIERTO"
+            estado = "CUBIERTO EXACTO"
         riesgo = "BAJO"
         if falt > 0 or (primer_fallo and _parse_fecha_salida(primer_fallo.get("Fecha salida")) and (_parse_fecha_salida(primer_fallo.get("Fecha salida")) - date.today()).days <= 2):
             riesgo = "ALTO"
@@ -335,6 +381,10 @@ def _build_matriz_cobertura(simulaciones: list[dict], inventario_global_simulado
             "% cobertura": f"{pct:.1f}%",
             "Estado cobertura": estado,
             "Riesgo": riesgo,
+            "Tipo compatibilidad": "FLEXIBLE" if estado == "CUBIERTO FLEXIBLE" else "EXACTA" if estado == "CUBIERTO EXACTO" else "",
+            "Penalización": "10" if estado == "CUBIERTO FLEXIBLE" else "0",
+            "Riesgo compatibilidad": "MEDIO" if estado == "CUBIERTO FLEXIBLE" else "BAJO" if estado == "CUBIERTO EXACTO" else riesgo,
+            "Motivo compatibilidad": "Cobertura con sustitución compatible" if estado == "CUBIERTO FLEXIBLE" else "Cobertura exacta" if estado == "CUBIERTO EXACTO" else "",
             "Acción recomendada": accion,
             "__tags__": (f"estado_{_norm_text(estado).lower().replace(' ', '_')}", f"riesgo_{riesgo.lower()}"),
         })
@@ -368,6 +418,53 @@ def _compatibilidad_varietal(pedido: dict, candidato: dict) -> tuple[int, str]:
     if ped_grp and cand_grp and ped_grp == cand_grp:
         return (1, "MISMO GRUPO") if allow_mismo else (99, "INCOMPATIBLE")
     return (2, "GRUPO ALTERNATIVO") if allow_alt else (99, "INCOMPATIBLE")
+
+
+def evaluar_compatibilidad_operativa(pedido: dict, candidato: dict, reglas: dict | None = None) -> dict:
+    reglas = reglas or _default_reglas_compatibilidad_operativa()
+    calibre_pedido = _norm_text(pedido.get("Calibre", pedido.get("calibre", "")))
+    calibre_stock = _norm_text(candidato.get("Calibre stock", candidato.get("calibre_stock", candidato.get("Calibre", ""))))
+    grupo_pedido = _norm_text(pedido.get("Grupo varietal", pedido.get("grupo_varietal", "")))
+    grupo_stock = _norm_text(candidato.get("Grupo varietal stock", candidato.get("grupo_varietal_stock", candidato.get("Grupo varietal", ""))))
+    variedad_pedido = _norm_text(pedido.get("Variedad", pedido.get("variedad", "")))
+    variedad_stock = _norm_text(candidato.get("Variedad stock", candidato.get("variedad_stock", candidato.get("Variedad", ""))))
+    categoria_pedido = _norm_text(pedido.get("Categoría", pedido.get("categoria", "")))
+    categoria_stock = _norm_text(candidato.get("Categoría", candidato.get("categoria", "")))
+    perfil = _norm_text(pedido.get("perfil_confeccion", "")) or detectar_perfil_confeccion(pedido)
+    cliente = _norm_text(pedido.get("Cliente", ""))
+
+    if variedad_pedido and variedad_stock and variedad_pedido != variedad_stock and grupo_pedido and grupo_stock and grupo_pedido != grupo_stock:
+        return {"compatible": False, "tipo": "INCOMPATIBLE", "penalizacion": 0, "motivo": "Variedad/grupo varietal incompatible", "riesgo": "ALTO"}
+    if categoria_pedido == "I" and categoria_stock == "II":
+        return {"compatible": False, "tipo": "INCOMPATIBLE", "penalizacion": 0, "motivo": "Categoría insuficiente para pedido", "riesgo": "ALTO"}
+
+    perfil_cfg = next((p for p in reglas.get("perfiles", []) if _norm_text(p.get("perfil_pedido", "")) == perfil), None)
+    cliente_cfg = next((c for c in reglas.get("clientes", []) if _norm_text(c.get("cliente", "")) == cliente), None)
+    permite_flexible = True
+    if perfil_cfg and perfil_cfg.get("permite_flexible") is False:
+        permite_flexible = False
+    if cliente_cfg and cliente_cfg.get("permite_flexible") is False:
+        permite_flexible = False
+    penal_extra = int(_to_float((perfil_cfg or {}).get("penalizacion_extra", 0)))
+
+    if calibre_pedido == calibre_stock:
+        return {"compatible": True, "tipo": "EXACTA", "penalizacion": 0, "motivo": "Calibre exacto", "riesgo": "BAJO"}
+
+    regla_cal = next(
+        (
+            r for r in reglas.get("calibres", [])
+            if bool(r.get("activo", True))
+            and _norm_text(r.get("calibre_pedido", "")) == calibre_pedido
+            and _norm_text(r.get("calibre_stock", "")) == calibre_stock
+        ),
+        None,
+    )
+    if regla_cal and permite_flexible:
+        penal = int(_to_float(regla_cal.get("penalizacion", 0))) + penal_extra
+        riesgo = "ALTO" if penal >= 40 else "MEDIO" if penal >= 10 else "BAJO"
+        return {"compatible": True, "tipo": "FLEXIBLE", "penalizacion": penal, "motivo": "Calibre compatible flexible", "riesgo": riesgo}
+
+    return {"compatible": False, "tipo": "INCOMPATIBLE", "penalizacion": 0, "motivo": "Sin regla de compatibilidad operativa activa", "riesgo": "ALTO"}
 
 
 def detectar_perfil_confeccion(pedido: dict) -> str:
@@ -764,6 +861,7 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
     stock_simulado: dict[str, dict] = {}
     asignaciones: list[dict] = []
     simulaciones: list[dict] = []
+    reglas_compat = cargar_reglas_compatibilidad_operativa()
 
     for pedido in pedidos_meta:
         candidatos_raw = get_candidatos_cb(pedido) or []
@@ -779,8 +877,24 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             cand["Grupo varietal pedido"] = pedido.get("Grupo varietal", pedido.get("grupo_varietal", ""))
             cand["score_simulacion"] = score
             cand["flexibilidad_usada_simulacion"] = ("Variedad exacta" if rank_var == 0 else "Mismo grupo varietal" if rank_var == 1 else "Grupo varietal alternativo" if rank_var == 2 else "Incompatible")
-            cand["score_total"] = score + int(cand.get("penalizacion_riesgo", 0) or 0)
+            compat = evaluar_compatibilidad_operativa(pedido, cand, reglas_compat)
+            cand["tipo_compatibilidad"] = compat.get("tipo", "INCOMPATIBLE")
+            cand["penalizacion_compatibilidad"] = int(_to_float(compat.get("penalizacion", 0)))
+            cand["motivo_compatibilidad"] = compat.get("motivo", "")
+            cand["riesgo_compatibilidad"] = compat.get("riesgo", "ALTO")
+            logger.info(
+                "Compatibilidad pedido=%s calibre_pedido=%s calibre_stock=%s tipo=%s penalizacion=%s motivo=%s",
+                pedido.get("IdPedidoLora", pedido.get("id_pedido", "")),
+                pedido.get("Calibre", ""),
+                cand.get("Calibre stock", cand.get("calibre_stock", "")),
+                compat.get("tipo", "INCOMPATIBLE"),
+                compat.get("penalizacion", 0),
+                compat.get("motivo", ""),
+            )
+            cand["score_total"] = score + int(cand.get("penalizacion_riesgo", 0) or 0) - cand["penalizacion_compatibilidad"]
             if rank_var >= 99:
+                continue
+            if not compat.get("compatible", False):
                 continue
             perfil_stock = cand.get("perfil_stock", "")
             perfil_conf = _norm_text(pedido.get("perfil_confeccion", "")) or detectar_perfil_confeccion(pedido)
@@ -843,9 +957,16 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             asignado += kg_asign
             if kg_asign > 0:
                 asignaciones.append({"pedido_id": pedido.get("IdPedidoLora", pedido.get("id_pedido", "")), "pool_id": cand["pool_id"], "kg_asignados": kg_asign, "origen": cand.get("Origen", ""), "tipo_cobertura": cand.get("Tipo cobertura", ""), "score": cand.get("score_total", 0), "riesgo": cand.get("riesgo_operativo", "")})
+                asignaciones[-1].update({
+                    "tipo_compatibilidad": cand.get("tipo_compatibilidad", ""),
+                    "penalizacion_compatibilidad": cand.get("penalizacion_compatibilidad", 0),
+                    "motivo_compatibilidad": cand.get("motivo_compatibilidad", ""),
+                    "riesgo_compatibilidad": cand.get("riesgo_compatibilidad", ""),
+                })
 
-        estado_global = "TOTAL" if asignado >= kg_necesario and kg_necesario > 0 else "PARCIAL" if asignado > 0 else "INSUFICIENTE"
-        simulaciones.append({"pedido": pedido, "kg_necesario": kg_necesario, "kg_pendientes": kg_necesario, "estado": estado_global, "kg_cobertura_simulada": asignado, "kg_asignado_simulado": asignado, "kg_faltante_simulado": max(0.0, kg_necesario - asignado), "estado_global": estado_global, "kg_potencial_fisico": sum(_to_float(c.get("kg_fisicos", 0)) for c in candidatos), "kg_potencial_util": acumulado_potencial, "candidatos": candidatos})
+        uso_flexible = any(_to_float(c.get("kg_asignado_simulado", 0)) > 0 and c.get("tipo_compatibilidad") == "FLEXIBLE" for c in candidatos)
+        estado_global = "CUBIERTO FLEXIBLE" if (asignado >= kg_necesario and kg_necesario > 0 and uso_flexible) else ("CUBIERTO EXACTO" if asignado >= kg_necesario and kg_necesario > 0 else "PARCIAL" if asignado > 0 else "INSUFICIENTE")
+        simulaciones.append({"pedido": pedido, "kg_necesario": kg_necesario, "kg_pendientes": kg_necesario, "estado": estado_global, "kg_cobertura_simulada": asignado, "kg_asignado_simulado": asignado, "kg_faltante_simulado": max(0.0, kg_necesario - asignado), "estado_global": estado_global, "kg_potencial_fisico": sum(_to_float(c.get("kg_fisicos", 0)) for c in candidatos), "kg_potencial_util": acumulado_potencial, "uso_compatibilidad_flexible": uso_flexible, "candidatos": candidatos})
 
     conteo_pooles: dict[str, int] = {}
     for sim in simulaciones:
@@ -1203,7 +1324,7 @@ def calcular_horizonte_cobertura(
         if fecha_dt:
             hay_fechas_validas = True
         if reg["Kg faltantes"] <= 0:
-            estado = "OK"
+            estado = "CUBIERTO FLEXIBLE" if any(_to_float(s.get("kg_faltante_simulado", 0)) <= 0 and s.get("uso_compatibilidad_flexible") for s in simulaciones if (s.get("pedido", {}).get("fecha_salida", "") or "") == fecha) else "CUBIERTO EXACTO"
             fecha_limite = fecha or fecha_limite
             if fecha_dt:
                 dias_cubiertos += 1
@@ -1214,7 +1335,7 @@ def calcular_horizonte_cobertura(
             estado = "INSUFICIENTE"
         reg["Estado día"] = estado
         if reg["Kg faltantes"] <= 0:
-            reg["Acción sugerida"] = "Día cubierto con stock actual"
+            reg["Acción sugerida"] = "Revisar sustituciones aplicadas antes de confirmar producción." if estado == "CUBIERTO FLEXIBLE" else "Día cubierto con stock actual"
         elif "6/7" in _norm_text(reg.get("Calibre crítico", "")):
             reg["Acción sugerida"] = "Recolectar o buscar stock compatible CAL 6/7"
         elif "MALLA" in _norm_text(reg.get("Grupo confección crítico", "")):
@@ -1241,7 +1362,7 @@ def calcular_horizonte_cobertura(
     else:
         dias_autonomia = None
     fecha_limite_display = fecha_limite_dt.strftime("%d/%m/%Y") if fecha_limite_dt else ("Fecha no disponible" if not hay_fechas_validas else "")
-    estado_horizonte = "OK" if kg_falt_total <= 0 else "RIESGO" if kg_asig_total > 0 else "INSUFICIENTE"
+    estado_horizonte = "CUBIERTO FLEXIBLE" if kg_falt_total <= 0 and any(s.get("uso_compatibilidad_flexible") for s in simulaciones) else ("OK" if kg_falt_total <= 0 else "RIESGO" if kg_asig_total > 0 else "INSUFICIENTE")
     faltantes_rows = []
     for k, v in faltantes.items():
         gvar, var, cal, calidad, cat, gconf = k
@@ -1266,7 +1387,7 @@ def calcular_horizonte_cobertura(
         "Horizonte resumen fechas=%s",
         [(r["Fecha salida"], r["Kg pedidos"], r["Estado día"]) for r in resumen_por_fecha],
     )
-    return {"fecha_limite_cubierta": fecha_limite_display, "dias_autonomia": dias_autonomia, "estado_horizonte": estado_horizonte, "pedidos_cubiertos": sum(1 for s in simulaciones if s.get('estado_global') == 'TOTAL'), "pedidos_parciales": sum(1 for s in simulaciones if s.get('estado_global') == 'PARCIAL'), "pedidos_insuficientes": sum(1 for s in simulaciones if s.get('estado_global') == 'INSUFICIENTE'), "kg_pendientes_total": kg_pend_total, "kg_asignados_total": kg_asig_total, "kg_faltantes_total": kg_falt_total, "primer_fallo": primer_fallo or {}, "resumen_por_fecha": resumen_por_fecha, "faltantes_por_calibre": sorted(faltantes_rows, key=lambda r: (r["Primera fecha afectada"] or "9999-99-99", -r["Kg faltantes"])), "stock_restante_por_calibre": stock_restante, "recomendaciones": recomendaciones, "hay_fechas_validas": hay_fechas_validas}
+    return {"fecha_limite_cubierta": fecha_limite_display, "dias_autonomia": dias_autonomia, "estado_horizonte": estado_horizonte, "pedidos_cubiertos": sum(1 for s in simulaciones if s.get('estado_global') in {'CUBIERTO EXACTO', 'CUBIERTO FLEXIBLE'}), "pedidos_parciales": sum(1 for s in simulaciones if s.get('estado_global') == 'PARCIAL'), "pedidos_insuficientes": sum(1 for s in simulaciones if s.get('estado_global') == 'INSUFICIENTE'), "kg_pendientes_total": kg_pend_total, "kg_asignados_total": kg_asig_total, "kg_faltantes_total": kg_falt_total, "primer_fallo": primer_fallo or {}, "resumen_por_fecha": resumen_por_fecha, "faltantes_por_calibre": sorted(faltantes_rows, key=lambda r: (r["Primera fecha afectada"] or "9999-99-99", -r["Kg faltantes"])), "stock_restante_por_calibre": stock_restante, "recomendaciones": recomendaciones, "hay_fechas_validas": hay_fechas_validas}
 
 
 def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None, pedidos_detalle_horizonte: list[dict] | None = None) -> None:
@@ -1329,6 +1450,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     plan_operativo_tab = ttk.Frame(notebook, padding=8)
     riesgos_tab = ttk.Frame(notebook, padding=8)
     tecnico_tab = ttk.Frame(notebook, padding=8)
+    compat_tab = ttk.Frame(notebook, padding=8)
 
     pedidos_cols = ["Fecha salida", "Bloque temporal", "Prioridad manual", "Prioridad total", "Motivo prioridad", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Kg potencial físico", "Kg potencial útil"]
     pedidos_tbl = DataTable(top, pedidos_cols)
@@ -1337,7 +1459,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     pedidos_op_tbl = DataTable(tecnico_tab, pedidos_op_cols)
     pedidos_op_tbl.pack(fill="both", expand=True)
 
-    cand_cols = ["Origen", "Tipo cobertura", "Variedad stock", "Grupo varietal stock", "Grupo varietal pedido", "Compatibilidad variedad", "Calibre stock", "Categoría", "Subpool calidad", "Kg físicos", "% destrío", "Kg destrío", "% primera", "Kg primera", "% segunda", "Kg segunda", "Kg industria", "Kg podrido", "Kg útiles finales", "Kg restante antes", "Kg asignado simulado", "Kg restante después", "Pool ID", "Compartido", "Riesgo", "Motivo riesgo", "Score compat.", "Score total", "Flexibilidad aplicada", "Cobertura acumulada"]
+    cand_cols = ["Origen", "Tipo cobertura", "Variedad stock", "Grupo varietal stock", "Grupo varietal pedido", "Compatibilidad variedad", "Calibre stock", "Categoría", "Subpool calidad", "Kg físicos", "% destrío", "Kg destrío", "% primera", "Kg primera", "% segunda", "Kg segunda", "Kg industria", "Kg podrido", "Kg útiles finales", "Kg restante antes", "Kg asignado simulado", "Kg restante después", "Pool ID", "Compartido", "Riesgo", "Motivo riesgo", "Tipo compatibilidad", "Penalización", "Riesgo compatibilidad", "Motivo compatibilidad", "Score compat.", "Score total", "Flexibilidad aplicada", "Cobertura acumulada"]
     ttk.Label(tecnico_tab, text="Vista técnica para revisión y depuración.", anchor="w", foreground="#666666").pack(fill="x", pady=(0, 6))
     cand_tbl = DataTable(tecnico_tab, cand_cols)
     cand_tbl.pack(fill="both", expand=True, pady=(0, 6))
@@ -1844,6 +1966,24 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
                 "Motivo": "Faltantes en horizonte/necesidades",
                 "Acción recomendada": f"Recolectar {need.get('Grupo varietal', '')} / {need.get('Variedad', '')} / CAL {need.get('Calibre necesario', '')}",
             })
+    for sim in simulaciones:
+        ped = sim.get("pedido", {})
+        for c in sim.get("candidatos", []):
+            if c.get("tipo_compatibilidad") != "FLEXIBLE" or _to_float(c.get("kg_asignado_simulado", 0)) <= 0:
+                continue
+            prioridad = "ALTA" if c.get("riesgo_compatibilidad") == "ALTO" or _norm_text(ped.get("perfil_confeccion", "")) == "EXIGENTE" else "MEDIA"
+            plan_actions.append({
+                "Prioridad": prioridad,
+                "Tipo acción": "REVISAR COMPATIBILIDAD",
+                "Origen": c.get("Origen", ""),
+                "Grupo varietal": ped.get("Grupo varietal", ped.get("grupo_varietal", "")),
+                "Variedad": ped.get("Variedad", ""),
+                "Calibre": f"{ped.get('Calibre', '')}←{c.get('Calibre stock', '')}",
+                "Kg afectados": formatear_kg(c.get("kg_asignado_simulado", 0)),
+                "Fecha límite": ped.get("fecha_salida", ped.get("Fecha salida", "")),
+                "Motivo": c.get("motivo_compatibilidad", ""),
+                "Acción recomendada": f"Pedido CAL {ped.get('Calibre', '')} cubierto con CAL {c.get('Calibre stock', '')}. Revisar aceptación comercial.",
+            })
     for r in sobrantes_rows:
         kg_libre = _to_float(r.get("Kg restante total", 0))
         kg_total = _to_float(r.get("Kg físicos iniciales", 0))
@@ -1911,6 +2051,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     notebook.add(necesidades_tab, text="Necesidades")
     notebook.add(riesgos_tab, text="Riesgos / Diagnóstico")
     notebook.add(tecnico_tab, text="Técnico")
+    notebook.add(compat_tab, text="Compatibilidades")
 
     def render_candidatos(index: int) -> None:
         if index < 0 or index >= len(simulaciones):
@@ -1957,6 +2098,10 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
                 "Compartido": c.get("compartido", "No"),
                 "Riesgo": riesgo,
                 "Motivo riesgo": c.get("motivo_riesgo", ""),
+                "Tipo compatibilidad": c.get("tipo_compatibilidad", ""),
+                "Penalización": int(_to_float(c.get("penalizacion_compatibilidad", 0))),
+                "Riesgo compatibilidad": c.get("riesgo_compatibilidad", ""),
+                "Motivo compatibilidad": c.get("motivo_compatibilidad", ""),
                 "Score compat.": int(_to_float(c.get("score_simulacion", 0))),
                 "Score total": int(_to_float(c.get("score_total", 0))),
                 "Flexibilidad aplicada": c.get("flexibilidad_usada_simulacion", ""),
@@ -1993,13 +2138,42 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         if first:
             pedidos_tbl.tree.selection_set(first[0])
             render_candidatos(0)
-    matriz_cols = ["Grupo varietal", "Variedad", "Calibre", "Categoría / calidad útil", "Origen principal", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Kg stock útil", "Kg sobrantes", "% cobertura", "Estado cobertura", "Riesgo", "Acción recomendada"]
+    matriz_cols = ["Grupo varietal", "Variedad", "Calibre", "Categoría / calidad útil", "Origen principal", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Kg stock útil", "Kg sobrantes", "% cobertura", "Estado cobertura", "Tipo compatibilidad", "Penalización", "Riesgo compatibilidad", "Motivo compatibilidad", "Riesgo", "Acción recomendada"]
     matriz_tbl = DataTable(matriz_tab, matriz_cols)
     matriz_tbl.pack(fill="both", expand=True)
-    for estado, color in [("cubierto", "#DDF4DD"), ("parcial", "#FFF3C4"), ("falta", "#F8D0D0"), ("sobrante", "#FFD9A8"), ("sin_pedido", "#E6EEF5")]:
+    for estado, color in [("cubierto_exacto", "#DDF4DD"), ("cubierto_flexible", "#FFF8CC"), ("parcial", "#FFD9A8"), ("falta", "#F8D0D0"), ("sobrante", "#FFD9A8"), ("sin_pedido", "#E6EEF5")]:
         matriz_tbl.tree.tag_configure(f"estado_{estado}", background=color)
     matriz_tbl.tree.tag_configure("sobrante_alto", background="#FFD9A8")
     matriz_tbl.tree.tag_configure("riesgo_alto", foreground="#C62828")
     matriz_tbl.tree.tag_configure("riesgo_medio", foreground="#EF6C00")
     matriz_tbl.tree.tag_configure("riesgo_bajo", foreground="#2E7D32")
     matriz_tbl.set_rows(matriz_rows)
+
+    sustituciones_cols = ["Pedido", "Cliente", "Fecha salida", "Calibre pedido", "Calibre usado", "Tipo compatibilidad", "Penalización", "Riesgo", "Kg asignados", "Motivo"]
+    sustituciones_tbl = DataTable(compat_tab, sustituciones_cols)
+    sustituciones_tbl.pack(fill="both", expand=True, pady=(0, 8))
+    sustituciones_rows = []
+    for sim in simulaciones:
+        ped = sim.get("pedido", {})
+        for c in sim.get("candidatos", []):
+            if _to_float(c.get("kg_asignado_simulado", 0)) <= 0:
+                continue
+            sustituciones_rows.append({
+                "Pedido": ped.get("IdPedidoLora", ped.get("id_pedido", "")),
+                "Cliente": ped.get("Cliente", ""),
+                "Fecha salida": ped.get("fecha_salida", ped.get("Fecha salida", "")),
+                "Calibre pedido": ped.get("Calibre", ""),
+                "Calibre usado": c.get("Calibre stock", ""),
+                "Tipo compatibilidad": c.get("tipo_compatibilidad", ""),
+                "Penalización": int(_to_float(c.get("penalizacion_compatibilidad", 0))),
+                "Riesgo": c.get("riesgo_compatibilidad", ""),
+                "Kg asignados": formatear_kg(c.get("kg_asignado_simulado", 0)),
+                "Motivo": c.get("motivo_compatibilidad", ""),
+            })
+    sustituciones_tbl.set_rows(sustituciones_rows)
+    reglas_cols = ["Tipo regla", "Pedido", "Stock compatible", "Penalización", "Activo"]
+    reglas_tbl = DataTable(compat_tab, reglas_cols)
+    reglas_tbl.pack(fill="both", expand=True)
+    reglas = cargar_reglas_compatibilidad_operativa()
+    reglas_rows = [{"Tipo regla": "CALIBRE", "Pedido": r.get("calibre_pedido", ""), "Stock compatible": r.get("calibre_stock", ""), "Penalización": r.get("penalizacion", 0), "Activo": "Sí" if r.get("activo", True) else "No"} for r in reglas.get("calibres", [])]
+    reglas_tbl.set_rows(reglas_rows)
