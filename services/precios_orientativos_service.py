@@ -26,7 +26,7 @@ class PreciosOrientativosService:
         "ERROR_MAESTRO_CALIBRE",
     ]
     NO_DATA_METHODS = {"SIN_DATOS", "SIN_DATOS_COMPLETOS", "ERROR_MAESTRO_CONFECCION", "ERROR_MAESTRO_CALIBRE"}
-    ESTADOS_PRECIO = ["TODOS", "SIN_PRECIO", "CON_ORIGINAL", "ESTIMADO_GUARDADO", "PENDIENTE_ESTIMAR", "SIN_DATOS", "ERROR_DATOS"]
+    ESTADOS_PRECIO = ["TODOS", "SIN_PRECIO", "CON_PRECIO", "ESTIMADO", "ORIGINAL"]
 
     def __init__(self, repository: PreciosOrientativosRepository | None = None) -> None:
         self.repository = repository or PreciosOrientativosRepository()
@@ -36,6 +36,9 @@ class PreciosOrientativosService:
 
     def buscar_pendientes(self, filters: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
         return self.repository.fetch_pending(filters)
+
+    def get_filter_options(self, filters: dict[str, Any], target_filter: str) -> list[str]:
+        return self.repository.get_filter_options(filters, target_filter)
 
     def buscar_para_recalculo(self, filters: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
         return self.repository.fetch_for_recalculation(filters)
@@ -113,20 +116,35 @@ class PreciosOrientativosService:
             return "SIN_DATOS"
         return "SIN_PRECIO"
 
+    def estado_matches(self, selected: str, estado_row: str) -> bool:
+        if not selected or selected == "TODOS":
+            return True
+        if selected == "CON_PRECIO":
+            return estado_row in {"CON_ORIGINAL", "ESTIMADO_GUARDADO"}
+        if selected == "ORIGINAL":
+            return estado_row == "CON_ORIGINAL"
+        if selected == "ESTIMADO":
+            return estado_row == "ESTIMADO_GUARDADO"
+        return estado_row == selected
+
     def generar_resumen_semanal(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         agg: dict[str, dict[str, Any]] = {}
         for row in rows:
             semana = str(row.get("Semana") or "")
             estado = self.calcular_estado_precio(row)
             grupo = str(row.get("GrupoVarietal") or "").strip()
-            reg = agg.setdefault(semana, {"Semana": semana, "Total líneas": 0, "Con precio": 0, "Estimadas": 0, "Sin precio": 0, "_grupos": {}})
+            reg = agg.setdefault(semana, {"Semana": semana, "Total líneas": 0, "Con precio": 0, "Estimadas": 0, "Sin precio": 0, "Kg": 0.0, "Importe afectado": 0.0, "_grupos": {}})
             reg["Total líneas"] += 1
+            kg = self._to_float(row.get("NetoCliente")) or 0.0
+            reg["Kg"] += kg
             if estado == "CON_ORIGINAL":
                 reg["Con precio"] += 1
             elif estado == "ESTIMADO_GUARDADO":
                 reg["Estimadas"] += 1
             else:
                 reg["Sin precio"] += 1
+                precio_ref = self._to_float(row.get("EurosKG")) or 0.0
+                reg["Importe afectado"] += kg * precio_ref
             if grupo:
                 reg["_grupos"][grupo] = reg["_grupos"].get(grupo, 0) + 1
         out=[]
@@ -134,7 +152,7 @@ class PreciosOrientativosService:
             total=reg["Total líneas"]
             con_precio=reg["Con precio"]+reg["Estimadas"]
             principal=max(reg["_grupos"].items(), key=lambda x:x[1])[0] if reg["_grupos"] else ""
-            out.append({"Semana": reg["Semana"], "Total líneas": total, "Con precio": reg["Con precio"], "Estimadas": reg["Estimadas"], "Sin precio": reg["Sin precio"], "Cobertura %": round((con_precio/total*100.0) if total else 0.0,2), "Grupo varietal principal": principal})
+            out.append({"Semana": reg["Semana"], "Total líneas": total, "Con precio": reg["Con precio"], "Estimadas": reg["Estimadas"], "Sin precio": reg["Sin precio"], "Cobertura %": round((con_precio/total*100.0) if total else 0.0,2), "Grupo varietal principal": principal, "Kg": round(reg["Kg"], 2), "Importe afectado": round(reg["Importe afectado"], 2)})
         return out
 
     @staticmethod
