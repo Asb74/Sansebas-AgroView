@@ -330,7 +330,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             return
 
         def _candidatos_de_pedido(pedido: dict) -> list[dict]:
-            return self.service.get_balance_cobertura_detalle(self._filters_payload(), pedido, policy=self._build_sim_policy())
+            return self.service.get_candidatos_compatibles_para_pedido(self._filters_payload(), pedido, policy_cfg=self._build_sim_policy())
 
         def _inventario_global() -> list[dict]:
             pools = self.service.get_inventario_operativo_global(
