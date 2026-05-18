@@ -25,6 +25,8 @@ class PreciosOrientativosRepository:
         "semana": ("Semana", "exact"),
         "cliente": ("Cliente", "like"),
         "var_coop": ("VarCoop", "like"),
+        "grupo_varietal": ("GrupoVarietal", "like"),
+        "estado_precio": ("EstadoPrecio", "exact"),
     }
 
     def __init__(self, db_path: Path | None = None, db_fruta_path: Path | None = None) -> None:
@@ -47,6 +49,8 @@ class PreciosOrientativosRepository:
             cols = self._get_columns(conn, self.TABLE_PEDIDOS)
             where_sql, filter_params, warn, applied_filters = self._build_where(filters, cols)
             warnings.extend(warn)
+            filtro_grupo_varietal = str(filters.get("grupo_varietal", "") or "").strip().lower()
+            filtro_estado_precio = str(filters.get("estado_precio", "") or "").strip().upper()
             logger.info("Columnas detectadas en Pedidos: %s", ", ".join(sorted(cols)))
             logger.info("Filtros recibidos: %s", filters)
             logger.info("Filtros aplicados: %s", applied_filters)
@@ -86,8 +90,11 @@ class PreciosOrientativosRepository:
             conf_map = self._load_confecciones(conn)
             cal_map = self._load_calibres(conn)
             empresa_map, empresa_warn = self._load_empresas_dict()
+            grupo_var_map, grupo_var_warn = self._load_grupos_varietales()
             if empresa_warn:
                 warnings.append(empresa_warn)
+            if grupo_var_warn:
+                warnings.append(grupo_var_warn)
 
             filtered_rows: list[dict[str, Any]] = []
             for row in rows:
@@ -106,6 +113,7 @@ class PreciosOrientativosRepository:
                 row["GrupoConfeccion"] = conf_map.get(conf, "")
                 row["CalibreU"] = cal_map.get((cal, cult), "")
                 row["EmpresaNombre"] = empresa_map.get(emp, emp)
+                row["GrupoVarietal"] = str(row.get("GrupoVarietal") or grupo_var_map.get((str(row.get("VarCoop", "")).strip(), cult), ""))
                 if emp and emp not in empresa_map:
                     self._warn_once(f"No se pudo resolver nombre de empresa para IdEmpresa={emp}")
 
@@ -125,6 +133,12 @@ class PreciosOrientativosRepository:
                 final_price, final_origin = self.get_precio_orientativo_final(row, calc)
                 row["PrecioOrientativoFinal"] = final_price
                 row["OrigenPrecioOrientativo"] = final_origin
+                row["EstadoPrecio"] = self._estado_precio(row)
+                if filtro_grupo_varietal and filtro_grupo_varietal not in str(row.get("GrupoVarietal", "")).lower():
+                    continue
+                if filtro_estado_precio and filtro_estado_precio not in {"", "TODOS"} and row["EstadoPrecio"] != filtro_estado_precio:
+                    if not (filtro_estado_precio == "PENDIENTE_ESTIMAR" and row["EstadoPrecio"] in {"SIN_PRECIO", "SIN_DATOS", "ERROR_DATOS"}):
+                        continue
                 filtered_rows.append(row)
             logger.info("Total filas cargadas (PENDIENTES): %s", len(filtered_rows))
             return filtered_rows, warnings
@@ -138,6 +152,8 @@ class PreciosOrientativosRepository:
             cols = self._get_columns(conn, self.TABLE_PEDIDOS)
             where_sql, filter_params, warn, applied_filters = self._build_where(filters, cols)
             warnings.extend(warn)
+            filtro_grupo_varietal = str(filters.get("grupo_varietal", "") or "").strip().lower()
+            filtro_estado_precio = str(filters.get("estado_precio", "") or "").strip().upper()
             cancelado_sql, cancelado_params = self._cancelado_filter_for_pedidos(cols)
             logger.info("Columnas detectadas en Pedidos: %s", ", ".join(sorted(cols)))
             logger.info("Filtros recibidos: %s", filters)
@@ -176,8 +192,11 @@ class PreciosOrientativosRepository:
             conf_map = self._load_confecciones(conn)
             cal_map = self._load_calibres(conn)
             empresa_map, empresa_warn = self._load_empresas_dict()
+            grupo_var_map, grupo_var_warn = self._load_grupos_varietales()
             if empresa_warn:
                 warnings.append(empresa_warn)
+            if grupo_var_warn:
+                warnings.append(grupo_var_warn)
 
             out_rows: list[dict[str, Any]] = []
             for row in rows:
@@ -192,6 +211,7 @@ class PreciosOrientativosRepository:
                 row["GrupoConfeccion"] = conf_map.get(conf, "")
                 row["CalibreU"] = cal_map.get((cal, cult), "")
                 row["EmpresaNombre"] = empresa_map.get(emp, emp)
+                row["GrupoVarietal"] = str(row.get("GrupoVarietal") or grupo_var_map.get((str(row.get("VarCoop", "")).strip(), cult), ""))
                 row["EurosOrientativosCalcAnterior"] = (calc or {}).get("EurosOrientativosCalc")
 
                 row["EurosOrientativosCalc"] = None
@@ -210,6 +230,12 @@ class PreciosOrientativosRepository:
                 final_price, final_origin = self.get_precio_orientativo_final(row, calc)
                 row["PrecioOrientativoFinal"] = final_price
                 row["OrigenPrecioOrientativo"] = final_origin
+                row["EstadoPrecio"] = self._estado_precio(row)
+                if filtro_grupo_varietal and filtro_grupo_varietal not in str(row.get("GrupoVarietal", "")).lower():
+                    continue
+                if filtro_estado_precio and filtro_estado_precio not in {"", "TODOS"} and row["EstadoPrecio"] != filtro_estado_precio:
+                    if not (filtro_estado_precio == "PENDIENTE_ESTIMAR" and row["EstadoPrecio"] in {"SIN_PRECIO", "SIN_DATOS", "ERROR_DATOS"}):
+                        continue
                 out_rows.append(row)
             logger.info("Total filas cargadas (RECALCULO_TOTAL): %s", len(out_rows))
             return out_rows, warnings
@@ -937,6 +963,49 @@ class PreciosOrientativosRepository:
             logger.exception("Error cargando empresas: %s", exc)
             return {}, "No se pudo cargar nombres de empresa."
 
+    def _load_grupos_varietales(self) -> tuple[dict[tuple[str, str], str], str | None]:
+        if not self.db_fruta_path.exists():
+            return {}, "Filtro Grupo varietal no disponible"
+        try:
+            conn = sqlite3.connect(self.db_fruta_path)
+            conn.row_factory = sqlite3.Row
+            with conn:
+                cols = self._get_columns(conn, "MVariedad")
+                if not {"Variedad", "CULTIVO"}.issubset(cols):
+                    return {}, "Filtro Grupo varietal no disponible"
+                if "GRUPO" not in cols:
+                    return {}, "Filtro Grupo varietal no disponible"
+                has_subgrupo = "SUBGRUPO" in cols
+                query = 'SELECT "Variedad", "CULTIVO", "GRUPO"'
+                if has_subgrupo:
+                    query += ', "SUBGRUPO"'
+                query += ' FROM "MVariedad"'
+                rows = conn.execute(query).fetchall()
+                out: dict[tuple[str, str], str] = {}
+                for r in rows:
+                    grupo = str(r["GRUPO"] or "").strip()
+                    if has_subgrupo:
+                        sub = str(r["SUBGRUPO"] or "").strip()
+                        grupo = f"{grupo} {sub}".strip()
+                    out[(str(r["Variedad"] or "").strip(), str(r["CULTIVO"] or "").strip())] = grupo
+                return out, None
+        except Exception:
+            return {}, "Filtro Grupo varietal no disponible"
+
+    def _estado_precio(self, row: dict[str, Any]) -> str:
+        metodo = str(row.get("Metodo") or "")
+        original = self._to_float(row.get("EurosOrientativos"))
+        calc = self._to_float(row.get("EurosOrientativosCalc"))
+        if original is not None and original > 0:
+            return "CON_ORIGINAL"
+        if calc is not None and calc > 0:
+            return "ESTIMADO_GUARDADO"
+        if metodo.startswith("ERROR_"):
+            return "ERROR_DATOS"
+        if metodo == "SIN_DATOS":
+            return "SIN_DATOS"
+        return "SIN_PRECIO"
+
     @staticmethod
     def _num_expr(column_sql: str) -> str:
         return f'CAST(REPLACE(TRIM(COALESCE({column_sql}, "")), ",", ".") AS REAL)'
@@ -1016,4 +1085,3 @@ class PreciosOrientativosRepository:
             return int(float(str(value).strip()))
         except Exception:
             return default
-
