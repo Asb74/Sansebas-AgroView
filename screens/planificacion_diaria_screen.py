@@ -155,8 +155,10 @@ class PlanificacionDiariaScreen(ttk.Frame):
         balance_header = ttk.Frame(self.balance_tab)
         balance_header.pack(fill="x", pady=(0, 6))
         ttk.Label(balance_header, textvariable=self.kpi_balance, style="KPI.TLabel").pack(side="left", anchor="w")
-        ttk.Button(balance_header, text="Ver cobertura (pedidos)", command=self._open_selected_balance_coverage).pack(side="right")
-        ttk.Button(balance_header, text="Simular asignación", command=self._open_simulacion_asignacion).pack(side="right", padx=(0, 8))
+        acciones_frame = ttk.Frame(balance_header)
+        acciones_frame.pack(side="right")
+        ttk.Button(acciones_frame, text="Simular asignación", command=self._open_simulacion_asignacion).pack(side="left", padx=4)
+        ttk.Button(acciones_frame, text="Ver cobertura (pedidos)", command=self._open_selected_balance_coverage).pack(side="left", padx=4)
         self.balance_table = DataTable(
             self.balance_tab,
             ["Cultivo", "Campaña", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Kg stock comercial", "Kg pedidos pendientes", "Diferencia comercial", "Tipo línea", "Estado comercial", "Cobertura posible", "Kg disponibilidad compatible", "Mejor cobertura", "Calibres coincidentes", "Flexibilidad aplicada", "Score cobertura", "Explicación"],
