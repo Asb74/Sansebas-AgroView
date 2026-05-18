@@ -26,6 +26,7 @@ class PreciosOrientativosService:
         "ERROR_MAESTRO_CALIBRE",
     ]
     NO_DATA_METHODS = {"SIN_DATOS", "SIN_DATOS_COMPLETOS", "ERROR_MAESTRO_CONFECCION", "ERROR_MAESTRO_CALIBRE"}
+    ESTADOS_PRECIO = ["TODOS", "SIN_PRECIO", "CON_ORIGINAL", "ESTIMADO_GUARDADO", "PENDIENTE_ESTIMAR", "SIN_DATOS", "ERROR_DATOS"]
 
     def __init__(self, repository: PreciosOrientativosRepository | None = None) -> None:
         self.repository = repository or PreciosOrientativosRepository()
@@ -52,6 +53,10 @@ class PreciosOrientativosService:
         total = len(rows)
         counts = {m: 0 for m in self.METHOD_ORDER}
         con_precio = 0
+        con_original = 0
+        estimadas_guardadas = 0
+        sin_precio = 0
+        errores_maestro = 0
 
         for row in rows:
             method = str(row.get("Metodo") or "SIN_DATOS")
@@ -60,10 +65,18 @@ class PreciosOrientativosService:
                 counts[method] = 0
             counts[method] += 1
 
-            if method == "ORIGINAL":
+            estado = self.calcular_estado_precio(row)
+            row["EstadoPrecio"] = estado
+            if estado == "CON_ORIGINAL":
                 con_precio += 1
-            elif method not in self.NO_DATA_METHODS and calc is not None and calc > 0:
+                con_original += 1
+            elif estado == "ESTIMADO_GUARDADO":
                 con_precio += 1
+                estimadas_guardadas += 1
+            else:
+                sin_precio += 1
+            if str(method).startswith("ERROR_"):
+                errores_maestro += 1
 
         resumen = []
         for method in self.METHOD_ORDER + [m for m in counts.keys() if m not in self.METHOD_ORDER]:
@@ -74,7 +87,55 @@ class PreciosOrientativosService:
             resumen.append({"metodo": method, "cantidad": qty, "porcentaje": pct})
 
         cobertura = (con_precio / total * 100.0) if total else 0.0
-        return {"total": total, "con_precio": con_precio, "cobertura": cobertura, "resumen": resumen}
+        return {
+            "total": total,
+            "con_precio": con_precio,
+            "con_original": con_original,
+            "estimadas_guardadas": estimadas_guardadas,
+            "sin_precio": sin_precio,
+            "errores_maestro": errores_maestro,
+            "cobertura": cobertura,
+            "resumen": resumen,
+        }
+
+
+    def calcular_estado_precio(self, row: dict[str, Any]) -> str:
+        metodo = str(row.get("Metodo") or "").strip()
+        original = self._to_float(row.get("EurosOrientativos"))
+        calc = self._to_float(row.get("EurosOrientativosCalc"))
+        if original is not None and original > 0:
+            return "CON_ORIGINAL"
+        if calc is not None and calc > 0:
+            return "ESTIMADO_GUARDADO"
+        if metodo.startswith("ERROR_"):
+            return "ERROR_DATOS"
+        if metodo == "SIN_DATOS":
+            return "SIN_DATOS"
+        return "SIN_PRECIO"
+
+    def generar_resumen_semanal(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        agg: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            semana = str(row.get("Semana") or "")
+            estado = self.calcular_estado_precio(row)
+            grupo = str(row.get("GrupoVarietal") or "").strip()
+            reg = agg.setdefault(semana, {"Semana": semana, "Total líneas": 0, "Con precio": 0, "Estimadas": 0, "Sin precio": 0, "_grupos": {}})
+            reg["Total líneas"] += 1
+            if estado == "CON_ORIGINAL":
+                reg["Con precio"] += 1
+            elif estado == "ESTIMADO_GUARDADO":
+                reg["Estimadas"] += 1
+            else:
+                reg["Sin precio"] += 1
+            if grupo:
+                reg["_grupos"][grupo] = reg["_grupos"].get(grupo, 0) + 1
+        out=[]
+        for reg in sorted(agg.values(), key=lambda r: int(r["Semana"]) if str(r["Semana"]).isdigit() else -1, reverse=True):
+            total=reg["Total líneas"]
+            con_precio=reg["Con precio"]+reg["Estimadas"]
+            principal=max(reg["_grupos"].items(), key=lambda x:x[1])[0] if reg["_grupos"] else ""
+            out.append({"Semana": reg["Semana"], "Total líneas": total, "Con precio": reg["Con precio"], "Estimadas": reg["Estimadas"], "Sin precio": reg["Sin precio"], "Cobertura %": round((con_precio/total*100.0) if total else 0.0,2), "Grupo varietal principal": principal})
+        return out
 
     @staticmethod
     def _to_float(value: Any) -> float | None:

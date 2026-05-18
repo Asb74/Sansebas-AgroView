@@ -41,6 +41,8 @@ class PreciosOrientativosScreen(ttk.Frame):
         "EmpresaUsada",
         "IdsUsados",
         "Observaciones",
+        "GrupoVarietal",
+        "EstadoPrecio",
     ]
 
     def __init__(self, master: tk.Misc, on_back) -> None:
@@ -56,6 +58,8 @@ class PreciosOrientativosScreen(ttk.Frame):
             "semana": tk.StringVar(),
             "cliente": tk.StringVar(),
             "var_coop": tk.StringVar(),
+            "grupo_varietal": tk.StringVar(),
+            "estado_precio": tk.StringVar(value="TODOS"),
         }
         self.status_var = tk.StringVar(value="")
         self.counter_var = tk.StringVar(value="0 pedidos pendientes")
@@ -84,6 +88,7 @@ class PreciosOrientativosScreen(ttk.Frame):
             ("Semana", "semana"),
             ("Cliente", "cliente"),
             ("Variedad Coop", "var_coop"),
+            ("Grupo varietal", "grupo_varietal"),
         ]
         for idx, (label, key) in enumerate(fields):
             ttk.Label(filters, text=label).grid(row=(idx // 3) * 2, column=idx % 3, padx=6, sticky="w")
@@ -92,14 +97,25 @@ class PreciosOrientativosScreen(ttk.Frame):
             )
             filters.grid_columnconfigure(idx % 3, weight=1)
 
+        row_base = ((len(fields) - 1) // 3) * 2 + 2
+        ttk.Label(filters, text="Estado precio").grid(row=row_base, column=0, padx=6, sticky="w")
+        ttk.Combobox(
+            filters,
+            textvariable=self.filters["estado_precio"],
+            values=["TODOS", "SIN_PRECIO", "CON_ORIGINAL", "ESTIMADO_GUARDADO", "PENDIENTE_ESTIMAR", "SIN_DATOS", "ERROR_DATOS"],
+            state="readonly",
+            width=24,
+        ).grid(row=row_base + 1, column=0, padx=6, pady=(0, 8), sticky="ew")
+
         actions = ttk.Frame(filters)
-        actions.grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        actions.grid(row=row_base + 2, column=0, columnspan=3, sticky="w", pady=(4, 0))
         ttk.Button(actions, text="Buscar pendientes", command=self.buscar_pendientes).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Recalcular desde cero", command=self.recalcular_desde_cero).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Calcular estimaciones", command=self.calcular_estimaciones).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Guardar estimaciones", command=self.guardar_estimaciones).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Eliminar cálculos guardados del filtro", command=self.eliminar_calculos_guardados).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Ver resumen", command=self.ver_resumen).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Ver resumen semanal", command=self.ver_resumen_semanal).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Limpiar", command=self.limpiar).pack(side="left")
 
         summary_frame = ttk.LabelFrame(self, text="Resumen de cobertura", padding=8)
@@ -205,32 +221,14 @@ class PreciosOrientativosScreen(ttk.Frame):
         total = int(summary.get("total", 0))
         cobertura = float(summary.get("cobertura", 0))
         self.coverage_var.set(f"Cobertura precio orientativo: {cobertura:.2f}%".replace(".", ","))
-
-        pretty_names = {
-            "ORIGINAL": "Original/directo",
-            "MISMA_SEMANA_GCONF_CALIBREU": "Misma semana grupo+calibre",
-            "SEMANA_ANTERIOR_GCONF_CALIBREU": "Semana anterior grupo+calibre",
-            "SEMANA_POSTERIOR_GCONF_CALIBREU": "Semana posterior grupo+calibre",
-            "MISMA_SEMANA_PROMEDIO_GRUPO_Y_CALIBRE": "Misma semana promedio grupo+calibre",
-            "SEMANA_ANTERIOR_PROMEDIO_GRUPO_Y_CALIBRE": "Semana anterior promedio grupo+calibre",
-            "SEMANA_POSTERIOR_PROMEDIO_GRUPO_Y_CALIBRE": "Semana posterior promedio grupo+calibre",
-            "FALLBACK_FLEXIBLE_CALIBRE_Y_GRUPO": "Fallback flexible calibre+grupo",
-            "FALLBACK_FLEXIBLE_SOLO_CALIBREU": "Solo calibre",
-            "FALLBACK_FLEXIBLE_SOLO_GRUPO": "Solo grupo",
-            "SIN_DATOS": "Sin datos",
-            "ERROR_MAESTRO_CONFECCION": "Error maestro confección",
-            "ERROR_MAESTRO_CALIBRE": "Error maestro calibre",
-        }
-
-        lines = [f"Total pedidos: {total:,}".replace(",", ".")]
-        for item in summary.get("resumen", []):
-            qty = int(item.get("cantidad", 0))
-            if qty == 0:
-                continue
-            pct = float(item.get("porcentaje", 0))
-            method = str(item.get("metodo", ""))
-            label = pretty_names.get(method, method)
-            lines.append(f"{label}: {qty:,} ({pct:.2f}%)".replace(",", ".").replace(".", ",", 1))
+        lines = [
+            f"Líneas analizadas: {total:,}".replace(",", "."),
+            f"Con precio original: {int(summary.get('con_original', 0)):,}".replace(",", "."),
+            f"Estimadas guardadas: {int(summary.get('estimadas_guardadas', 0)):,}".replace(",", "."),
+            f"Sin precio: {int(summary.get('sin_precio', 0)):,}".replace(",", "."),
+            f"Errores maestro: {int(summary.get('errores_maestro', 0)):,}".replace(",", "."),
+            f"Cobertura total: {cobertura:.2f}%".replace(".", ","),
+        ]
         self.summary_var.set("\n".join(lines))
 
     def ver_resumen(self) -> None:
@@ -258,3 +256,20 @@ class PreciosOrientativosScreen(ttk.Frame):
                 }
             )
         table.set_rows(rows)
+
+    def ver_resumen_semanal(self) -> None:
+        if not self.rows:
+            self.status_var.set("No hay datos para generar resumen semanal.")
+            return
+        semanal = self.service.generar_resumen_semanal(self.rows)
+        win = tk.Toplevel(self)
+        win.title("Resumen semanal")
+        win.geometry("820x420")
+        frame = ttk.Frame(win, padding=10)
+        frame.pack(fill="both", expand=True)
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+        cols = ["Semana", "Total líneas", "Con precio", "Estimadas", "Sin precio", "Cobertura %", "Grupo varietal principal"]
+        table = DataTable(frame, columns=cols)
+        table.grid(row=0, column=0, sticky="nsew")
+        table.set_rows(semanal)
