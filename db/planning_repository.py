@@ -1749,6 +1749,26 @@ class PlanningRepository:
             row.pop("__orden", None)
         return out
 
+
+    def get_candidatos_compatibles_para_pedido(self, filters: dict, pedido: dict, policy_cfg: dict | None = None) -> list[dict]:
+        """Fuente única de candidatos compatibles para Balance y Simulación."""
+        candidatos = self.get_balance_cobertura_detalle(filters, pedido, policy=policy_cfg)
+        out: list[dict] = []
+        for row in candidatos:
+            cand = dict(row)
+            cand.setdefault("Grupo varietal stock", cand.get("Grupo varietal", ""))
+            cand.setdefault("compatibilidad_calibre", cand.get("Coincidencia", cand.get("Flexibilidad aplicada", "")))
+            cand.setdefault("compatibilidad_categoria", "COMPATIBLE")
+            cand.setdefault("compatibilidad_varietal", "COMPATIBLE")
+            cand.setdefault("coincidencia", cand.get("Flexibilidad aplicada", cand.get("Coincidencia", "")))
+            kg_disp = float(cand.get("Kg disponibles", 0) or 0)
+            cand.setdefault("kg_fisicos", kg_disp)
+            cand.setdefault("kg_utiles_estimados", kg_disp)
+            cand.setdefault("kg_primera_estimado", kg_disp)
+            cand.setdefault("kg_segunda_estimado", 0.0)
+            out.append(cand)
+        return out
+
     def get_inventario_operativo_global(self, filters: dict, policy: dict | None = None) -> list[dict]:
         policy_cfg = self._merge_policy(policy)
         detalle_rows = self.get_stock_almacen_detalle_palets(filters)

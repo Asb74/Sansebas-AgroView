@@ -865,6 +865,23 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
 
     for pedido in pedidos_meta:
         candidatos_raw = get_candidatos_cb(pedido) or []
+        pedido_id = pedido.get("IdPedidoLora", pedido.get("id_pedido", ""))
+        variedad = pedido.get("Variedad", pedido.get("variedad", ""))
+        grupo_varietal = pedido.get("Grupo varietal", pedido.get("grupo_varietal", ""))
+        calibre = pedido.get("Calibre", pedido.get("calibre", ""))
+        categoria = pedido.get("Categoría", pedido.get("categoria", ""))
+        kg_necesario = _to_float(pedido.get("Kg pedidos pendientes", pedido.get("kg_pendiente", 0)))
+        sum_kg_candidatos = sum(_to_float(c.get("Kg disponibles", c.get("kg_utiles_estimados", c.get("kg_fisicos", 0)))) for c in candidatos_raw)
+        if not candidatos_raw:
+            logger.warning(
+                "SIMULACION SIN CANDIDATOS pedido=%s variedad=%s grupo=%s calibre=%s categoria=%s kg=%s",
+                pedido_id, variedad, grupo_varietal, calibre, categoria, kg_necesario,
+            )
+        else:
+            logger.info(
+                "SIMULACION CANDIDATOS pedido=%s calibre=%s kg=%s candidatos=%s kg_potencial=%s",
+                pedido_id, calibre, kg_necesario, len(candidatos_raw), sum_kg_candidatos,
+            )
         candidatos: list[dict] = []
         for cand in deepcopy(candidatos_raw):
             score, flex_txt = calcular_score_candidato(cand, pedido=pedido, scoring=scoring)
@@ -894,8 +911,14 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             cand["score_total"] = score + int(cand.get("penalizacion_riesgo", 0) or 0) - cand["penalizacion_compatibilidad"]
             if rank_var >= 99:
                 continue
-            if not compat.get("compatible", False):
+            coincidencia_base = _norm_text(cand.get("coincidencia", cand.get("Coincidencia", cand.get("Flexibilidad aplicada", ""))))
+            compatible_base = coincidencia_base not in {"", "INCOMPATIBLE", "SIN COBERTURA", "SIN_COBERTURA"}
+            if not compatible_base and not compat.get("compatible", False):
                 continue
+            if compatible_base and not compat.get("compatible", False):
+                cand["tipo_compatibilidad"] = cand.get("coincidencia", cand.get("Coincidencia", "COMPATIBLE_BASE"))
+                cand["riesgo_compatibilidad"] = "MEDIO"
+                cand["motivo_compatibilidad"] = "Compatible por motor de cobertura; sin regla operativa específica"
             perfil_stock = cand.get("perfil_stock", "")
             perfil_conf = _norm_text(pedido.get("perfil_confeccion", "")) or detectar_perfil_confeccion(pedido)
             cat_pedido = _norm_text(pedido.get("Categoría", pedido.get("categoria", "")))

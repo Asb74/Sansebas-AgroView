@@ -39,6 +39,10 @@ class PlanningService:
     def get_inventario_operativo_global(self, filters: dict, policy: dict | None = None) -> list[dict]:
         return self.repo.get_inventario_operativo_global(filters, policy=policy)
 
+    def get_candidatos_compatibles_para_pedido(self, filters: dict, pedido: dict, policy_cfg: dict | None = None) -> list[dict]:
+        return self.repo.get_candidatos_compatibles_para_pedido(filters, pedido, policy_cfg=policy_cfg)
+
+
     def get_pedidos_pendientes(self, filters: dict, modo: str = "10_dias") -> tuple[list[dict], dict]:
         return self.load_pedidos_pendientes(filters, modo_pedidos=modo)
 
