@@ -75,6 +75,7 @@ class PreciosOrientativosScreen(ttk.Frame):
 
     def _build_ui(self) -> None:
         self.grid_rowconfigure(3, weight=1)
+        self.grid_rowconfigure(4, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
         header = ScreenHeader(self, title="Análisis de precios", subtitle="Revisar precios orientativos", on_back=self.on_back)
@@ -109,30 +110,44 @@ class PreciosOrientativosScreen(ttk.Frame):
         actions.grid(row=row_base + 2, column=0, columnspan=3, sticky="w", pady=(4, 0))
         ttk.Button(actions, text="Buscar pendientes", command=self.buscar_pendientes).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Recalcular desde cero", command=self.recalcular_desde_cero).pack(side="left", padx=(0, 8))
-        ttk.Button(actions, text="Calcular estimaciones", command=self.calcular_estimaciones).pack(side="left", padx=(0, 8))
-        ttk.Button(actions, text="Guardar estimaciones", command=self.guardar_estimaciones).pack(side="left", padx=(0, 8))
-        ttk.Button(actions, text="Preparar propuesta", command=self.preparar_propuesta).pack(side="left", padx=(0, 8))
-        ttk.Button(actions, text="Generar PDF propuesta", command=self.generar_pdf_propuesta).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Eliminar cálculos guardados del filtro", command=self.eliminar_calculos_guardados).pack(side="left", padx=(0, 8))
-        ttk.Button(actions, text="Ver resumen", command=self.ver_resumen).pack(side="left", padx=(0, 8))
-        ttk.Button(actions, text="Ver resumen semanal", command=self.ver_resumen_semanal).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Limpiar", command=self.limpiar).pack(side="left")
-
-        summary_frame = ttk.LabelFrame(self, text="Resumen de cobertura", padding=8)
-        summary_frame.grid(row=2, column=0, sticky="ew", pady=(0, 8))
-        ttk.Label(summary_frame, textvariable=self.coverage_var, style="KPI.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(summary_frame, textvariable=self.summary_var, justify="left").grid(row=1, column=0, sticky="w", pady=(6, 0))
 
         self.table = DataTable(self, columns=self.TABLE_COLUMNS)
         self.table.grid(row=3, column=0, sticky="nsew")
 
-        proposal_frame = ttk.LabelFrame(self, text="Propuesta de precios", padding=8)
-        proposal_frame.grid(row=4, column=0, sticky="nsew", pady=(8, 0))
-        proposal_frame.grid_rowconfigure(0, weight=1)
-        proposal_frame.grid_columnconfigure(0, weight=1)
+        tabs = ttk.Notebook(self)
+        tabs.grid(row=4, column=0, sticky="nsew", pady=(8, 0))
+
+        summary_tab = ttk.Frame(tabs, padding=8)
+        summary_tab.grid_columnconfigure(0, weight=1)
+        tabs.add(summary_tab, text="Resumen de cobertura")
+
+        summary_actions = ttk.Frame(summary_tab)
+        summary_actions.grid(row=0, column=0, sticky="w", pady=(0, 8))
+        ttk.Button(summary_actions, text="Calcular estimaciones", command=self.calcular_estimaciones).pack(side="left", padx=(0, 8))
+        ttk.Button(summary_actions, text="Ver resumen", command=self.ver_resumen).pack(side="left", padx=(0, 8))
+        ttk.Button(summary_actions, text="Ver resumen semanal", command=self.ver_resumen_semanal).pack(side="left")
+
+        summary_frame = ttk.LabelFrame(summary_tab, text="Resumen de cobertura", padding=8)
+        summary_frame.grid(row=1, column=0, sticky="ew")
+        ttk.Label(summary_frame, textvariable=self.coverage_var, style="KPI.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(summary_frame, textvariable=self.summary_var, justify="left").grid(row=1, column=0, sticky="w", pady=(6, 0))
+
+        proposal_tab = ttk.Frame(tabs, padding=8)
+        proposal_tab.grid_rowconfigure(1, weight=1)
+        proposal_tab.grid_columnconfigure(0, weight=1)
+        tabs.add(proposal_tab, text="Propuesta de precios")
+
+        proposal_actions = ttk.Frame(proposal_tab)
+        proposal_actions.grid(row=0, column=0, sticky="w", pady=(0, 8))
+        ttk.Button(proposal_actions, text="Preparar propuesta", command=self.preparar_propuesta).pack(side="left", padx=(0, 8))
+        ttk.Button(proposal_actions, text="Generar PDF propuesta", command=self.generar_pdf_propuesta).pack(side="left", padx=(0, 8))
+        ttk.Button(proposal_actions, text="Guardar estimaciones", command=self.guardar_estimaciones).pack(side="left")
+
         proposal_columns = ["IdPedidoLora", "Línea", "Semana", "FechaSalida", "Cliente", "Variedad Coop", "Calibre", "Confección", "GrupoConfección", "NetoCliente", "EurosOrientativos actual", "EurosOrientativosCalc", "€/kg propuesto", "Método", "Observaciones"]
-        self.propuesta_table = DataTable(proposal_frame, columns=proposal_columns)
-        self.propuesta_table.grid(row=0, column=0, sticky="nsew")
+        self.propuesta_table = DataTable(proposal_tab, columns=proposal_columns)
+        self.propuesta_table.grid(row=1, column=0, sticky="nsew")
         self.propuesta_table.tree.bind("<Double-1>", self._on_propuesta_double_click)
 
         ttk.Label(self, textvariable=self.counter_var, style="KPI.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 0))
