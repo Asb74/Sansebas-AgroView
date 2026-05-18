@@ -55,6 +55,9 @@ class PreciosOrientativosScreen(ttk.Frame):
         self.on_back = on_back
         self.service = PreciosOrientativosService()
         self.rows: list[dict] = []
+        self.propuesta_rows: list[dict] = []
+        self.propuesta_table: DataTable | None = None
+        self._proposal_editor: tk.Entry | None = None
 
         self.filter_widgets: dict[str, MultiSelectFilter] = {}
         self.status_var = tk.StringVar(value="")
@@ -108,6 +111,8 @@ class PreciosOrientativosScreen(ttk.Frame):
         ttk.Button(actions, text="Recalcular desde cero", command=self.recalcular_desde_cero).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Calcular estimaciones", command=self.calcular_estimaciones).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Guardar estimaciones", command=self.guardar_estimaciones).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Preparar propuesta", command=self.preparar_propuesta).pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="Generar PDF propuesta", command=self.generar_pdf_propuesta).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Eliminar cálculos guardados del filtro", command=self.eliminar_calculos_guardados).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Ver resumen", command=self.ver_resumen).pack(side="left", padx=(0, 8))
         ttk.Button(actions, text="Ver resumen semanal", command=self.ver_resumen_semanal).pack(side="left", padx=(0, 8))
@@ -121,8 +126,17 @@ class PreciosOrientativosScreen(ttk.Frame):
         self.table = DataTable(self, columns=self.TABLE_COLUMNS)
         self.table.grid(row=3, column=0, sticky="nsew")
 
-        ttk.Label(self, textvariable=self.counter_var, style="KPI.TLabel").grid(row=4, column=0, sticky="w", pady=(8, 0))
-        ttk.Label(self, textvariable=self.status_var, foreground="#b00020").grid(row=5, column=0, sticky="w", pady=(4, 0))
+        proposal_frame = ttk.LabelFrame(self, text="Propuesta de precios", padding=8)
+        proposal_frame.grid(row=4, column=0, sticky="nsew", pady=(8, 0))
+        proposal_frame.grid_rowconfigure(0, weight=1)
+        proposal_frame.grid_columnconfigure(0, weight=1)
+        proposal_columns = ["IdPedidoLora", "Línea", "Semana", "FechaSalida", "Cliente", "Variedad Coop", "Calibre", "Confección", "GrupoConfección", "NetoCliente", "EurosOrientativos actual", "EurosOrientativosCalc", "€/kg propuesto", "Método", "Observaciones"]
+        self.propuesta_table = DataTable(proposal_frame, columns=proposal_columns)
+        self.propuesta_table.grid(row=0, column=0, sticky="nsew")
+        self.propuesta_table.tree.bind("<Double-1>", self._on_propuesta_double_click)
+
+        ttk.Label(self, textvariable=self.counter_var, style="KPI.TLabel").grid(row=5, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(self, textvariable=self.status_var, foreground="#b00020").grid(row=6, column=0, sticky="w", pady=(4, 0))
 
     def _get_filters(self) -> dict[str, list[str]]:
         return {k: self.filter_widgets[k].get_selected() for k in self.FILTER_KEYS}
@@ -151,6 +165,9 @@ class PreciosOrientativosScreen(ttk.Frame):
         self.last_summary = None
         self.coverage_var.set("Cobertura precio orientativo: 0,00%")
         self.summary_var.set("")
+        self.propuesta_rows = []
+        if self.propuesta_table:
+            self.propuesta_table.set_rows([])
 
     def calcular_estimaciones(self) -> None:
         if not self.rows:
@@ -178,6 +195,83 @@ class PreciosOrientativosScreen(ttk.Frame):
         self.last_summary = None
         self.coverage_var.set("Cobertura precio orientativo: 0,00%")
         self.summary_var.set("")
+        self.propuesta_rows = []
+        if self.propuesta_table:
+            self.propuesta_table.set_rows([])
+
+    def preparar_propuesta(self) -> None:
+        if not self.rows:
+            self.status_var.set("Primero ejecuta 'Buscar pendientes'.")
+            return
+        if not any((self.service._to_float(r.get("EurosOrientativosCalc")) or 0) > 0 or str(r.get("Metodo") or "") for r in self.rows):
+            self.status_var.set("Primero ejecuta 'Calcular estimaciones'.")
+            return
+        self.propuesta_rows = self.service.preparar_propuesta_rows(self.rows)
+        if self.propuesta_table:
+            self.propuesta_table.set_rows(self.propuesta_rows)
+        self.status_var.set(f"Propuesta preparada con {len(self.propuesta_rows)} líneas sin precio orientativo original.")
+
+    def _on_propuesta_double_click(self, event: tk.Event) -> None:
+        if not self.propuesta_table:
+            return
+        tree = self.propuesta_table.tree
+        region = tree.identify("region", event.x, event.y)
+        if region != "cell":
+            return
+        col = tree.identify_column(event.x)
+        col_idx = int(col.replace("#", "")) - 1
+        if self.propuesta_table.columns[col_idx] != "€/kg propuesto":
+            return
+        item_id = tree.identify_row(event.y)
+        if not item_id:
+            return
+        x, y, width, height = tree.bbox(item_id, col)
+        values = list(tree.item(item_id, "values"))
+        self._proposal_editor = tk.Entry(tree)
+        self._proposal_editor.place(x=x, y=y, width=width, height=height)
+        self._proposal_editor.insert(0, values[col_idx])
+        self._proposal_editor.focus_set()
+        self._proposal_editor.bind("<Return>", lambda _e: self._save_proposed_value(item_id, col_idx))
+        self._proposal_editor.bind("<FocusOut>", lambda _e: self._save_proposed_value(item_id, col_idx))
+
+    def _save_proposed_value(self, item_id: str, col_idx: int) -> None:
+        if not self.propuesta_table or not self._proposal_editor:
+            return
+        raw = self._proposal_editor.get().strip()
+        normalized = raw.replace(",", ".")
+        if raw:
+            try:
+                value = float(normalized)
+                if value < 0:
+                    raise ValueError
+                final_value = f"{value:.4f}"
+            except Exception:
+                messagebox.showwarning("Valor inválido", "Introduce un número decimal válido mayor o igual a 0.", parent=self.winfo_toplevel())
+                self._proposal_editor.focus_set()
+                return
+        else:
+            final_value = ""
+        tree = self.propuesta_table.tree
+        values = list(tree.item(item_id, "values"))
+        values[col_idx] = final_value
+        tree.item(item_id, values=values)
+        row_idx = tree.index(item_id)
+        if 0 <= row_idx < len(self.propuesta_rows):
+            self.propuesta_rows[row_idx]["€/kg propuesto"] = final_value
+        self._proposal_editor.destroy()
+        self._proposal_editor = None
+
+    def generar_pdf_propuesta(self) -> None:
+        if not self.propuesta_rows:
+            self.status_var.set("Primero pulsa 'Preparar propuesta'.")
+            return
+        out_path, error = self.service.generar_pdf_propuesta(self.propuesta_rows, self._get_filters())
+        if error:
+            messagebox.showwarning("No se pudo generar el PDF", error, parent=self.winfo_toplevel())
+            self.status_var.set(error)
+            return
+        messagebox.showinfo("PDF generado", f"PDF generado correctamente: {out_path}", parent=self.winfo_toplevel())
+        self.status_var.set(f"PDF generado correctamente: {out_path}")
 
     def guardar_estimaciones(self) -> None:
         if not self.rows:
