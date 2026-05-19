@@ -217,14 +217,16 @@ def cargar_catalogos_pedidos_previstos(cultivo: str) -> dict:
         "calibres": list(catalogos.get("calibres", [])),
         "categorias": list(catalogos.get("categorias", [])),
         "grupos_confeccion": list(catalogos.get("grupos_confeccion", [])),
+        "clientes": list(catalogos.get("clientes", [])),
     }
     logger.info(
-        "Catálogos pedidos previstos cargados cultivo=%s variedades=%s calibres=%s categorias=%s grupos_confeccion=%s",
+        "Catálogos pedidos previstos cargados cultivo=%s variedades=%s calibres=%s categorias=%s grupos_confeccion=%s clientes=%s",
         cultivo_actual,
         len(result["variedades"]),
         len(result["calibres"]),
         len(result["categorias"]),
         len(result["grupos_confeccion"]),
+        len(result["clientes"]),
     )
     return result
 
@@ -2527,7 +2529,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     cultivo_catalogo = str(cultivo_actual or "").strip()
     catalogos_previstos = cargar_catalogos_pedidos_previstos(cultivo_catalogo)
     valores_base = {
-        "cliente": sorted({str(p.get("Cliente", p.get("cliente", "")) or "").strip() for p in list(pedidos_informativos) + list(pedidos_previstos)} - {""}, key=lambda x: _norm_text(x)),
+        "cliente": list(catalogos_previstos.get("clientes", [])),
         "variedad": list(catalogos_previstos.get("variedades", [])),
         "calibre": list(catalogos_previstos.get("calibres", [])),
         "categoria": list(catalogos_previstos.get("categorias", [])),
