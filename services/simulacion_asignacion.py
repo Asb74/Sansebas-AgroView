@@ -65,6 +65,49 @@ logger = logging.getLogger(__name__)
 
 PRIORIDADES_PEDIDOS_PATH = Path("runtime_config/prioridades_pedidos.json")
 COMPATIBILIDADES_OPERATIVAS_PATH = Path("runtime_config/compatibilidades_operativas.json")
+PEDIDOS_PREVISTOS_PATH = Path("runtime_config/pedidos_previstos.json")
+
+
+def _default_pedidos_previstos_payload() -> dict:
+    return {"incluir_en_simulacion": True, "pedidos": []}
+
+
+def _cargar_pedidos_previstos() -> dict:
+    payload = _default_pedidos_previstos_payload()
+    try:
+        if not PEDIDOS_PREVISTOS_PATH.exists():
+            return payload
+        raw = json.loads(PEDIDOS_PREVISTOS_PATH.read_text(encoding="utf-8")) or {}
+        payload["incluir_en_simulacion"] = bool(raw.get("incluir_en_simulacion", True))
+        payload["pedidos"] = list(raw.get("pedidos", []))
+    except Exception:
+        logger.exception("No se pudieron cargar pedidos previstos")
+    logger.info("Pedidos previstos cargados: %s", len(payload["pedidos"]))
+    return payload
+
+
+def _guardar_pedidos_previstos(payload: dict) -> None:
+    PEDIDOS_PREVISTOS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PEDIDOS_PREVISTOS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _pedido_previsto_a_simulacion(p: dict) -> dict:
+    return {
+        "IdPedidoLora": p.get("id_previsto", ""),
+        "Fecha salida": p.get("fecha_salida", ""),
+        "fecha_salida": p.get("fecha_salida", ""),
+        "Cliente": p.get("cliente", ""),
+        "Grupo varietal": p.get("grupo_varietal", ""),
+        "Variedad": p.get("variedad", ""),
+        "Calibre": p.get("calibre", ""),
+        "Categoría": p.get("categoria", ""),
+        "grupo_confeccion": p.get("grupo_confeccion", ""),
+        "perfil_confeccion": p.get("perfil_confeccion", ""),
+        "Kg pendientes": _to_float(p.get("kg_estimados", 0)),
+        "kg_pendiente": _to_float(p.get("kg_estimados", 0)),
+        "Línea": 0,
+        "origen_demanda": "PEDIDO_PREVISTO",
+    }
 
 
 def _default_reglas_compatibilidad_operativa() -> dict:
@@ -1504,8 +1547,16 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     riesgos_tab = ttk.Frame(notebook, padding=8)
     tecnico_tab = ttk.Frame(notebook, padding=8)
     compat_tab = ttk.Frame(notebook, padding=8)
+    previstos_tab = ttk.Frame(notebook, padding=8)
 
-    pedidos_cols = ["Fecha salida", "Bloque temporal", "Prioridad manual", "Prioridad total", "Motivo prioridad", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Kg potencial físico", "Kg potencial útil"]
+    pedidos_previstos_payload = _cargar_pedidos_previstos()
+    pedidos_previstos = list(pedidos_previstos_payload.get("pedidos", []))
+    previstos_activos = []
+    if pedidos_previstos_payload.get("incluir_en_simulacion", True):
+        previstos_activos = [p for p in pedidos_previstos if _norm_text(p.get("estado", "BORRADOR")) != "DESCARTADO" and _to_float(p.get("kg_estimados", 0)) > 0]
+    logger.info("Pedidos previstos incluidos en simulación: %s", len(previstos_activos))
+
+    pedidos_cols = ["Origen demanda", "Fecha salida", "Bloque temporal", "Prioridad manual", "Prioridad total", "Motivo prioridad", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Kg potencial físico", "Kg potencial útil"]
     pedidos_tbl = DataTable(top, pedidos_cols)
     pedidos_tbl.pack(fill="both", expand=True)
     pedidos_op_cols = ["Fecha salida", "Bloque temporal", "Variedad", "Calibre", "Categoría", "Grupo confección", "Kg pendientes", "Kg asignado global", "Kg faltante global", "Estado global"]
@@ -1541,12 +1592,16 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     pedidos_tbl.tree.tag_configure("estado_insuf", background="#F8D0D0")
     pedidos_tbl.tree.tag_configure("estado_falta", background="#F8D0D0")
     pedidos_tbl.tree.tag_configure("estado_neutro", background="#E6EEF5")
+    pedidos_tbl.tree.tag_configure("pedido_previsto", background="#D9ECFF")
     cand_tbl.tree.tag_configure("riesgo_bajo", background="#d0f0c0")
     cand_tbl.tree.tag_configure("riesgo_medio", background="#fff8b3")
     cand_tbl.tree.tag_configure("riesgo_alto", background="#f8d7da")
 
     prioridades_map = _cargar_prioridades_pedidos()
     pedidos = [dict(p) for p in pedidos]
+    for p in pedidos:
+        p["origen_demanda"] = "PEDIDO_REAL"
+    pedidos.extend([_pedido_previsto_a_simulacion(p) for p in previstos_activos])
     for p in pedidos:
         p["prioridad_manual"] = prioridades_map.get(_pedido_id_prioridad(p), int(_to_float(p.get("prioridad_manual", 0))))
     if pedidos_detalle_horizonte is not None:
@@ -1619,6 +1674,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         grupo_conf = _grupo_pedido(pedido)
         perfil_conf = _perfil_pedido(pedido, grupo_conf)
         resumen_rows.append({
+            "Origen demanda": "PREVISTO" if _norm_text(pedido.get("origen_demanda", "")) == "PEDIDO_PREVISTO" else "REAL",
             "Fecha salida": pedido.get("fecha_salida", pedido.get("Fecha salida", "")),
             "Bloque temporal": pedido.get("bloque_temporal", ""),
             "Prioridad manual": int(_to_float(pedido.get("prioridad_manual", 0))),
@@ -1638,7 +1694,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Estado global": estado,
             "Kg potencial físico": formatear_kg(simulacion["kg_potencial_fisico"]),
             "Kg potencial útil": formatear_kg(simulacion["kg_potencial_util"]),
-            "__tags__": (tag_estado,),
+            "__tags__": ("pedido_previsto", tag_estado) if _norm_text(pedido.get("origen_demanda", "")) == "PEDIDO_PREVISTO" else (tag_estado,),
         })
     for r, s in zip(resumen_rows, simulaciones):
         bloque = _bloque_temporal_horizonte(r.get("Fecha salida", ""), r.get("Bloque temporal", ""), date.today())
@@ -2144,6 +2200,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     notebook.add(riesgos_tab, text="Riesgos / Diagnóstico")
     notebook.add(tecnico_tab, text="Técnico")
     notebook.add(compat_tab, text="Compatibilidades")
+    notebook.add(previstos_tab, text="Pedidos previstos")
 
     def render_candidatos(index: int) -> None:
         if index < 0 or index >= len(simulaciones):
@@ -2269,3 +2326,39 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     reglas = cargar_reglas_compatibilidad_operativa()
     reglas_rows = [{"Tipo regla": "CALIBRE", "Pedido": r.get("calibre_pedido", ""), "Stock compatible": r.get("calibre_stock", ""), "Penalización": r.get("penalizacion", 0), "Activo": "Sí" if r.get("activo", True) else "No"} for r in reglas.get("calibres", [])]
     reglas_tbl.set_rows(reglas_rows)
+
+    previstos_ctrl = ttk.Frame(previstos_tab)
+    previstos_ctrl.pack(fill="x", pady=(0, 6))
+    incluir_previstos_var = tk.BooleanVar(value=bool(pedidos_previstos_payload.get("incluir_en_simulacion", True)))
+    ttk.Checkbutton(previstos_ctrl, text="Incluir pedidos previstos en simulación", variable=incluir_previstos_var).pack(side="left")
+    prev_cols = ["Estado", "Fecha salida", "Cliente", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg estimados", "Palets estimados", "Observaciones"]
+    prev_tbl = DataTable(previstos_tab, prev_cols)
+    prev_tbl.pack(fill="both", expand=True)
+    prev_tbl.tree.tag_configure("estado_borrador", background="#EEF1F4")
+    prev_tbl.tree.tag_configure("estado_confirmado", background="#DDF4EE")
+    prev_tbl.tree.tag_configure("estado_descartado", background="#F3DDDD")
+
+    def _rows_previstos() -> list[dict]:
+        out = []
+        for p in pedidos_previstos:
+            estado = _norm_text(p.get("estado", "BORRADOR"))
+            tag = "estado_borrador" if estado == "BORRADOR" else "estado_confirmado" if estado == "CONFIRMADO_COMERCIAL" else "estado_descartado"
+            out.append({
+                "Estado": p.get("estado", "BORRADOR"), "Fecha salida": p.get("fecha_salida", ""), "Cliente": p.get("cliente", ""),
+                "Grupo varietal": p.get("grupo_varietal", ""), "Variedad": p.get("variedad", ""), "Calibre": p.get("calibre", ""),
+                "Categoría": p.get("categoria", ""), "Grupo confección": p.get("grupo_confeccion", ""), "Perfil confección": p.get("perfil_confeccion", ""),
+                "Kg estimados": formatear_kg(p.get("kg_estimados", 0)), "Palets estimados": p.get("palets_estimados", ""), "Observaciones": p.get("observaciones", ""),
+                "__tags__": (tag,),
+            })
+        return out
+
+    def _guardar_previstos() -> None:
+        pedidos_previstos_payload["incluir_en_simulacion"] = bool(incluir_previstos_var.get())
+        pedidos_previstos_payload["pedidos"] = pedidos_previstos
+        _guardar_pedidos_previstos(pedidos_previstos_payload)
+
+    prev_tbl.set_rows(_rows_previstos())
+    ttk.Button(previstos_ctrl, text="Nuevo previsto", command=lambda: pedidos_previstos.append({"id_previsto": f"PV-{date.today().strftime('%Y%m%d')}-{len(pedidos_previstos)+1:04d}", "estado": "BORRADOR"}) or prev_tbl.set_rows(_rows_previstos())).pack(side="right", padx=2)
+    ttk.Button(previstos_ctrl, text="Guardar previsto", command=_guardar_previstos).pack(side="right", padx=2)
+    ttk.Button(previstos_ctrl, text="Duplicar previsto", command=lambda: (pedidos_previstos.append(dict(pedidos_previstos[prev_tbl.tree.index(prev_tbl.tree.selection()[0])])) if prev_tbl.tree.selection() else None) or prev_tbl.set_rows(_rows_previstos())).pack(side="right", padx=2)
+    ttk.Button(previstos_ctrl, text="Eliminar previsto", command=lambda: (pedidos_previstos.pop(prev_tbl.tree.index(prev_tbl.tree.selection()[0])) if prev_tbl.tree.selection() else None) or prev_tbl.set_rows(_rows_previstos())).pack(side="right", padx=2)
