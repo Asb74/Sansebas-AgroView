@@ -2028,7 +2028,7 @@ class PlanningRepository:
 
     def cargar_catalogos_pedidos_previstos(self, cultivo: str) -> dict[str, Any]:
         cultivo_norm = str(cultivo or "").strip()
-        out: dict[str, Any] = {"variedades": [], "variedad_meta": {}, "calibres": [], "categorias": [], "grupos_confeccion": []}
+        out: dict[str, Any] = {"variedades": [], "variedad_meta": {}, "calibres": [], "categorias": [], "grupos_confeccion": [], "clientes": []}
         pedidos_path = self._db_path(DB_PEDIDOS)
         eepl_path = self._db_path(DB_EEPPL)
         if not pedidos_path.exists() or not eepl_path.exists():
@@ -2110,6 +2110,23 @@ class PlanningRepository:
                     ]
                 except Exception as exc:
                     logger.warning("No se pudieron cargar maestros de %s para cultivo=%s: %s", "grupos_confeccion", cultivo_norm, exc)
+                try:
+                    out["clientes"] = [
+                        str(r["cliente"]).strip()
+                        for r in conn_ped.execute(
+                            """
+                            SELECT DISTINCT "Cliente" AS cliente
+                            FROM [MCliente/Pais]
+                            WHERE UPPER(TRIM("Activo")) = 'S'
+                              AND "Cliente" IS NOT NULL
+                              AND TRIM("Cliente") <> ''
+                            ORDER BY "Cliente"
+                            """
+                        ).fetchall()
+                        if str(r["cliente"] or "").strip()
+                    ]
+                except Exception as exc:
+                    logger.warning("No se pudieron cargar maestros de %s para cultivo=%s: %s", "clientes", cultivo_norm, exc)
         except Exception:
             logger.exception("No se pudieron cargar catálogos de pedidos previstos para cultivo=%s", cultivo_norm)
         return out
