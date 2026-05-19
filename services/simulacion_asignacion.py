@@ -12,6 +12,7 @@ import unicodedata
 from services.operational_quality_service import OperationalQualityService
 from db.planning_repository import PlanningRepository
 from widgets.data_table import DataTable
+from widgets.date_picker import DatePickerPopup
 
 
 SCORING_COBERTURA = {
@@ -2327,10 +2328,65 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     reglas_rows = [{"Tipo regla": "CALIBRE", "Pedido": r.get("calibre_pedido", ""), "Stock compatible": r.get("calibre_stock", ""), "Penalización": r.get("penalizacion", 0), "Activo": "Sí" if r.get("activo", True) else "No"} for r in reglas.get("calibres", [])]
     reglas_tbl.set_rows(reglas_rows)
 
-    previstos_ctrl = ttk.Frame(previstos_tab)
-    previstos_ctrl.pack(fill="x", pady=(0, 6))
+    variedad_to_grupo: dict[str, str] = {}
+    for ped_src in list(pedidos) + list(pedidos_previstos):
+        var = str(ped_src.get("Variedad", ped_src.get("variedad", "")) or "").strip()
+        grp = str(ped_src.get("Grupo varietal", ped_src.get("grupo_varietal", "")) or "").strip()
+        if var and grp and _norm_text(var) not in variedad_to_grupo:
+            variedad_to_grupo[_norm_text(var)] = grp
+    valores_base = {"cliente": set(), "variedad": set(), "calibre": set(), "categoria": set(), "grupo_confeccion": set(), "perfil_confeccion": set()}
+    for ped_src in list(pedidos) + list(pedidos_previstos):
+        valores_base["cliente"].add(str(ped_src.get("Cliente", ped_src.get("cliente", "")) or "").strip())
+        valores_base["variedad"].add(str(ped_src.get("Variedad", ped_src.get("variedad", "")) or "").strip())
+        valores_base["calibre"].add(str(ped_src.get("Calibre", ped_src.get("calibre", "")) or "").strip())
+        valores_base["categoria"].add(str(ped_src.get("Categoría", ped_src.get("categoria", "")) or "").strip())
+        valores_base["grupo_confeccion"].add(str(ped_src.get("grupo_confeccion", "") or "").strip())
+        valores_base["perfil_confeccion"].add(str(ped_src.get("perfil_confeccion", "") or "").strip())
+    for k in valores_base:
+        valores_base[k] = sorted([v for v in valores_base[k] if v], key=lambda x: _norm_text(x))
+    form_previstos = ttk.LabelFrame(previstos_tab, text="Pedido previsto")
+    form_previstos.pack(fill="x", pady=(0, 6))
     incluir_previstos_var = tk.BooleanVar(value=bool(pedidos_previstos_payload.get("incluir_en_simulacion", True)))
-    ttk.Checkbutton(previstos_ctrl, text="Incluir pedidos previstos en simulación", variable=incluir_previstos_var).pack(side="left")
+    form_vars = {
+        "fecha_salida": tk.StringVar(),
+        "cliente": tk.StringVar(),
+        "variedad": tk.StringVar(),
+        "grupo_varietal": tk.StringVar(value="DESCONOCIDO"),
+        "calibre": tk.StringVar(),
+        "categoria": tk.StringVar(),
+        "grupo_confeccion": tk.StringVar(),
+        "perfil_confeccion": tk.StringVar(),
+        "kg_estimados": tk.StringVar(),
+        "palets_estimados": tk.StringVar(),
+        "estado": tk.StringVar(value="BORRADOR"),
+        "observaciones": tk.StringVar(),
+    }
+    editing_index: dict[str, int | None] = {"value": None}
+    ttk.Checkbutton(form_previstos, text="Incluir pedidos previstos en simulación", variable=incluir_previstos_var).grid(row=0, column=0, columnspan=6, sticky="w", padx=6, pady=(4, 6))
+    ttk.Label(form_previstos, text="Fecha salida").grid(row=1, column=0, sticky="w", padx=6, pady=2)
+    ttk.Entry(form_previstos, textvariable=form_vars["fecha_salida"], width=14).grid(row=1, column=1, sticky="w", padx=6, pady=2)
+    fecha_btn = ttk.Button(form_previstos, text="📅")
+    fecha_btn.grid(row=1, column=2, sticky="w", padx=(0, 6), pady=2)
+    fecha_btn.configure(command=lambda: DatePickerPopup(root, target_var=form_vars["fecha_salida"], anchor_widget=fecha_btn))
+    campos_combo = [("Cliente", "cliente"), ("Variedad", "variedad"), ("Calibre", "calibre"), ("Categoría", "categoria"), ("Grupo confección", "grupo_confeccion"), ("Perfil confección", "perfil_confeccion")]
+    for idx, (lbl, key) in enumerate(campos_combo):
+        r = 1 + (idx // 3)
+        c = 3 * (idx % 3)
+        ttk.Label(form_previstos, text=lbl).grid(row=r, column=c + 3, sticky="w", padx=6, pady=2)
+        ttk.Combobox(form_previstos, textvariable=form_vars[key], values=list(valores_base[key]), width=22).grid(row=r, column=c + 4, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Grupo varietal").grid(row=3, column=0, sticky="w", padx=6, pady=2)
+    ttk.Entry(form_previstos, textvariable=form_vars["grupo_varietal"], state="readonly", width=22).grid(row=3, column=1, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Kg estimados").grid(row=3, column=3, sticky="w", padx=6, pady=2)
+    ttk.Entry(form_previstos, textvariable=form_vars["kg_estimados"], width=14).grid(row=3, column=4, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Palets estimados").grid(row=3, column=5, sticky="w", padx=6, pady=2)
+    ttk.Entry(form_previstos, textvariable=form_vars["palets_estimados"], width=14).grid(row=3, column=6, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Estado").grid(row=4, column=0, sticky="w", padx=6, pady=2)
+    ttk.Combobox(form_previstos, textvariable=form_vars["estado"], values=["BORRADOR", "CONFIRMADO_COMERCIAL", "DESCARTADO"], state="readonly", width=24).grid(row=4, column=1, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Observaciones").grid(row=4, column=3, sticky="w", padx=6, pady=2)
+    ttk.Entry(form_previstos, textvariable=form_vars["observaciones"], width=46).grid(row=4, column=4, columnspan=3, sticky="we", padx=6, pady=2)
+
+    prev_buttons = ttk.Frame(form_previstos)
+    prev_buttons.grid(row=5, column=0, columnspan=7, sticky="w", padx=6, pady=(4, 6))
     prev_cols = ["Estado", "Fecha salida", "Cliente", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg estimados", "Palets estimados", "Observaciones"]
     prev_tbl = DataTable(previstos_tab, prev_cols)
     prev_tbl.pack(fill="both", expand=True)
@@ -2356,9 +2412,73 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         pedidos_previstos_payload["incluir_en_simulacion"] = bool(incluir_previstos_var.get())
         pedidos_previstos_payload["pedidos"] = pedidos_previstos
         _guardar_pedidos_previstos(pedidos_previstos_payload)
+    def _limpiar_formulario() -> None:
+        editing_index["value"] = None
+        for k, v in form_vars.items():
+            v.set("BORRADOR" if k == "estado" else "DESCONOCIDO" if k == "grupo_varietal" else "")
+    def _resolver_grupo_varietal(*_args) -> None:
+        variedad = form_vars["variedad"].get().strip()
+        grupo = variedad_to_grupo.get(_norm_text(variedad), "DESCONOCIDO") if variedad else "DESCONOCIDO"
+        form_vars["grupo_varietal"].set(grupo)
+        logger.info("Grupo varietal resuelto variedad=%s grupo=%s", variedad, grupo)
+    form_vars["variedad"].trace_add("write", _resolver_grupo_varietal)
+    def _save_form() -> None:
+        try:
+            kg_estimados = _to_float(form_vars["kg_estimados"].get().replace(",", "."))
+            palets_estimados = _to_float(form_vars["palets_estimados"].get().replace(",", ".")) if form_vars["palets_estimados"].get().strip() else ""
+            fecha = form_vars["fecha_salida"].get().strip()
+            datetime.strptime(fecha, "%Y-%m-%d")
+        except Exception:
+            tk.messagebox.showerror("Pedidos previstos", "Fecha salida debe tener formato YYYY-MM-DD.")
+            return
+        if not fecha or not form_vars["variedad"].get().strip() or not form_vars["calibre"].get().strip() or not form_vars["grupo_confeccion"].get().strip() or kg_estimados <= 0:
+            tk.messagebox.showerror("Pedidos previstos", "Campos obligatorios: Fecha salida, Variedad, Calibre, Grupo confección y Kg estimados > 0.")
+            return
+        rec = {k: v.get().strip() for k, v in form_vars.items()}
+        rec["kg_estimados"] = kg_estimados
+        rec["palets_estimados"] = palets_estimados
+        if editing_index["value"] is None:
+            rec["id_previsto"] = f"PV-{date.today().strftime('%Y%m%d')}-{len(pedidos_previstos)+1:04d}"
+            pedidos_previstos.append(rec)
+        else:
+            rec["id_previsto"] = pedidos_previstos[editing_index["value"]].get("id_previsto", "")
+            pedidos_previstos[editing_index["value"]] = rec
+        _guardar_previstos()
+        logger.info("Pedido previsto guardado id=%s fecha=%s variedad=%s calibre=%s kg=%s", rec.get("id_previsto", ""), rec["fecha_salida"], rec["variedad"], rec["calibre"], rec["kg_estimados"])
+        prev_tbl.set_rows(_rows_previstos())
+        _limpiar_formulario()
+    def _delete_selected() -> None:
+        if editing_index["value"] is None:
+            return
+        rec = pedidos_previstos.pop(editing_index["value"])
+        logger.info("Pedido previsto eliminado id=%s", rec.get("id_previsto", ""))
+        _guardar_previstos()
+        prev_tbl.set_rows(_rows_previstos())
+        _limpiar_formulario()
+    def _duplicar() -> None:
+        if editing_index["value"] is None:
+            return
+        rec = dict(pedidos_previstos[editing_index["value"]])
+        rec["id_previsto"] = f"PV-{date.today().strftime('%Y%m%d')}-{len(pedidos_previstos)+1:04d}"
+        pedidos_previstos.append(rec)
+        _guardar_previstos()
+        prev_tbl.set_rows(_rows_previstos())
 
     prev_tbl.set_rows(_rows_previstos())
-    ttk.Button(previstos_ctrl, text="Nuevo previsto", command=lambda: pedidos_previstos.append({"id_previsto": f"PV-{date.today().strftime('%Y%m%d')}-{len(pedidos_previstos)+1:04d}", "estado": "BORRADOR"}) or prev_tbl.set_rows(_rows_previstos())).pack(side="right", padx=2)
-    ttk.Button(previstos_ctrl, text="Guardar previsto", command=_guardar_previstos).pack(side="right", padx=2)
-    ttk.Button(previstos_ctrl, text="Duplicar previsto", command=lambda: (pedidos_previstos.append(dict(pedidos_previstos[prev_tbl.tree.index(prev_tbl.tree.selection()[0])])) if prev_tbl.tree.selection() else None) or prev_tbl.set_rows(_rows_previstos())).pack(side="right", padx=2)
-    ttk.Button(previstos_ctrl, text="Eliminar previsto", command=lambda: (pedidos_previstos.pop(prev_tbl.tree.index(prev_tbl.tree.selection()[0])) if prev_tbl.tree.selection() else None) or prev_tbl.set_rows(_rows_previstos())).pack(side="right", padx=2)
+    ttk.Button(prev_buttons, text="Nuevo", command=_limpiar_formulario).pack(side="left", padx=2)
+    ttk.Button(prev_buttons, text="Guardar", command=_save_form).pack(side="left", padx=2)
+    ttk.Button(prev_buttons, text="Duplicar", command=_duplicar).pack(side="left", padx=2)
+    ttk.Button(prev_buttons, text="Eliminar", command=_delete_selected).pack(side="left", padx=2)
+    ttk.Button(prev_buttons, text="Limpiar formulario", command=_limpiar_formulario).pack(side="left", padx=2)
+    def _on_prev_select(_evt=None):
+        sel = prev_tbl.tree.selection()
+        if not sel:
+            return
+        idx = prev_tbl.tree.index(sel[0])
+        if idx < 0 or idx >= len(pedidos_previstos):
+            return
+        editing_index["value"] = idx
+        rec = pedidos_previstos[idx]
+        for k, v in form_vars.items():
+            v.set(str(rec.get(k, "")))
+    prev_tbl.tree.bind("<<TreeviewSelect>>", _on_prev_select)
