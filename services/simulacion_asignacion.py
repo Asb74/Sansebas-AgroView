@@ -1441,6 +1441,21 @@ def _pool_id_fisico(pool_id: str) -> str:
     return pid + "|FISICO" if pid else ""
 
 
+
+
+def normalizar_categoria_operativa(valor):
+    txt = str(valor or "").strip().upper()
+    if not txt:
+        logger.debug("Categoría operativa vacía, usando NORMAL")
+        return "NORMAL"
+    if txt in ("I", "1", "PRIMERA"):
+        return "I"
+    if txt in ("II", "2", "SEGUNDA"):
+        return "II"
+    if txt in ("NORMAL", "MIXTO", "FISICO"):
+        return txt
+    return txt
+
 def _kg_pendiente_linea(pedido: dict) -> float:
     for key in (
         "Kg pendiente",
@@ -1479,7 +1494,7 @@ def _need_key(pedido: dict) -> tuple[str, str, str, str, str, str]:
     variedad = str(pedido.get("Variedad", pedido.get("Variedad Coop", pedido.get("variedad", ""))) or "").strip()
     calibre = str(pedido.get("Calibre", pedido.get("calibre", "")) or "").strip()
     categoria = str(pedido.get("Categoría", pedido.get("Categoria", pedido.get("categoria", ""))) or "").strip()
-    categoria_operativa = PlanningRepository.normalizar_categoria_operativa(categoria)
+    categoria_operativa = normalizar_categoria_operativa(categoria)
     return (cultivo, campana, grupo_varietal, variedad, calibre, categoria_operativa)
 
 
