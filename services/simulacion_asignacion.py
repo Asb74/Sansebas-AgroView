@@ -109,7 +109,8 @@ def _pedido_previsto_a_simulacion(p: dict) -> dict:
         "Kg pendientes": _to_float(p.get("kg_estimados", 0)),
         "kg_pendiente": _to_float(p.get("kg_estimados", 0)),
         "Línea": 0,
-        "origen_demanda": "PEDIDO_PREVISTO",
+        "origen_demanda": "PREVISTO",
+        "kg_necesario": _to_float(p.get("kg_estimados", 0)),
     }
 
 
@@ -1464,8 +1465,52 @@ def normalizar_pedido_para_simulacion(pedido: dict) -> dict:
     item["Kg pendiente"] = kg_pend
     item["kg_pendiente"] = kg_pend
     item["kg_pendientes"] = kg_pend
-    item["Tipo línea"] = "Pedido"
+    if _norm_text(item.get("origen_demanda", "")) == "PREVISTO":
+        item["Tipo línea"] = "Pedido previsto"
+    else:
+        item["Tipo línea"] = "Pedido"
     return item
+
+
+def _need_key(pedido: dict) -> tuple[str, str, str, str, str, str]:
+    cultivo = str(pedido.get("Cultivo", pedido.get("cultivo", "")) or "").strip()
+    campana = str(pedido.get("Campaña", pedido.get("campana", pedido.get("Campana", ""))) or "").strip()
+    grupo_varietal = str(pedido.get("Grupo varietal", pedido.get("grupo_varietal", "")) or "").strip()
+    variedad = str(pedido.get("Variedad", pedido.get("Variedad Coop", pedido.get("variedad", ""))) or "").strip()
+    calibre = str(pedido.get("Calibre", pedido.get("calibre", "")) or "").strip()
+    categoria = str(pedido.get("Categoría", pedido.get("Categoria", pedido.get("categoria", ""))) or "").strip()
+    categoria_operativa = PlanningRepository.normalizar_categoria_operativa(categoria)
+    return (cultivo, campana, grupo_varietal, variedad, calibre, categoria_operativa)
+
+
+def construir_necesidades_operativas(pedidos_totales: list[dict]) -> list[dict]:
+    agrupado: dict[tuple[str, str, str, str, str, str], dict] = {}
+    for pedido in (pedidos_totales or []):
+        kg = _kg_pendiente_linea(pedido)
+        if kg <= 0:
+            continue
+        key = _need_key(pedido)
+        reg = agrupado.setdefault(key, {
+            "cultivo": key[0], "campana": key[1], "grupo_varietal": key[2], "variedad": key[3],
+            "calibre": key[4], "categoria": key[5], "kg_necesarios_total": 0.0, "kg_reales": 0.0,
+            "kg_previstos": 0.0, "pedidos_origen": [], "primera_fecha_salida": "", "prioridad": 0,
+            "origen_demanda": "OPERATIVA",
+        })
+        origen = _norm_text(pedido.get("origen_demanda", "REAL"))
+        if origen == "PREVISTO":
+            reg["kg_previstos"] += kg
+        else:
+            reg["kg_reales"] += kg
+        reg["kg_necesarios_total"] = reg["kg_reales"] + reg["kg_previstos"]
+        reg["pedidos_origen"].append(str(pedido.get("IdPedidoLora", "")))
+        fecha = str(pedido.get("fecha_salida", pedido.get("Fecha salida", "")) or "").strip()
+        if fecha and (not reg["primera_fecha_salida"] or fecha < reg["primera_fecha_salida"]):
+            reg["primera_fecha_salida"] = fecha
+    necesidades = list(agrupado.values())
+    logger.info("Necesidades operativas construidas: %s", len(necesidades))
+    for key, reg in agrupado.items():
+        logger.info("Need key=%s kg_total=%s kg_reales=%s kg_previstos=%s", key, reg["kg_necesarios_total"], reg["kg_reales"], reg["kg_previstos"])
+    return necesidades
 
 
 def _pedido_unico_key(pedido: dict) -> str:
@@ -1766,13 +1811,19 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     cand_tbl.tree.tag_configure("riesgo_alto", background="#f8d7da")
 
     prioridades_map = _cargar_prioridades_pedidos()
-    pedidos_informativos = [dict(p) for p in pedidos]
-    for p in pedidos_informativos:
-        p["origen_demanda"] = "PEDIDO_REAL"
-    pedidos_informativos.extend([_pedido_previsto_a_simulacion(p) for p in previstos_activos])
+    pedidos_reales = [dict(p) for p in pedidos]
+    for p in pedidos_reales:
+        p["origen_demanda"] = "REAL"
+    pedidos_previstos_sim = []
+    for p in previstos_activos:
+        pedido_previsto = _pedido_previsto_a_simulacion(p)
+        pedidos_previstos_sim.append(pedido_previsto)
+        logger.info("Pedido previsto integrado id=%s variedad=%s calibre=%s kg=%s", p.get("id_previsto", ""), p.get("variedad", ""), p.get("calibre", ""), p.get("kg_estimados", 0))
+    pedidos_informativos = pedidos_reales + pedidos_previstos_sim
+    logger.info("Demanda simulación: reales=%s previstos=%s total=%s", len(pedidos_reales), len(pedidos_previstos_sim), len(pedidos_informativos))
     for p in pedidos_informativos:
         p["prioridad_manual"] = prioridades_map.get(_pedido_id_prioridad(p), int(_to_float(p.get("prioridad_manual", 0))))
-    pedidos_operativos = [p for p in pedidos_informativos if _kg_pendiente_linea(p) > 0]
+    pedidos_operativos = construir_necesidades_operativas([normalizar_pedido_para_simulacion(p) for p in pedidos_informativos])
     logger.info("Pedidos simulación: informativos=%s operativos=%s", len(pedidos_informativos), len(pedidos_operativos))
     if not pedidos_operativos:
         logger.info("Simulación sin pedidos operativos: análisis de stock/sobrantes")
@@ -1846,7 +1897,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         grupo_conf = _grupo_pedido(pedido)
         perfil_conf = _perfil_pedido(pedido, grupo_conf)
         resumen_rows.append({
-            "Origen demanda": "PREVISTO" if _norm_text(pedido.get("origen_demanda", "")) == "PEDIDO_PREVISTO" else "REAL",
+            "Origen demanda": "PREVISTO" if _norm_text(pedido.get("origen_demanda", "")) == "PREVISTO" else "REAL",
             "Fecha salida": pedido.get("fecha_salida", pedido.get("Fecha salida", "")),
             "Bloque temporal": pedido.get("bloque_temporal", ""),
             "Prioridad manual": int(_to_float(pedido.get("prioridad_manual", 0))),
@@ -1866,14 +1917,14 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Estado global": estado,
             "Kg potencial físico": formatear_kg(simulacion["kg_potencial_fisico"]),
             "Kg potencial útil": formatear_kg(simulacion["kg_potencial_util"]),
-            "__tags__": ("pedido_previsto", tag_estado) if _norm_text(pedido.get("origen_demanda", "")) == "PEDIDO_PREVISTO" else (tag_estado,),
+            "__tags__": ("pedido_previsto", tag_estado) if _norm_text(pedido.get("origen_demanda", "")) == "PREVISTO" else (tag_estado,),
         })
     ids_simulados = {_pedido_id_prioridad(s.get("pedido", {})) for s in simulaciones}
     for pedido in pedidos_informativos:
         if _pedido_id_prioridad(pedido) in ids_simulados:
             continue
         resumen_rows.append({
-            "Origen demanda": "PREVISTO" if _norm_text(pedido.get("origen_demanda", "")) == "PEDIDO_PREVISTO" else "REAL",
+            "Origen demanda": "PREVISTO" if _norm_text(pedido.get("origen_demanda", "")) == "PREVISTO" else "REAL",
             "Fecha salida": pedido.get("fecha_salida", pedido.get("Fecha salida", "")),
             "Bloque temporal": pedido.get("bloque_temporal", ""),
             "Prioridad manual": int(_to_float(pedido.get("prioridad_manual", 0))),
@@ -1893,7 +1944,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Estado global": "SIN NECESIDAD",
             "Kg potencial físico": formatear_kg(0),
             "Kg potencial útil": formatear_kg(0),
-            "__tags__": ("pedido_previsto", "estado_neutro") if _norm_text(pedido.get("origen_demanda", "")) == "PEDIDO_PREVISTO" else ("estado_neutro",),
+            "__tags__": ("pedido_previsto", "estado_neutro") if _norm_text(pedido.get("origen_demanda", "")) == "PREVISTO" else ("estado_neutro",),
         })
     for r, s in zip(resumen_rows, simulaciones):
         bloque = _bloque_temporal_horizonte(r.get("Fecha salida", ""), r.get("Bloque temporal", ""), date.today())
@@ -1990,7 +2041,8 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         tbl.tree.tag_configure("origen_campo_estimado", background="#e7d9f7")
         tbl.tree.tag_configure("origen_desconocido", background="#eeeeee")
 
-    pedidos_horizonte = list(pedidos_detalle_horizonte or pedidos)
+    pedidos_horizonte_base = list(pedidos_detalle_horizonte or pedidos_reales)
+    pedidos_horizonte = pedidos_horizonte_base + pedidos_previstos_sim
     logger.info(
         "Horizonte pedidos entrada: filas=%s fechas=%s kg_total=%s",
         len(pedidos_horizonte),
