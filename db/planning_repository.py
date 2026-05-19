@@ -1245,7 +1245,6 @@ class PlanningRepository:
                          p."Cliente" ASC,
                          p."IdPedidoLora" ASC,
                          p."Linea" ASC
-                LIMIT 500
             """
             logger.info("get_pedidos_pendientes: después de pedidos_filtrados (query construida)")
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
