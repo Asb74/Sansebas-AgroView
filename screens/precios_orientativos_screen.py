@@ -126,6 +126,7 @@ class PreciosOrientativosScreen(ttk.Frame):
         summary_actions = ttk.Frame(summary_tab)
         summary_actions.grid(row=0, column=0, sticky="w", pady=(0, 8))
         ttk.Button(summary_actions, text="Calcular estimaciones", command=self.calcular_estimaciones).pack(side="left", padx=(0, 8))
+        ttk.Button(summary_actions, text="Guardar estimaciones", command=self.guardar_estimaciones).pack(side="left", padx=(0, 8))
         ttk.Button(summary_actions, text="Ver resumen", command=self.ver_resumen).pack(side="left", padx=(0, 8))
         ttk.Button(summary_actions, text="Ver resumen semanal", command=self.ver_resumen_semanal).pack(side="left")
 
@@ -137,13 +138,12 @@ class PreciosOrientativosScreen(ttk.Frame):
         proposal_tab = ttk.Frame(tabs, padding=8)
         proposal_tab.grid_rowconfigure(1, weight=1)
         proposal_tab.grid_columnconfigure(0, weight=1)
-        tabs.add(proposal_tab, text="Propuesta de precios")
+        tabs.add(proposal_tab, text="Precios pendientes")
 
         proposal_actions = ttk.Frame(proposal_tab)
         proposal_actions.grid(row=0, column=0, sticky="w", pady=(0, 8))
         ttk.Button(proposal_actions, text="Preparar propuesta", command=self.preparar_propuesta).pack(side="left", padx=(0, 8))
-        ttk.Button(proposal_actions, text="Generar PDF propuesta", command=self.generar_pdf_propuesta).pack(side="left", padx=(0, 8))
-        ttk.Button(proposal_actions, text="Guardar estimaciones", command=self.guardar_estimaciones).pack(side="left")
+        ttk.Button(proposal_actions, text="Generar PDF propuesta", command=self.generar_pdf_propuesta).pack(side="left")
 
         proposal_columns = ["IdPedidoLora", "Línea", "Semana", "FechaSalida", "Cliente", "Variedad Coop", "Calibre", "Confección", "GrupoConfección", "NetoCliente", "EurosOrientativos actual", "EurosOrientativosCalc", "€/kg propuesto", "Método", "Observaciones"]
         self.propuesta_table = DataTable(proposal_tab, columns=proposal_columns)
