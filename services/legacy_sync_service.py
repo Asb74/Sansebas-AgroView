@@ -284,7 +284,10 @@ class LegacySyncService:
                 logger.info("Lote chunk=%03d/%03d ids_en_chunk=%s", idx, len(chunks), len(chunk))
                 placeholders = ",".join(["?"] * len(chunk))
                 deleted = conn.execute(f"DELETE FROM Lote WHERE IdPalet IN ({placeholders})", chunk).rowcount
-                ids_sql = ",".join(f"'{p.replace("'", "''")}'" for p in chunk)
+                ids_sql = ",".join(
+                    "'" + p.replace("'", "''") + "'"
+                    for p in chunk
+                )
                 query = f"SELECT * FROM Lote WHERE IdPalet IN ({ids_sql})"
                 ok, msg, csv_path, _ = self._run_export_custom(setting, query, output_tag=f"lote_{idx:03d}")
                 if not ok or not csv_path:
