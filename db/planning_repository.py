@@ -2025,3 +2025,77 @@ class PlanningRepository:
         except Exception:
             logger.exception("Error obteniendo opciones contextuales de filtro %s con filtros %s", key, filters)
             raise
+
+    def cargar_catalogos_pedidos_previstos(self, cultivo: str) -> dict[str, Any]:
+        cultivo_norm = str(cultivo or "").strip()
+        out: dict[str, Any] = {"variedades": [], "variedad_meta": {}, "calibres": [], "categorias": [], "grupos_confeccion": []}
+        pedidos_path = self._db_path(DB_PEDIDOS)
+        eepl_path = self._db_path(DB_EEPPL)
+        if not pedidos_path.exists() or not eepl_path.exists():
+            return out
+        try:
+            with sqlite3.connect(eepl_path) as conn_eepl:
+                conn_eepl.row_factory = sqlite3.Row
+                rows_var = conn_eepl.execute(
+                    """
+                    SELECT "Variedad" AS variedad, "GRUPO" AS grupo, "SUBGRUPO" AS subgrupo, "PRODUCTO" AS producto
+                    FROM "MVariedad"
+                    WHERE UPPER(TRIM(COALESCE("CULTIVO", ''))) = UPPER(TRIM(?))
+                    ORDER BY "Variedad"
+                    """,
+                    (cultivo_norm,),
+                ).fetchall()
+                for r in rows_var:
+                    variedad = str(r["variedad"] or "").strip()
+                    if not variedad:
+                        continue
+                    out["variedades"].append(variedad)
+                    out["variedad_meta"][variedad] = {"grupo": str(r["grupo"] or "").strip(), "subgrupo": str(r["subgrupo"] or "").strip(), "producto": str(r["producto"] or "").strip()}
+
+            with sqlite3.connect(pedidos_path) as conn_ped:
+                conn_ped.row_factory = sqlite3.Row
+                out["grupos_confeccion"] = [
+                    str(r["grupo"]).strip()
+                    for r in conn_ped.execute(
+                        """
+                        SELECT DISTINCT "GRUPO" AS grupo
+                        FROM "MGrupoConfeccion"
+                        WHERE "GRUPO" IS NOT NULL AND TRIM("GRUPO") <> ''
+                        ORDER BY "GRUPO"
+                        """
+                    ).fetchall()
+                    if str(r["grupo"] or "").strip()
+                ]
+                out["categorias"] = [
+                    str(r["categoria"]).strip()
+                    for r in conn_ped.execute(
+                        """
+                        SELECT DISTINCT "UNIFICADO" AS categoria
+                        FROM "MCategoria"
+                        WHERE UPPER(TRIM(COALESCE("CULTIVO", ''))) = UPPER(TRIM(?))
+                          AND "UNIFICADO" IS NOT NULL
+                          AND TRIM("UNIFICADO") <> ''
+                        ORDER BY "UNIFICADO"
+                        """,
+                        (cultivo_norm,),
+                    ).fetchall()
+                    if str(r["categoria"] or "").strip()
+                ]
+                out["calibres"] = [
+                    str(r["calibre"]).strip()
+                    for r in conn_ped.execute(
+                        """
+                        SELECT DISTINCT "Calibre" AS calibre
+                        FROM "MCalibre"
+                        WHERE UPPER(TRIM(COALESCE("CULTIVO", ''))) = UPPER(TRIM(?))
+                          AND "Calibre" IS NOT NULL
+                          AND TRIM("Calibre") <> ''
+                        ORDER BY "Calibre"
+                        """,
+                        (cultivo_norm,),
+                    ).fetchall()
+                    if str(r["calibre"] or "").strip()
+                ]
+        except Exception:
+            logger.exception("No se pudieron cargar catálogos de pedidos previstos para cultivo=%s", cultivo_norm)
+        return out
