@@ -946,6 +946,27 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
     reglas_compat = cargar_reglas_compatibilidad_operativa()
 
     for pedido in pedidos_meta:
+        kg_necesario = _kg_pendiente_linea(pedido)
+        if kg_necesario <= 0:
+            logger.info(
+                "Pedido omitido en cálculo operativo por kg=0 id=%s",
+                pedido.get("IdPedidoLora", pedido.get("id_pedido", "")),
+            )
+            simulaciones.append({
+                "pedido": pedido,
+                "kg_necesario": 0.0,
+                "kg_pendientes": 0.0,
+                "estado": "CUBIERTO / SIN NECESIDAD",
+                "kg_cobertura_simulada": 0.0,
+                "kg_asignado_simulado": 0.0,
+                "kg_faltante_simulado": 0.0,
+                "estado_global": "SIN NECESIDAD",
+                "kg_potencial_fisico": 0.0,
+                "kg_potencial_util": 0.0,
+                "uso_compatibilidad_flexible": False,
+                "candidatos": [],
+            })
+            continue
         candidatos_raw = get_candidatos_cb(pedido) or []
         pedido_id = pedido.get("IdPedidoLora", pedido.get("id_pedido", ""))
         variedad = pedido.get("Variedad", pedido.get("variedad", ""))
@@ -953,6 +974,8 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
         calibre = pedido.get("Calibre", pedido.get("calibre", ""))
         categoria = pedido.get("Categoría", pedido.get("categoria", ""))
         kg_necesario = _to_float(pedido.get("Kg pedidos pendientes", pedido.get("kg_pendiente", 0)))
+        if kg_necesario <= 0:
+            continue
         sum_kg_candidatos = sum(_to_float(c.get("Kg disponibles", c.get("kg_utiles_estimados", c.get("kg_fisicos", 0)))) for c in candidatos_raw)
         if not candidatos_raw:
             logger.warning(
@@ -976,6 +999,9 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             cand["Grupo varietal pedido"] = pedido.get("Grupo varietal", pedido.get("grupo_varietal", ""))
             cand["score_simulacion"] = score
             cand["flexibilidad_usada_simulacion"] = ("Variedad exacta" if rank_var == 0 else "Mismo grupo varietal" if rank_var == 1 else "Grupo varietal alternativo" if rank_var == 2 else "Incompatible")
+            kg_pedido = _kg_pendiente_linea(pedido)
+            if kg_pedido <= 0:
+                continue
             compat = evaluar_compatibilidad_operativa(pedido, cand, reglas_compat)
             cand["tipo_compatibilidad"] = compat.get("tipo", "INCOMPATIBLE")
             cand["penalizacion_compatibilidad"] = int(_to_float(compat.get("penalizacion", 0)))
@@ -1046,6 +1072,8 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
 
         kg_necesario = _kg_pendiente_linea(pedido)
         pendiente = kg_necesario
+        if pendiente <= 0:
+            continue
         asignado = 0.0
         for cand in candidatos:
             if pendiente <= 0:
@@ -1386,6 +1414,25 @@ def calcular_horizonte_cobertura(
         len(inventario_global or {}),
         sum(_kg_pendiente_linea(p) for p in (pedidos or [])),
     )
+    kg_total_pedidos = sum(_kg_pendiente_linea(p) for p in (pedidos or []))
+    if kg_total_pedidos <= 0:
+        return {
+            "fecha_limite_cubierta": "No aplica",
+            "dias_autonomia": None,
+            "estado_horizonte": "SIN NECESIDAD",
+            "pedidos_cubiertos": 0,
+            "pedidos_parciales": 0,
+            "pedidos_insuficientes": 0,
+            "kg_pendientes_total": 0.0,
+            "kg_asignados_total": 0.0,
+            "kg_faltantes_total": 0.0,
+            "primer_fallo": {},
+            "resumen_por_fecha": [],
+            "faltantes_por_calibre": [],
+            "stock_restante_por_calibre": [],
+            "recomendaciones": ["Sin necesidad operativa: kg pedidos=0, kg cubiertos=0, kg faltantes=0."],
+            "hay_fechas_validas": False,
+        }
     if not pedidos:
         return {
             "fecha_limite_cubierta": "No aplica",
@@ -1637,18 +1684,22 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     cand_tbl.tree.tag_configure("riesgo_alto", background="#f8d7da")
 
     prioridades_map = _cargar_prioridades_pedidos()
-    pedidos = [dict(p) for p in pedidos]
-    for p in pedidos:
+    pedidos_informativos = [dict(p) for p in pedidos]
+    for p in pedidos_informativos:
         p["origen_demanda"] = "PEDIDO_REAL"
-    pedidos.extend([_pedido_previsto_a_simulacion(p) for p in previstos_activos])
-    for p in pedidos:
+    pedidos_informativos.extend([_pedido_previsto_a_simulacion(p) for p in previstos_activos])
+    for p in pedidos_informativos:
         p["prioridad_manual"] = prioridades_map.get(_pedido_id_prioridad(p), int(_to_float(p.get("prioridad_manual", 0))))
+    pedidos_operativos = [p for p in pedidos_informativos if _kg_pendiente_linea(p) > 0]
+    logger.info("Pedidos simulación: informativos=%s operativos=%s", len(pedidos_informativos), len(pedidos_operativos))
+    if not pedidos_operativos:
+        logger.info("Simulación sin pedidos operativos: análisis de stock/sobrantes")
     if pedidos_detalle_horizonte is not None:
         pedidos_detalle_horizonte = [dict(p) for p in pedidos_detalle_horizonte]
         for p in pedidos_detalle_horizonte:
             p["prioridad_manual"] = prioridades_map.get(_pedido_id_prioridad(p), int(_to_float(p.get("prioridad_manual", 0))))
 
-    simulaciones, asignaciones_simuladas, _stock_simulado = simular_asignacion_global(pedidos, get_candidatos_cb, scoring=scoring)
+    simulaciones, asignaciones_simuladas, _stock_simulado = simular_asignacion_global(pedidos_operativos, get_candidatos_cb, scoring=scoring)
     inventario_global_simulado = dict(_stock_simulado)
     calibres_tecnicos = sorted({
         str(p.get("calibre", "")).strip()
@@ -1735,6 +1786,33 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Kg potencial útil": formatear_kg(simulacion["kg_potencial_util"]),
             "__tags__": ("pedido_previsto", tag_estado) if _norm_text(pedido.get("origen_demanda", "")) == "PEDIDO_PREVISTO" else (tag_estado,),
         })
+    ids_simulados = {_pedido_id_prioridad(s.get("pedido", {})) for s in simulaciones}
+    for pedido in pedidos_informativos:
+        if _pedido_id_prioridad(pedido) in ids_simulados:
+            continue
+        resumen_rows.append({
+            "Origen demanda": "PREVISTO" if _norm_text(pedido.get("origen_demanda", "")) == "PEDIDO_PREVISTO" else "REAL",
+            "Fecha salida": pedido.get("fecha_salida", pedido.get("Fecha salida", "")),
+            "Bloque temporal": pedido.get("bloque_temporal", ""),
+            "Prioridad manual": int(_to_float(pedido.get("prioridad_manual", 0))),
+            "Prioridad total": 0,
+            "Motivo prioridad": "",
+            "Cliente": pedido.get("Cliente", ""),
+            "Variedad": pedido.get("Variedad", ""),
+            "Calibre": pedido.get("Calibre", ""),
+            "Categoría": pedido.get("Categoría", ""),
+            "Grupo confección": _norm_text(pedido.get("grupo_confeccion") or pedido.get("GrupoConfeccion") or pedido.get("GRUPO") or pedido.get("grupo")) or "DESCONOCIDO",
+            "Perfil confección": _norm_text(pedido.get("perfil_confeccion")) or "DESCONOCIDO",
+            "Kg pendientes": formatear_kg(0),
+            "Estado simulación": "SIN NECESIDAD",
+            "Kg cobertura simulada": formatear_kg(0),
+            "Kg asignado global": formatear_kg(0),
+            "Kg faltante global": formatear_kg(0),
+            "Estado global": "SIN NECESIDAD",
+            "Kg potencial físico": formatear_kg(0),
+            "Kg potencial útil": formatear_kg(0),
+            "__tags__": ("pedido_previsto", "estado_neutro") if _norm_text(pedido.get("origen_demanda", "")) == "PEDIDO_PREVISTO" else ("estado_neutro",),
+        })
     for r, s in zip(resumen_rows, simulaciones):
         bloque = _bloque_temporal_horizonte(r.get("Fecha salida", ""), r.get("Bloque temporal", ""), date.today())
         ptemp = _prioridad_temporal_score(bloque)
@@ -1810,8 +1888,8 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     )
     if total_pedidos == 0:
         kg_stock_total_util = sum(_to_float(p.get("kg_fisicos", 0)) for p in inventario_global_simulado.values())
-        resumen.configure(text=f"SIN PEDIDOS PENDIENTES · Pedidos: 0 · Pedidos cubiertos: 0 · Insuficientes: 0 · Stock útil total: {formatear_kg(kg_stock_total_util)} · Stock libre total: {formatear_kg(sob_total)} · Stock asignado: {formatear_kg(0)}")
-        detalle.configure(text="No hay pedidos pendientes seleccionados. Todo el stock aparece como libre. Revisar sobrantes y oportunidades de salida comercial. No es necesario recolectar para pedidos pendientes.")
+        resumen.configure(text=f"SIN NECESIDAD DE ASIGNACIÓN · Pedidos operativos: 0 · Kg stock útil: {formatear_kg(kg_stock_total_util)} · Kg asignados: {formatear_kg(0)} · Kg libres: {formatear_kg(sob_total)} · Kg faltantes: {formatear_kg(0)}")
+        detalle.configure(text="Análisis informativo sin demanda operativa. Stock libre al 100%. Acción sugerida: Buscar salida comercial / revisar rotación.")
     else:
         resumen.configure(text=f"Cobertura global · Pedidos: {total_pedidos} · Totales: {totales} · Parciales: {parciales} · Insuficientes: {insuficientes} · Kg asignados simulados: {formatear_kg(kg_asig_total)} · Kg faltantes simulados: {formatear_kg(kg_falt_total)} · Kg sobrantes útiles: {formatear_kg(sob_total)}")
         detalle.configure(text=f"Necesidad recolección · Nº necesidades: {need_tot['n']} · Kg útiles faltantes: {formatear_kg(need_tot['kg_falt'])} · Kg campo estimados total: {formatear_kg(need_tot['kg_campo'])} · Sobrantes · Kg útiles sobrantes: {formatear_kg(sob_total)} · Orígenes con sobrante: {len(sob_origenes)}")
