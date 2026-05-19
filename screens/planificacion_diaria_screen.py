@@ -325,9 +325,6 @@ class PlanificacionDiariaScreen(ttk.Frame):
             for r in self.balance_rows_all
             if str(r.get("Tipo línea", "")).strip() == "Pedido"
         ]
-        if not pedidos:
-            messagebox.showinfo("Simulación de asignación", "No hay pedidos pendientes para simular.", parent=self)
-            return
 
         def _candidatos_de_pedido(pedido: dict) -> list[dict]:
             return self.service.get_candidatos_compatibles_para_pedido(self._filters_payload(), pedido, policy_cfg=self._build_sim_policy())
@@ -349,6 +346,15 @@ class PlanificacionDiariaScreen(ttk.Frame):
             )
             return pools
 
+        inventario_global = _inventario_global()
+        if not pedidos and not inventario_global:
+            messagebox.showinfo(
+                "Simulación de asignación",
+                "No hay pedidos pendientes ni stock analizable para simular.",
+                parent=self,
+            )
+            return
+
         if not self.pedidos_pendientes_rows_raw:
             try:
                 modo_pedidos = self.pedidos_modo_var.get()
@@ -367,12 +373,14 @@ class PlanificacionDiariaScreen(ttk.Frame):
             sorted(set(str(r.get("Fecha salida", "")) for r in pedidos_detalle_horizonte)),
             sum(float(r.get("Kg pendiente", 0) or 0) for r in pedidos_detalle_horizonte),
         )
+        if not pedidos:
+            logger.info("Simulación abierta sin pedidos: modo análisis stock/sobrantes")
 
         abrir_simulacion_asignacion(
             self,
             pedidos,
             _candidatos_de_pedido,
-            get_inventario_global_cb=_inventario_global,
+            get_inventario_global_cb=lambda: inventario_global,
             pedidos_detalle_horizonte=pedidos_detalle_horizonte,
         )
 
