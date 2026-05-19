@@ -2036,66 +2036,80 @@ class PlanningRepository:
         try:
             with sqlite3.connect(eepl_path) as conn_eepl:
                 conn_eepl.row_factory = sqlite3.Row
-                rows_var = conn_eepl.execute(
-                    """
-                    SELECT "Variedad" AS variedad, "GRUPO" AS grupo, "SUBGRUPO" AS subgrupo, "PRODUCTO" AS producto
-                    FROM "MVariedad"
-                    WHERE UPPER(TRIM(COALESCE("CULTIVO", ''))) = UPPER(TRIM(?))
-                    ORDER BY "Variedad"
-                    """,
-                    (cultivo_norm,),
-                ).fetchall()
-                for r in rows_var:
-                    variedad = str(r["variedad"] or "").strip()
-                    if not variedad:
-                        continue
-                    out["variedades"].append(variedad)
-                    out["variedad_meta"][variedad] = {"grupo": str(r["grupo"] or "").strip(), "subgrupo": str(r["subgrupo"] or "").strip(), "producto": str(r["producto"] or "").strip()}
+                try:
+                    rows_var = conn_eepl.execute(
+                        """
+                        SELECT DISTINCT "Variedad" AS variedad, "GRUPO" AS grupo, "SUBGRUPO" AS subgrupo, "PRODUCTO" AS producto
+                        FROM "MVariedad"
+                        WHERE UPPER(TRIM("CULTIVO")) = UPPER(TRIM(?))
+                          AND "Variedad" IS NOT NULL
+                          AND TRIM("Variedad") <> ''
+                        ORDER BY "Variedad"
+                        """,
+                        (cultivo_norm,),
+                    ).fetchall()
+                    for r in rows_var:
+                        variedad = str(r["variedad"] or "").strip()
+                        if not variedad:
+                            continue
+                        out["variedades"].append(variedad)
+                        out["variedad_meta"][variedad] = {"grupo": str(r["grupo"] or "").strip(), "subgrupo": str(r["subgrupo"] or "").strip(), "producto": str(r["producto"] or "").strip()}
+                except Exception as exc:
+                    logger.warning("No se pudieron cargar maestros de %s para cultivo=%s: %s", "variedades", cultivo_norm, exc)
 
             with sqlite3.connect(pedidos_path) as conn_ped:
                 conn_ped.row_factory = sqlite3.Row
-                out["grupos_confeccion"] = [
-                    str(r["grupo"]).strip()
-                    for r in conn_ped.execute(
-                        """
-                        SELECT DISTINCT "GRUPO" AS grupo
-                        FROM "MGrupoConfeccion"
-                        WHERE "GRUPO" IS NOT NULL AND TRIM("GRUPO") <> ''
-                        ORDER BY "GRUPO"
-                        """
-                    ).fetchall()
-                    if str(r["grupo"] or "").strip()
-                ]
-                out["categorias"] = [
-                    str(r["categoria"]).strip()
-                    for r in conn_ped.execute(
-                        """
-                        SELECT DISTINCT "UNIFICADO" AS categoria
-                        FROM "MCategoria"
-                        WHERE UPPER(TRIM(COALESCE("CULTIVO", ''))) = UPPER(TRIM(?))
-                          AND "UNIFICADO" IS NOT NULL
-                          AND TRIM("UNIFICADO") <> ''
-                        ORDER BY "UNIFICADO"
-                        """,
-                        (cultivo_norm,),
-                    ).fetchall()
-                    if str(r["categoria"] or "").strip()
-                ]
-                out["calibres"] = [
-                    str(r["calibre"]).strip()
-                    for r in conn_ped.execute(
-                        """
-                        SELECT DISTINCT "Calibre" AS calibre
-                        FROM "MCalibre"
-                        WHERE UPPER(TRIM(COALESCE("CULTIVO", ''))) = UPPER(TRIM(?))
-                          AND "Calibre" IS NOT NULL
-                          AND TRIM("Calibre") <> ''
-                        ORDER BY "Calibre"
-                        """,
-                        (cultivo_norm,),
-                    ).fetchall()
-                    if str(r["calibre"] or "").strip()
-                ]
+                try:
+                    out["calibres"] = [
+                        str(r["calibre"]).strip()
+                        for r in conn_ped.execute(
+                            """
+                            SELECT DISTINCT "Calibre" AS calibre
+                            FROM "MCalibre"
+                            WHERE UPPER(TRIM("CULTIVO")) = UPPER(TRIM(?))
+                              AND "Calibre" IS NOT NULL
+                              AND TRIM("Calibre") <> ''
+                            ORDER BY "Calibre"
+                            """,
+                            (cultivo_norm,),
+                        ).fetchall()
+                        if str(r["calibre"] or "").strip()
+                    ]
+                except Exception as exc:
+                    logger.warning("No se pudieron cargar maestros de %s para cultivo=%s: %s", "calibres", cultivo_norm, exc)
+                try:
+                    out["categorias"] = [
+                        str(r["categoria"]).strip()
+                        for r in conn_ped.execute(
+                            """
+                            SELECT DISTINCT "UNIFICADO" AS categoria
+                            FROM "MCategoria"
+                            WHERE UPPER(TRIM("CULTIVO")) = UPPER(TRIM(?))
+                              AND "UNIFICADO" IS NOT NULL
+                              AND TRIM("UNIFICADO") <> ''
+                            ORDER BY "UNIFICADO"
+                            """,
+                            (cultivo_norm,),
+                        ).fetchall()
+                        if str(r["categoria"] or "").strip()
+                    ]
+                except Exception as exc:
+                    logger.warning("No se pudieron cargar maestros de %s para cultivo=%s: %s", "categorias", cultivo_norm, exc)
+                try:
+                    out["grupos_confeccion"] = [
+                        str(r["grupo"]).strip()
+                        for r in conn_ped.execute(
+                            """
+                            SELECT DISTINCT "GRUPO" AS grupo
+                            FROM "MGrupoConfeccion"
+                            WHERE "GRUPO" IS NOT NULL AND TRIM("GRUPO") <> ''
+                            ORDER BY "GRUPO"
+                            """
+                        ).fetchall()
+                        if str(r["grupo"] or "").strip()
+                    ]
+                except Exception as exc:
+                    logger.warning("No se pudieron cargar maestros de %s para cultivo=%s: %s", "grupos_confeccion", cultivo_norm, exc)
         except Exception:
             logger.exception("No se pudieron cargar catálogos de pedidos previstos para cultivo=%s", cultivo_norm)
         return out

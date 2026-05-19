@@ -376,12 +376,19 @@ class PlanificacionDiariaScreen(ttk.Frame):
         if not pedidos:
             logger.info("Simulación abierta sin pedidos: modo análisis stock/sobrantes")
 
+        cultivos = self.filter_widgets["cultivo"].get_selected()
+        cultivos_validos = [str(c or "").strip() for c in cultivos if str(c or "").strip() and str(c or "").strip().upper() != "TODOS"]
+        if len(cultivos_validos) != 1:
+            messagebox.showwarning("Simulación de asignación", "Seleccione un único cultivo para simular.", parent=self)
+            return
+
         abrir_simulacion_asignacion(
             self,
             pedidos,
             _candidatos_de_pedido,
             get_inventario_global_cb=lambda: inventario_global,
             pedidos_detalle_horizonte=pedidos_detalle_horizonte,
+            cultivo_actual=cultivos_validos[0],
         )
 
     def _open_selected_balance_coverage(self) -> None:
