@@ -27,6 +27,9 @@ CANONICAL_ALIASES = {
 def normalizar_texto(valor: Any) -> str:
     return str(valor or "").strip()
 
+def normalizar_espacios(valor: Any) -> str:
+    return " ".join(normalizar_texto(valor).split())
+
 def normalizar_numero(valor: Any) -> float:
     try:
         return float(valor or 0)
@@ -2053,7 +2056,16 @@ class PlanningRepository:
                         if not variedad:
                             continue
                         out["variedades"].append(variedad)
-                        out["variedad_meta"][variedad] = {"grupo": str(r["grupo"] or "").strip(), "subgrupo": str(r["subgrupo"] or "").strip(), "producto": str(r["producto"] or "").strip()}
+                        grupo = normalizar_texto(r["grupo"])
+                        subgrupo = normalizar_texto(r["subgrupo"])
+                        producto = normalizar_texto(r["producto"])
+                        grupo_varietal = normalizar_espacios(f"{grupo} {subgrupo}") if grupo else "DESCONOCIDO"
+                        out["variedad_meta"][variedad] = {
+                            "grupo": grupo,
+                            "subgrupo": subgrupo,
+                            "producto": producto,
+                            "grupo_varietal": grupo_varietal,
+                        }
                 except Exception as exc:
                     logger.warning("No se pudieron cargar maestros de %s para cultivo=%s: %s", "variedades", cultivo_norm, exc)
 

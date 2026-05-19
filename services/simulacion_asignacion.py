@@ -2616,11 +2616,21 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     def _resolver_variedad_meta(*_args) -> None:
         variedad = form_vars["variedad"].get().strip()
         meta = variedad_meta.get(variedad, {}) if variedad else {}
-        grupo = str(meta.get("grupo", "") or "").strip() or "DESCONOCIDO"
+        grupo = str(meta.get("grupo", "") or "").strip()
         subgrupo = str(meta.get("subgrupo", "") or "").strip()
         producto = str(meta.get("producto", "") or "").strip()
-        form_vars["grupo_varietal"].set(grupo)
-        logger.info("Variedad seleccionada=%s grupo=%s subgrupo=%s producto=%s", variedad, grupo, subgrupo, producto)
+        grupo_varietal = str(meta.get("grupo_varietal", "") or "").strip()
+        if not grupo_varietal:
+            grupo_varietal = " ".join(f"{grupo} {subgrupo}".split()) if grupo else "DESCONOCIDO"
+        form_vars["grupo_varietal"].set(grupo_varietal)
+        logger.info(
+            "Grupo varietal resuelto variedad=%s grupo=%s subgrupo=%s grupo_varietal=%s producto=%s",
+            variedad,
+            grupo,
+            subgrupo,
+            grupo_varietal,
+            producto,
+        )
 
     def _resolver_perfil_confeccion(*_args) -> None:
         grupo_conf = form_vars["grupo_confeccion"].get().strip()
