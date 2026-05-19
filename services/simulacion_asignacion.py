@@ -203,9 +203,11 @@ def _cargar_catalogo_pedidos_previstos_base(
 
 
 def cargar_catalogos_pedidos_previstos(cultivo: str) -> dict:
+    cultivo_actual = str(cultivo or "").strip()
+    logger.info("Cargando catálogos pedidos previstos cultivo=%s", cultivo_actual)
     try:
         repo = PlanningRepository()
-        catalogos = repo.cargar_catalogos_pedidos_previstos(cultivo)
+        catalogos = repo.cargar_catalogos_pedidos_previstos(cultivo_actual)
     except Exception:
         logger.exception("No se pudieron cargar catálogos maestros de pedidos previstos")
         catalogos = {}
@@ -217,7 +219,8 @@ def cargar_catalogos_pedidos_previstos(cultivo: str) -> dict:
         "grupos_confeccion": list(catalogos.get("grupos_confeccion", [])),
     }
     logger.info(
-        "Catálogos pedidos previstos cargados: variedades=%s calibres=%s categorias=%s grupos_confeccion=%s",
+        "Catálogos pedidos previstos cargados cultivo=%s variedades=%s calibres=%s categorias=%s grupos_confeccion=%s",
+        cultivo_actual,
         len(result["variedades"]),
         len(result["calibres"]),
         len(result["categorias"]),
@@ -1649,7 +1652,7 @@ def calcular_horizonte_cobertura(
     return {"fecha_limite_cubierta": fecha_limite_display, "dias_autonomia": dias_autonomia, "estado_horizonte": estado_horizonte, "pedidos_cubiertos": sum(1 for s in simulaciones if s.get('estado_global') in {'CUBIERTO EXACTO', 'CUBIERTO FLEXIBLE'}), "pedidos_parciales": sum(1 for s in simulaciones if s.get('estado_global') == 'PARCIAL'), "pedidos_insuficientes": sum(1 for s in simulaciones if s.get('estado_global') == 'INSUFICIENTE'), "kg_pendientes_total": kg_pend_total, "kg_asignados_total": kg_asig_total, "kg_faltantes_total": kg_falt_total, "primer_fallo": primer_fallo or {}, "resumen_por_fecha": resumen_por_fecha, "faltantes_por_calibre": sorted(faltantes_rows, key=lambda r: (r["Primera fecha afectada"] or "9999-99-99", -r["Kg faltantes"])), "stock_restante_por_calibre": stock_restante, "recomendaciones": recomendaciones, "hay_fechas_validas": hay_fechas_validas}
 
 
-def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None, pedidos_detalle_horizonte: list[dict] | None = None) -> None:
+def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None, pedidos_detalle_horizonte: list[dict] | None = None, cultivo_actual: str = "") -> None:
     popup = tk.Toplevel(parent)
     popup.title("Simulación de asignación")
     popup.geometry("1300x750")
@@ -2521,7 +2524,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     reglas_rows = [{"Tipo regla": "CALIBRE", "Pedido": r.get("calibre_pedido", ""), "Stock compatible": r.get("calibre_stock", ""), "Penalización": r.get("penalizacion", 0), "Activo": "Sí" if r.get("activo", True) else "No"} for r in reglas.get("calibres", [])]
     reglas_tbl.set_rows(reglas_rows)
 
-    cultivo_catalogo = str((pedidos_informativos[0] if pedidos_informativos else {}).get("Cultivo", "") or "")
+    cultivo_catalogo = str(cultivo_actual or "").strip()
     catalogos_previstos = cargar_catalogos_pedidos_previstos(cultivo_catalogo)
     valores_base = {
         "cliente": sorted({str(p.get("Cliente", p.get("cliente", "")) or "").strip() for p in list(pedidos_informativos) + list(pedidos_previstos)} - {""}, key=lambda x: _norm_text(x)),
@@ -2669,7 +2672,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         logger.info("Refrescando simulación por cambio en pedidos previstos")
         _guardar_previstos()
         popup.destroy()
-        abrir_simulacion_asignacion(parent, pedidos, get_candidatos_cb, scoring=scoring, get_inventario_global_cb=get_inventario_global_cb, pedidos_detalle_horizonte=pedidos_detalle_horizonte)
+        abrir_simulacion_asignacion(parent, pedidos, get_candidatos_cb, scoring=scoring, get_inventario_global_cb=get_inventario_global_cb, pedidos_detalle_horizonte=pedidos_detalle_horizonte, cultivo_actual=cultivo_actual)
 
     prev_tbl.set_rows(_rows_previstos())
     ttk.Button(prev_buttons, text="Nuevo", command=_limpiar_formulario).pack(side="left", padx=2)
