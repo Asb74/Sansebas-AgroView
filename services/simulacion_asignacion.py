@@ -1125,7 +1125,13 @@ def generar_diagnostico_operativo(pedidos_resultado: list[dict], necesidades: li
     recomendaciones_comerciales: list[str] = []
     recomendaciones_campo: list[str] = []
     recomendaciones_produccion: list[str] = []
-    if kg_faltantes == 0:
+    if total_pedidos == 0:
+        diagnostico["estado_general"] = "SIN PEDIDOS"
+        diagnostico["resumen"] = "No hay pedidos pendientes seleccionados. Todo el stock aparece como libre."
+        alertas.append("Revisar sobrantes y oportunidades de salida comercial.")
+        recomendaciones_comerciales.append("Buscar salida comercial / revisar rotación.")
+        recomendaciones_campo.append("No es necesario recolectar para pedidos pendientes.")
+    elif kg_faltantes == 0:
         diagnostico["estado_general"] = "OK"
         diagnostico["resumen"] = "No es necesario recolectar para cubrir los pedidos seleccionados."
     else:
@@ -1134,7 +1140,7 @@ def generar_diagnostico_operativo(pedidos_resultado: list[dict], necesidades: li
         alertas.append("Falta fruta para cubrir todos los pedidos.")
         recomendaciones_campo.append("Conviene recolectar fruta del perfil de mayor faltante.")
 
-    if kg_sobrantes > 0:
+    if kg_sobrantes > 0 and total_pedidos > 0:
         alertas.append("Existe sobrante útil tras cubrir pedidos.")
     if kg_sobrantes > 0 and kg_faltantes == 0:
         recomendaciones_comerciales.append("Buscar salida comercial para los sobrantes principales.")
@@ -1154,7 +1160,13 @@ def generar_diagnostico_operativo(pedidos_resultado: list[dict], necesidades: li
 
 def generar_acciones_sugeridas(diagnostico: dict) -> list[str]:
     acciones: list[str] = []
-    if diagnostico.get("kg_faltantes", 0) > 0:
+    if diagnostico.get("total_pedidos", 0) == 0:
+        acciones.extend([
+            "Buscar salida comercial para calibres con mayor stock libre.",
+            "Revisar rotación de ALMACEN_INDUSTRIAL y ALMACEN_COMERCIAL.",
+            "No planificar recolección adicional hasta nuevo pedido.",
+        ])
+    elif diagnostico.get("kg_faltantes", 0) > 0:
         top_cal = (diagnostico.get("calibres_con_mas_faltante") or ["perfil prioritario"])[0]
         acciones.extend([
             f"Recolectar partidas con predominio {top_cal}.",
@@ -1292,6 +1304,24 @@ def calcular_horizonte_cobertura(
         len(inventario_global or {}),
         sum(_kg_pendiente_linea(p) for p in (pedidos or [])),
     )
+    if not pedidos:
+        return {
+            "fecha_limite_cubierta": "No aplica",
+            "dias_autonomia": None,
+            "estado_horizonte": "SIN PEDIDOS",
+            "pedidos_cubiertos": 0,
+            "pedidos_parciales": 0,
+            "pedidos_insuficientes": 0,
+            "kg_pendientes_total": 0.0,
+            "kg_asignados_total": 0.0,
+            "kg_faltantes_total": 0.0,
+            "primer_fallo": {},
+            "resumen_por_fecha": [],
+            "faltantes_por_calibre": [],
+            "stock_restante_por_calibre": [],
+            "recomendaciones": ["No hay pedidos pendientes. Horizonte no aplica."],
+            "hay_fechas_validas": False,
+        }
     simulaciones, _asignaciones, stock_simulado = simular_asignacion_global(pedidos, get_candidatos_cb, scoring=scoring)
     logger.info(
         "Horizonte simulaciones: pedidos=%s kg_necesario=%s kg_asignado=%s kg_faltante=%s",
@@ -1683,8 +1713,13 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         len(sobrantes_rows),
         calibres_sobrantes,
     )
-    resumen.configure(text=f"Cobertura global · Pedidos: {total_pedidos} · Totales: {totales} · Parciales: {parciales} · Insuficientes: {insuficientes} · Kg asignados simulados: {formatear_kg(kg_asig_total)} · Kg faltantes simulados: {formatear_kg(kg_falt_total)} · Kg sobrantes útiles: {formatear_kg(sob_total)}")
-    detalle.configure(text=f"Necesidad recolección · Nº necesidades: {need_tot['n']} · Kg útiles faltantes: {formatear_kg(need_tot['kg_falt'])} · Kg campo estimados total: {formatear_kg(need_tot['kg_campo'])} · Sobrantes · Kg útiles sobrantes: {formatear_kg(sob_total)} · Orígenes con sobrante: {len(sob_origenes)}")
+    if total_pedidos == 0:
+        kg_stock_total_util = sum(_to_float(p.get("kg_fisicos", 0)) for p in inventario_global_simulado.values())
+        resumen.configure(text=f"SIN PEDIDOS PENDIENTES · Pedidos: 0 · Pedidos cubiertos: 0 · Insuficientes: 0 · Stock útil total: {formatear_kg(kg_stock_total_util)} · Stock libre total: {formatear_kg(sob_total)} · Stock asignado: {formatear_kg(0)}")
+        detalle.configure(text="No hay pedidos pendientes seleccionados. Todo el stock aparece como libre. Revisar sobrantes y oportunidades de salida comercial. No es necesario recolectar para pedidos pendientes.")
+    else:
+        resumen.configure(text=f"Cobertura global · Pedidos: {total_pedidos} · Totales: {totales} · Parciales: {parciales} · Insuficientes: {insuficientes} · Kg asignados simulados: {formatear_kg(kg_asig_total)} · Kg faltantes simulados: {formatear_kg(kg_falt_total)} · Kg sobrantes útiles: {formatear_kg(sob_total)}")
+        detalle.configure(text=f"Necesidad recolección · Nº necesidades: {need_tot['n']} · Kg útiles faltantes: {formatear_kg(need_tot['kg_falt'])} · Kg campo estimados total: {formatear_kg(need_tot['kg_campo'])} · Sobrantes · Kg útiles sobrantes: {formatear_kg(sob_total)} · Orígenes con sobrante: {len(sob_origenes)}")
 
     pedidos_tbl.set_rows(resumen_rows)
     pedidos_op_tbl.set_rows([{k: r.get(k, "") for k in pedidos_op_cols} for r in resumen_rows])
@@ -1718,7 +1753,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
 
     horizonte_frame = ttk.LabelFrame(horizonte_tab, text="Horizonte de cobertura", padding=8)
     horizonte_frame.pack(fill="x", pady=(0, 6))
-    hoy_estado = "OK"
+    hoy_estado = "Sin pedidos" if total_pedidos == 0 else "OK"
     if horizonte.get("resumen_por_fecha"):
         hoy_rows = [r for r in horizonte["resumen_por_fecha"] if _norm_text(r.get("Bloque temporal", "")) == "HOY"]
         if hoy_rows:
@@ -1729,8 +1764,8 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             else:
                 hoy_estado = "OK"
     primer_fallo = horizonte.get("primer_fallo", {})
-    autonomia_txt = f"{horizonte.get('dias_autonomia', 0)} días" if horizonte.get("dias_autonomia") is not None else "No calculable por falta de fecha"
-    primer_fallo_txt = "Sin fallo en el rango seleccionado"
+    autonomia_txt = "No aplica" if total_pedidos == 0 else (f"{horizonte.get('dias_autonomia', 0)} días" if horizonte.get("dias_autonomia") is not None else "No calculable por falta de fecha")
+    primer_fallo_txt = "No aplica" if total_pedidos == 0 else "Sin fallo en el rango seleccionado"
     if primer_fallo:
         primer_fallo_txt = (
             f"{_texto_fecha_horizonte(primer_fallo.get('Fecha salida'))} · "
@@ -1741,7 +1776,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     resumen_labels = [
         f"Pedidos hoy: {hoy_estado}",
         f"Autonomía estimada: {autonomia_txt}",
-        f"Cubierto hasta: {horizonte.get('fecha_limite_cubierta') or 'Fecha no disponible'}",
+        f"Cubierto hasta: {'No aplica' if total_pedidos == 0 else (horizonte.get('fecha_limite_cubierta') or 'Fecha no disponible')}",
         f"Primer fallo: {primer_fallo_txt}",
         f"Kg faltantes próximos 10 días: {formatear_kg(kg_falt_10)}",
         f"Recolección necesaria: {'Sí' if horizonte.get('kg_faltantes_total', 0) > 0 else 'No'}",
@@ -1884,10 +1919,10 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         return " · ".join(partes)
 
     logger.info(
-        "Sobrantes ejecutivos rows=%s kg_total=%s kg_libre=%s",
+        "Sobrantes sin pedidos: stock_total=%s stock_libre=%s pools=%s",
+        sum(_to_float(p.get("kg_fisicos", 0)) for p in inventario_global_simulado.values()),
+        sum(_to_float(r.get("Kg restante total", 0)) for r in sobrantes_rows),
         len(sobrantes_rows),
-        sum(_to_float(r.get("Kg stock total útil", _to_float(r.get("Kg asignados primera", 0)) + _to_float(r.get("Kg asignados segunda", 0)) + _to_float(r.get("Kg restante total", 0)))) for r in sobrantes_rows),
-        sum(_to_float(r.get("Kg libres", r.get("Kg restante total", 0))) for r in sobrantes_rows),
     )
 
     def _refresh_resumen_ejecutivo(*_args) -> None:
@@ -1918,7 +1953,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             f"Pedidos: {diagnostico['total_cubiertos']} cubiertos · {diagnostico['total_parciales']} parciales · {diagnostico['total_insuficientes']} insuficientes\n"
             f"Sobrante operativo: {formatear_kg(sum(_to_float(r.get('Kg restante total', 0)) for r in sobrantes_rows))}\n"
             f"Stock libre total: {formatear_kg(kg_sobrantes_utiles)} · Stock total útil: {formatear_kg(kg_stock_total)} · Stock asignado: {formatear_kg(kg_asignado)}\n"
-            f"Estado: {'SIN NECESIDAD DE RECOLECCIÓN' if diagnostico['kg_faltantes'] == 0 else 'FALTA FRUTA'}"
+            f"Estado: {'SIN PEDIDOS PENDIENTES' if diagnostico['total_pedidos'] == 0 else ('SIN NECESIDAD DE RECOLECCIÓN' if diagnostico['kg_faltantes'] == 0 else 'FALTA FRUTA')}"
         )
         estado_lbl.configure(text=estado_txt)
         group_key = "Grupo varietal" if agrupar_por_grupo else "Variedad"
@@ -1937,7 +1972,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             kg_libre = valores["libre"]
             kg_asig = max(0.0, kg_total - kg_libre)
             pct_libre = (kg_libre / kg_total * 100.0) if kg_total > 0 else 0.0
-            estado_comercial = "NORMAL"
+            estado_comercial = "SIN PEDIDO" if diagnostico.get("total_pedidos", 0) == 0 else "NORMAL"
             if _canonicalizar_origen(origen) == "ALMACEN_INDUSTRIAL" and kg_libre > 30000:
                 estado_comercial = "ROTACIÓN PRIORITARIA"
             elif kg_libre > 50000 and pct_libre > 80:
@@ -1972,7 +2007,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
                 "Kg libres": formatear_kg(kg_libre),
                 "% libre": f"{pct_libre:.1f}%",
                 "Estado comercial": estado_comercial,
-                "Acción sugerida": _accion_sobrante(calidad, origen),
+                "Acción sugerida": "Buscar salida comercial / revisar rotación" if diagnostico.get("total_pedidos", 0) == 0 else _accion_sobrante(calidad, origen),
                 "__tags__": (estado_tag, origen_tag),
             })
         top_sob_tbl.set_rows(top_sobrantes)
