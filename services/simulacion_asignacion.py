@@ -113,20 +113,21 @@ def _pedido_previsto_a_simulacion(p: dict) -> dict:
     }
 
 
-def _cargar_catalogo_pedidos_previstos_base() -> tuple[dict[str, list[str]], dict[str, str]]:
-    valores_base = {"cliente": set(), "variedad": set(), "calibre": set(), "categoria": set(), "grupo_confeccion": set(), "perfil_confeccion": set()}
+def _cargar_catalogo_pedidos_previstos_base(
+    pedidos_visibles: list[dict] | None = None,
+    pedidos_previstos: list[dict] | None = None,
+    inventario_global_simulado: dict[str, dict] | None = None,
+    sobrantes_rows: list[dict] | None = None,
+) -> tuple[dict[str, list[str]], dict[str, str]]:
+    logger.warning("No se usa modo_pedidos=todos para catálogos de simulación")
+    valores_base = {"cliente": set(), "variedad": set(), "calibre": set(), "categoria": set(), "grupo_confeccion": set(), "perfil_confeccion": set(), "grupo_varietal": set()}
     variedad_to_grupo: dict[str, str] = {}
-    try:
-        pedidos_base, _ = _planning_service.load_pedidos_pendientes({}, modo_pedidos="todos")
-    except Exception:
-        logger.exception("No se pudieron cargar maestros reales para pedidos previstos")
-        pedidos_base = []
-
+    pedidos_base = list(pedidos_visibles or []) + list(pedidos_previstos or [])
     for ped_src in pedidos_base:
         cliente = str(ped_src.get("Cliente", "") or "").strip()
-        variedad = str(ped_src.get("Variedad Coop", ped_src.get("Variedad", "")) or "").strip()
-        grupo = str(ped_src.get("Grupo varietal", "") or "").strip()
-        calibre = str(ped_src.get("Calibre", "") or "").strip()
+        variedad = str(ped_src.get("Variedad Coop", ped_src.get("Variedad", ped_src.get("variedad", ""))) or "").strip()
+        grupo = str(ped_src.get("Grupo varietal", ped_src.get("grupo_varietal", "")) or "").strip()
+        calibre = str(ped_src.get("Calibre", ped_src.get("calibre", "")) or "").strip()
         categoria = str(ped_src.get("Categoría", ped_src.get("Categoria", "")) or "").strip()
         grupo_confeccion = str(ped_src.get("Grupo confección", ped_src.get("grupo_confeccion", "")) or "").strip()
         perfil_confeccion = str(ped_src.get("Perfil confección", ped_src.get("perfil_confeccion", "")) or "").strip()
@@ -138,14 +139,66 @@ def _cargar_catalogo_pedidos_previstos_base() -> tuple[dict[str, list[str]], dic
             valores_base["calibre"].add(calibre)
         if categoria:
             valores_base["categoria"].add(categoria)
+        if grupo:
+            valores_base["grupo_varietal"].add(grupo)
         if grupo_confeccion:
             valores_base["grupo_confeccion"].add(grupo_confeccion)
         if perfil_confeccion:
             valores_base["perfil_confeccion"].add(perfil_confeccion)
         if variedad and grupo and _norm_text(variedad) not in variedad_to_grupo:
             variedad_to_grupo[_norm_text(variedad)] = grupo
+    for pool in (inventario_global_simulado or {}).values():
+        variedad = str(pool.get("variedad", "") or "").strip()
+        grupo = str(pool.get("grupo_varietal", "") or "").strip()
+        calibre = str(pool.get("calibre", "") or "").strip()
+        categoria = str(pool.get("categoria", "") or "").strip()
+        grupo_confeccion = str(pool.get("grupo_confeccion", "") or "").strip()
+        perfil_confeccion = str(pool.get("perfil_confeccion", "") or "").strip()
+        if variedad:
+            valores_base["variedad"].add(variedad)
+        if calibre:
+            valores_base["calibre"].add(calibre)
+        if categoria:
+            valores_base["categoria"].add(categoria)
+        if grupo:
+            valores_base["grupo_varietal"].add(grupo)
+        if grupo_confeccion:
+            valores_base["grupo_confeccion"].add(grupo_confeccion)
+        if perfil_confeccion:
+            valores_base["perfil_confeccion"].add(perfil_confeccion)
+        if variedad and grupo and _norm_text(variedad) not in variedad_to_grupo:
+            variedad_to_grupo[_norm_text(variedad)] = grupo
+    for sobrante in (sobrantes_rows or []):
+        variedad = str(sobrante.get("Variedad", sobrante.get("variedad", "")) or "").strip()
+        grupo = str(sobrante.get("Grupo varietal", sobrante.get("grupo_varietal", "")) or "").strip()
+        calibre = str(sobrante.get("Calibre", sobrante.get("calibre", "")) or "").strip()
+        categoria = str(sobrante.get("Categoría stock", sobrante.get("categoria", "")) or "").strip()
+        if variedad:
+            valores_base["variedad"].add(variedad)
+        if calibre:
+            valores_base["calibre"].add(calibre)
+        if categoria:
+            valores_base["categoria"].add(categoria)
+        if grupo:
+            valores_base["grupo_varietal"].add(grupo)
+        if variedad and grupo and _norm_text(variedad) not in variedad_to_grupo:
+            variedad_to_grupo[_norm_text(variedad)] = grupo
+    try:
+        for key in ("cliente", "variedad", "calibre", "categoria", "grupo_confeccion", "perfil_confeccion", "grupo_varietal"):
+            for value in _planning_service.get_filter_options_contextual(key, {}) or []:
+                value_str = str(value or "").strip()
+                if value_str:
+                    valores_base[key].add(value_str)
+    except Exception:
+        logger.warning("No se pudieron cargar opciones contextuales para catálogos ligeros", exc_info=True)
 
     valores_ordenados = {k: sorted([v for v in vals if v], key=lambda x: _norm_text(x)) for k, vals in valores_base.items()}
+    logger.info(
+        "Catalogo pedidos previstos construido ligero: variedades=%s calibres=%s grupos_conf=%s",
+        len(valores_ordenados["variedad"]),
+        len(valores_ordenados["calibre"]),
+        len(valores_ordenados["grupo_confeccion"]),
+    )
     return valores_ordenados, variedad_to_grupo
 
 
@@ -2444,13 +2497,18 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     reglas_rows = [{"Tipo regla": "CALIBRE", "Pedido": r.get("calibre_pedido", ""), "Stock compatible": r.get("calibre_stock", ""), "Penalización": r.get("penalizacion", 0), "Activo": "Sí" if r.get("activo", True) else "No"} for r in reglas.get("calibres", [])]
     reglas_tbl.set_rows(reglas_rows)
 
-    valores_base, variedad_to_grupo = _cargar_catalogo_pedidos_previstos_base()
-    for ped_src in list(pedidos) + list(pedidos_previstos):
+    valores_base, variedad_to_grupo = _cargar_catalogo_pedidos_previstos_base(
+        pedidos_visibles=pedidos_informativos,
+        pedidos_previstos=pedidos_previstos,
+        inventario_global_simulado=inventario_global_simulado,
+        sobrantes_rows=sobrantes_rows,
+    )
+    for ped_src in list(pedidos_informativos) + list(pedidos_previstos):
         var = str(ped_src.get("Variedad", ped_src.get("variedad", "")) or "").strip()
         grp = str(ped_src.get("Grupo varietal", ped_src.get("grupo_varietal", "")) or "").strip()
         if var and grp and _norm_text(var) not in variedad_to_grupo:
             variedad_to_grupo[_norm_text(var)] = grp
-    for ped_src in list(pedidos) + list(pedidos_previstos):
+    for ped_src in list(pedidos_informativos) + list(pedidos_previstos):
         cliente = str(ped_src.get("Cliente", ped_src.get("cliente", "")) or "").strip()
         variedad = str(ped_src.get("Variedad", ped_src.get("variedad", "")) or "").strip()
         calibre = str(ped_src.get("Calibre", ped_src.get("calibre", "")) or "").strip()
