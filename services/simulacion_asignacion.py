@@ -10,6 +10,7 @@ from tkinter import ttk
 import unicodedata
 
 from services.operational_quality_service import OperationalQualityService
+from services.planning_service import PlanningService
 from db.planning_repository import PlanningRepository
 from widgets.data_table import DataTable
 from widgets.date_picker import DatePickerPopup
@@ -67,6 +68,7 @@ logger = logging.getLogger(__name__)
 PRIORIDADES_PEDIDOS_PATH = Path("runtime_config/prioridades_pedidos.json")
 COMPATIBILIDADES_OPERATIVAS_PATH = Path("runtime_config/compatibilidades_operativas.json")
 PEDIDOS_PREVISTOS_PATH = Path("runtime_config/pedidos_previstos.json")
+_planning_service = PlanningService()
 
 
 def _default_pedidos_previstos_payload() -> dict:
@@ -109,6 +111,42 @@ def _pedido_previsto_a_simulacion(p: dict) -> dict:
         "Línea": 0,
         "origen_demanda": "PEDIDO_PREVISTO",
     }
+
+
+def _cargar_catalogo_pedidos_previstos_base() -> tuple[dict[str, list[str]], dict[str, str]]:
+    valores_base = {"cliente": set(), "variedad": set(), "calibre": set(), "categoria": set(), "grupo_confeccion": set(), "perfil_confeccion": set()}
+    variedad_to_grupo: dict[str, str] = {}
+    try:
+        pedidos_base, _ = _planning_service.load_pedidos_pendientes({}, modo_pedidos="todos")
+    except Exception:
+        logger.exception("No se pudieron cargar maestros reales para pedidos previstos")
+        pedidos_base = []
+
+    for ped_src in pedidos_base:
+        cliente = str(ped_src.get("Cliente", "") or "").strip()
+        variedad = str(ped_src.get("Variedad Coop", ped_src.get("Variedad", "")) or "").strip()
+        grupo = str(ped_src.get("Grupo varietal", "") or "").strip()
+        calibre = str(ped_src.get("Calibre", "") or "").strip()
+        categoria = str(ped_src.get("Categoría", ped_src.get("Categoria", "")) or "").strip()
+        grupo_confeccion = str(ped_src.get("Grupo confección", ped_src.get("grupo_confeccion", "")) or "").strip()
+        perfil_confeccion = str(ped_src.get("Perfil confección", ped_src.get("perfil_confeccion", "")) or "").strip()
+        if cliente:
+            valores_base["cliente"].add(cliente)
+        if variedad:
+            valores_base["variedad"].add(variedad)
+        if calibre:
+            valores_base["calibre"].add(calibre)
+        if categoria:
+            valores_base["categoria"].add(categoria)
+        if grupo_confeccion:
+            valores_base["grupo_confeccion"].add(grupo_confeccion)
+        if perfil_confeccion:
+            valores_base["perfil_confeccion"].add(perfil_confeccion)
+        if variedad and grupo and _norm_text(variedad) not in variedad_to_grupo:
+            variedad_to_grupo[_norm_text(variedad)] = grupo
+
+    valores_ordenados = {k: sorted([v for v in vals if v], key=lambda x: _norm_text(x)) for k, vals in valores_base.items()}
+    return valores_ordenados, variedad_to_grupo
 
 
 def _default_reglas_compatibilidad_operativa() -> dict:
@@ -2328,20 +2366,31 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     reglas_rows = [{"Tipo regla": "CALIBRE", "Pedido": r.get("calibre_pedido", ""), "Stock compatible": r.get("calibre_stock", ""), "Penalización": r.get("penalizacion", 0), "Activo": "Sí" if r.get("activo", True) else "No"} for r in reglas.get("calibres", [])]
     reglas_tbl.set_rows(reglas_rows)
 
-    variedad_to_grupo: dict[str, str] = {}
+    valores_base, variedad_to_grupo = _cargar_catalogo_pedidos_previstos_base()
     for ped_src in list(pedidos) + list(pedidos_previstos):
         var = str(ped_src.get("Variedad", ped_src.get("variedad", "")) or "").strip()
         grp = str(ped_src.get("Grupo varietal", ped_src.get("grupo_varietal", "")) or "").strip()
         if var and grp and _norm_text(var) not in variedad_to_grupo:
             variedad_to_grupo[_norm_text(var)] = grp
-    valores_base = {"cliente": set(), "variedad": set(), "calibre": set(), "categoria": set(), "grupo_confeccion": set(), "perfil_confeccion": set()}
     for ped_src in list(pedidos) + list(pedidos_previstos):
-        valores_base["cliente"].add(str(ped_src.get("Cliente", ped_src.get("cliente", "")) or "").strip())
-        valores_base["variedad"].add(str(ped_src.get("Variedad", ped_src.get("variedad", "")) or "").strip())
-        valores_base["calibre"].add(str(ped_src.get("Calibre", ped_src.get("calibre", "")) or "").strip())
-        valores_base["categoria"].add(str(ped_src.get("Categoría", ped_src.get("categoria", "")) or "").strip())
-        valores_base["grupo_confeccion"].add(str(ped_src.get("grupo_confeccion", "") or "").strip())
-        valores_base["perfil_confeccion"].add(str(ped_src.get("perfil_confeccion", "") or "").strip())
+        cliente = str(ped_src.get("Cliente", ped_src.get("cliente", "")) or "").strip()
+        variedad = str(ped_src.get("Variedad", ped_src.get("variedad", "")) or "").strip()
+        calibre = str(ped_src.get("Calibre", ped_src.get("calibre", "")) or "").strip()
+        categoria = str(ped_src.get("Categoría", ped_src.get("categoria", "")) or "").strip()
+        grupo_conf = str(ped_src.get("Grupo confección", ped_src.get("grupo_confeccion", "")) or "").strip()
+        perfil_conf = str(ped_src.get("Perfil confección", ped_src.get("perfil_confeccion", "")) or "").strip()
+        if cliente and cliente not in valores_base["cliente"]:
+            valores_base["cliente"].append(cliente)
+        if variedad and variedad not in valores_base["variedad"]:
+            valores_base["variedad"].append(variedad)
+        if calibre and calibre not in valores_base["calibre"]:
+            valores_base["calibre"].append(calibre)
+        if categoria and categoria not in valores_base["categoria"]:
+            valores_base["categoria"].append(categoria)
+        if grupo_conf and grupo_conf not in valores_base["grupo_confeccion"]:
+            valores_base["grupo_confeccion"].append(grupo_conf)
+        if perfil_conf and perfil_conf not in valores_base["perfil_confeccion"]:
+            valores_base["perfil_confeccion"].append(perfil_conf)
     for k in valores_base:
         valores_base[k] = sorted([v for v in valores_base[k] if v], key=lambda x: _norm_text(x))
     form_previstos = ttk.LabelFrame(previstos_tab, text="Pedido previsto")
@@ -2367,7 +2416,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     ttk.Entry(form_previstos, textvariable=form_vars["fecha_salida"], width=14).grid(row=1, column=1, sticky="w", padx=6, pady=2)
     fecha_btn = ttk.Button(form_previstos, text="📅")
     fecha_btn.grid(row=1, column=2, sticky="w", padx=(0, 6), pady=2)
-    fecha_btn.configure(command=lambda: DatePickerPopup(root, target_var=form_vars["fecha_salida"], anchor_widget=fecha_btn))
+    fecha_btn.configure(command=lambda: DatePickerPopup(previstos_tab.winfo_toplevel(), target_var=form_vars["fecha_salida"], anchor_widget=fecha_btn))
     campos_combo = [("Cliente", "cliente"), ("Variedad", "variedad"), ("Calibre", "calibre"), ("Categoría", "categoria"), ("Grupo confección", "grupo_confeccion"), ("Perfil confección", "perfil_confeccion")]
     for idx, (lbl, key) in enumerate(campos_combo):
         r = 1 + (idx // 3)
