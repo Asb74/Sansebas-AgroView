@@ -585,8 +585,9 @@ def _compatibilidad_varietal(pedido: dict, candidato: dict) -> tuple[int, str]:
     return (2, "GRUPO ALTERNATIVO") if allow_alt else (99, "INCOMPATIBLE")
 
 
-def evaluar_compatibilidad_operativa(pedido: dict, candidato: dict, reglas: dict | None = None) -> dict:
+def evaluar_compatibilidad_operativa(pedido: dict, candidato: dict, reglas: dict | None = None, repo: PlanningRepository | None = None, calibre_map: dict[str, str] | None = None) -> dict:
     reglas = reglas or _default_reglas_compatibilidad_operativa()
+    repo = repo or PlanningRepository()
     calibre_pedido = _norm_text(pedido.get("Calibre", pedido.get("calibre", "")))
     calibre_stock = _norm_text(candidato.get("Calibre stock", candidato.get("calibre_stock", candidato.get("Calibre", ""))))
     grupo_pedido = _norm_text(pedido.get("Grupo varietal", pedido.get("grupo_varietal", "")))
@@ -612,8 +613,17 @@ def evaluar_compatibilidad_operativa(pedido: dict, candidato: dict, reglas: dict
         permite_flexible = False
     penal_extra = int(_to_float((perfil_cfg or {}).get("penalizacion_extra", 0)))
 
-    if calibre_pedido == calibre_stock:
-        return {"compatible": True, "tipo": "EXACTA", "penalizacion": 0, "motivo": "Calibre exacto", "riesgo": "BAJO"}
+    cmp_result = repo.comparar_calibres_para_cobertura(calibre_pedido, calibre_stock, calibre_map=calibre_map)
+    if cmp_result["tipo"] in {"EXACTA", "CALIBRE_ADMITIDO", "AGRUPADA", "SOLAPE_PARCIAL"}:
+        tipo_repo = cmp_result["tipo"]
+        if tipo_repo == "EXACTA":
+            return {"compatible": True, "tipo": "EXACTA", "penalizacion": 0, "motivo": "Calibre exacto", "riesgo": "BAJO"}
+        if tipo_repo == "SOLAPE_PARCIAL" and not permite_flexible:
+            return {"compatible": False, "tipo": "INCOMPATIBLE", "penalizacion": 0, "motivo": "Perfil/cliente no permite compatibilidad flexible", "riesgo": "ALTO"}
+        penal_base = 10 if tipo_repo in {"CALIBRE_ADMITIDO", "AGRUPADA"} else 20
+        penal = penal_base + penal_extra
+        riesgo = "ALTO" if penal >= 40 else "MEDIO" if penal >= 10 else "BAJO"
+        return {"compatible": True, "tipo": tipo_repo if tipo_repo != "EXACTA" else "EXACTA", "penalizacion": penal, "motivo": f"Calibre compatible por motor de cobertura ({tipo_repo})", "riesgo": riesgo}
 
     regla_cal = next(
         (
@@ -997,6 +1007,8 @@ def simular_asignacion_pedido(pedido: dict, candidatos: list[dict], scoring: dic
 
 
 def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None) -> tuple[list[dict], list[dict], dict]:
+    repo_calibre = PlanningRepository()
+    calibre_map = repo_calibre.get_mcalibres_map()
     hoy = date.today()
     pedidos_meta = []
     for pedido_raw in pedidos:
@@ -1060,6 +1072,11 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
         if kg_necesario <= 0:
             continue
         sum_kg_candidatos = sum(_to_float(c.get("Kg disponibles", c.get("kg_utiles_estimados", c.get("kg_fisicos", 0)))) for c in candidatos_raw)
+        if str(pedido.get("origen_demanda", "")).upper() == "PREVISTO":
+            logger.info(
+                "Buscando candidatos para pedido previsto id=%s variedad=%s grupo=%s calibre=%s categoria=%s kg=%s",
+                pedido_id, variedad, grupo_varietal, calibre, categoria, kg_necesario,
+            )
         if not candidatos_raw:
             logger.warning(
                 "SIMULACION SIN CANDIDATOS pedido=%s variedad=%s grupo=%s calibre=%s categoria=%s kg=%s",
@@ -1085,11 +1102,22 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             kg_pedido = _kg_pendiente_linea(pedido)
             if kg_pedido <= 0:
                 continue
-            compat = evaluar_compatibilidad_operativa(pedido, cand, reglas_compat)
+            compat = evaluar_compatibilidad_operativa(pedido, cand, reglas_compat, repo=repo_calibre, calibre_map=calibre_map)
             cand["tipo_compatibilidad"] = compat.get("tipo", "INCOMPATIBLE")
             cand["penalizacion_compatibilidad"] = int(_to_float(compat.get("penalizacion", 0)))
             cand["motivo_compatibilidad"] = compat.get("motivo", "")
             cand["riesgo_compatibilidad"] = compat.get("riesgo", "ALTO")
+            if str(pedido.get("origen_demanda", "")).upper() == "PREVISTO":
+                logger.info(
+                    "Candidato stock evaluado previsto=%s stock_variedad=%s stock_grupo=%s stock_calibre=%s stock_categoria=%s tipo_calibre=%s kg=%s",
+                    pedido.get("IdPedidoLora", pedido.get("id_pedido", "")),
+                    cand.get("Variedad stock", cand.get("variedad_stock", cand.get("Variedad", ""))),
+                    cand.get("Grupo varietal stock", cand.get("grupo_varietal_stock", cand.get("Grupo varietal", ""))),
+                    cand.get("Calibre stock", cand.get("calibre_stock", "")),
+                    cand.get("Categoría", cand.get("categoria", "")),
+                    compat.get("tipo", "INCOMPATIBLE"),
+                    _to_float(cand.get("Kg disponibles", cand.get("kg_utiles_estimados", cand.get("kg_fisicos", 0)))),
+                )
             logger.info(
                 "Compatibilidad pedido=%s calibre_pedido=%s calibre_stock=%s tipo=%s penalizacion=%s motivo=%s",
                 pedido.get("IdPedidoLora", pedido.get("id_pedido", "")),
@@ -1419,6 +1447,15 @@ def construir_inventario_global_simulado(candidatos_globales: list[dict]) -> dic
                 "categoria": cand.get("Categoría", cand.get("categoria_stock", "")),
                 "subpool_calidad": "FISICO",
             }
+        logger.info(
+            "Inventario global disponible pool=%s variedad=%s grupo=%s calibre=%s categoria=%s kg=%s",
+            pool_id,
+            inventario[pool_id].get("variedad", ""),
+            inventario[pool_id].get("grupo_varietal", ""),
+            inventario[pool_id].get("calibre", ""),
+            inventario[pool_id].get("categoria", ""),
+            round(kg_fisicos, 2),
+        )
         inventario[pool_id]["kg_fisicos"] += kg_fisicos
         inventario[pool_id]["kg_utiles_finales"] += kg_fisicos
         inventario[pool_id]["kg_restante_simulado"] += kg_fisicos
