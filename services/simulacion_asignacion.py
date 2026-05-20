@@ -6,7 +6,7 @@ import json
 import logging
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 import unicodedata
 
 from services.operational_quality_service import OperationalQualityService
@@ -2850,10 +2850,10 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             fecha = form_vars["fecha_salida"].get().strip()
             datetime.strptime(fecha, "%Y-%m-%d")
         except Exception:
-            tk.messagebox.showerror("Pedidos previstos", "Fecha salida debe tener formato YYYY-MM-DD.")
+            messagebox.showerror("Pedidos previstos", "Fecha salida debe tener formato YYYY-MM-DD.")
             return
         if not fecha or not form_vars["variedad"].get().strip() or not form_vars["calibre"].get().strip() or not form_vars["grupo_confeccion"].get().strip() or kg_estimados <= 0:
-            tk.messagebox.showerror("Pedidos previstos", "Campos obligatorios: Fecha salida, Variedad, Calibre, Grupo confección y Kg estimados > 0.")
+            messagebox.showerror("Pedidos previstos", "Campos obligatorios: Fecha salida, Variedad, Calibre, Grupo confección y Kg estimados > 0.")
             return
         rec = {k: v.get().strip() for k, v in form_vars.items()}
         rec["kg_estimados"] = kg_estimados
@@ -2890,6 +2890,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         _guardar_previstos()
         popup.destroy()
         abrir_simulacion_asignacion(parent, pedidos, get_candidatos_cb, scoring=scoring, get_inventario_global_cb=get_inventario_global_cb, pedidos_detalle_horizonte=pedidos_detalle_horizonte, cultivo_actual=cultivo_actual)
+        logger.info("Refresco simulación completado correctamente")
 
     prev_tbl.set_rows(_rows_previstos())
     ttk.Button(prev_buttons, text="Nuevo", command=_limpiar_formulario).pack(side="left", padx=2)
