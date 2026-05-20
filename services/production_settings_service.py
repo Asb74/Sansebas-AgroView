@@ -15,3 +15,18 @@ class ProductionSettingsService:
 
     def reset_general_defaults(self) -> None:
         self.repository.reset_general_defaults()
+
+    def get_staff_summary(self) -> dict:
+        return self.repository.get_staff_summary()
+
+    def save_staff_summary(self, data: dict) -> None:
+        self.repository.save_staff_summary(data)
+
+    def get_staff_areas(self) -> list[dict]:
+        return self.repository.get_staff_areas()
+
+    def save_staff_areas(self, rows: list[dict]) -> None:
+        self.repository.save_staff_areas(rows)
+
+    def reset_staff_defaults(self) -> None:
+        self.repository.reset_staff_defaults()
