@@ -57,3 +57,12 @@ class ProductionSettingsService:
 
     def reset_performance_defaults(self) -> None:
         self.repository.reset_performance_defaults()
+
+    def get_penalty_rules(self) -> list[dict]:
+        return self.repository.get_penalty_rules()
+
+    def save_penalty_rules(self, rows: list[dict]) -> None:
+        self.repository.save_penalty_rules(rows)
+
+    def reset_penalty_defaults(self) -> None:
+        self.repository.reset_penalty_defaults()
