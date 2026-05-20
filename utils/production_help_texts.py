@@ -182,3 +182,17 @@ PRODUCTION_PENALTIES_HELP = {
     "activa": {"title": "Activa", "description": "Indica si la penalización se tendrá en cuenta.", "example": "Desactivar reglas que aún no se quieran aplicar.", "impact": "Permite probar escenarios sin borrar la configuración."},
     "observaciones": {"title": "Observaciones", "description": "Notas internas sobre cuándo usar o revisar la regla.", "example": "Revisar en campaña alta.", "impact": "Ayuda a mantener criterios operativos claros."},
 }
+
+
+PRODUCTION_SEMAPHORE_HELP = {
+    "codigo": {"title": "Código", "description": "Identificador interno único de la regla.", "example": "SATURACION_MALLA.", "impact": "Permite aplicar la regla de forma estable en el motor de planificación."},
+    "tipo_regla": {"title": "Tipo regla", "description": "Clasifica el problema operativo que se quiere controlar.", "example": "Saturación capacidad, falta personal o exceso cambios.", "impact": "Ayuda a ordenar las alertas por tipo de riesgo."},
+    "ambito": {"title": "Ámbito", "description": "Zona o nivel donde se aplica la regla.", "example": "General, Malla, Encajado, Personal o Pedido.", "impact": "Evita que una alerta general oculte un cuello de botella concreto."},
+    "metrica": {"title": "Métrica", "description": "Dato calculado que se comparará contra los umbrales.", "example": "ocupacion_pct, personas_faltantes o cambios_formato.", "impact": "Define qué variable dispara el semáforo."},
+    "operador": {"title": "Operador", "description": "Forma de comparar la métrica con los umbrales.", "example": ">= para saturación, < para rendimiento bajo.", "impact": "Determina cuándo una situación pasa a amarillo o rojo."},
+    "umbral_amarillo": {"title": "Umbral amarillo", "description": "Valor a partir del cual se considera riesgo leve o advertencia.", "example": "85% de ocupación.", "impact": "Permite actuar antes de llegar a una situación crítica."},
+    "umbral_rojo": {"title": "Umbral rojo", "description": "Valor a partir del cual se considera situación crítica.", "example": "100% de ocupación o más de 5 personas faltantes.", "impact": "Debe generar una alerta clara y accionable."},
+    "accion_sugerida": {"title": "Acción sugerida", "description": "Recomendación operativa que se mostrará cuando se active la regla.", "example": "Añadir personal, activar segundo turno o adelantar producción.", "impact": "Convierte la alerta en una decisión útil."},
+    "activa": {"title": "Activa", "description": "Indica si la regla debe aplicarse.", "example": "Desactivar reglas en fase de prueba.", "impact": "Permite probar o ajustar criterios sin borrar información."},
+    "observaciones": {"title": "Observaciones", "description": "Notas internas sobre el criterio o cuándo debe revisarse.", "example": "Revisar en campaña alta.", "impact": "Ayuda a mantener coherencia en el uso de reglas."},
+}
