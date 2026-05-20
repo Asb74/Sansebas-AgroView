@@ -48,3 +48,12 @@ class ProductionSettingsService:
 
     def reset_lines_defaults(self) -> None:
         self.repository.reset_lines_defaults()
+
+    def get_performance_rules(self) -> list[dict]:
+        return self.repository.get_performance_rules()
+
+    def save_performance_rules(self, rows: list[dict]) -> None:
+        self.repository.save_performance_rules(rows)
+
+    def reset_performance_defaults(self) -> None:
+        self.repository.reset_performance_defaults()
