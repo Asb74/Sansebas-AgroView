@@ -1827,10 +1827,24 @@ def calcular_horizonte_cobertura(
     return {"fecha_limite_cubierta": fecha_limite_display, "dias_autonomia": dias_autonomia, "estado_horizonte": estado_horizonte, "pedidos_cubiertos": sum(1 for s in simulaciones if s.get('estado_global') in {'CUBIERTO EXACTO', 'CUBIERTO FLEXIBLE'}), "pedidos_parciales": sum(1 for s in simulaciones if s.get('estado_global') == 'PARCIAL'), "pedidos_insuficientes": sum(1 for s in simulaciones if s.get('estado_global') == 'INSUFICIENTE'), "kg_pendientes_total": kg_pend_total, "kg_asignados_total": kg_asig_total, "kg_faltantes_total": kg_falt_total, "primer_fallo": primer_fallo or {}, "resumen_por_fecha": resumen_por_fecha, "faltantes_por_calibre": sorted(faltantes_rows, key=lambda r: (r["Primera fecha afectada"] or "9999-99-99", -r["Kg faltantes"])), "stock_restante_por_calibre": stock_restante, "recomendaciones": recomendaciones, "hay_fechas_validas": hay_fechas_validas}
 
 
-def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None, pedidos_detalle_horizonte: list[dict] | None = None, cultivo_actual: str = "", campana_actual: str = "", empresa_actual: str = "") -> None:
-    popup = tk.Toplevel(parent)
+def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None, pedidos_detalle_horizonte: list[dict] | None = None, cultivo_actual: str = "", campana_actual: str = "", empresa_actual: str = "", filters_payload: dict | None = None, mode_refresh: bool = False, sim_window: tk.Toplevel | None = None) -> None:
+    popup = sim_window if mode_refresh and sim_window is not None else tk.Toplevel(parent)
+    if mode_refresh:
+        for child in popup.winfo_children():
+            child.destroy()
     popup.title("Simulación de asignación")
     popup.geometry("1300x750")
+    sim_context = {
+        "cultivo_actual": cultivo_actual,
+        "campana_actual": campana_actual,
+        "empresa_actual": empresa_actual,
+        "filters_payload": dict(filters_payload or {}),
+        "pedidos_detalle_horizonte": [dict(p) for p in (pedidos_detalle_horizonte or [])],
+        "scoring": scoring,
+        "get_candidatos_cb": get_candidatos_cb,
+        "get_inventario_global_cb": get_inventario_global_cb,
+    }
+    popup._sim_context = sim_context
 
     def _abrir_leyenda() -> None:
         dlg = tk.Toplevel(popup)
@@ -1946,6 +1960,12 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     for p in previstos_activos:
         pedido_previsto = _pedido_previsto_a_simulacion(p, cultivo_actual=cultivo_actual, campana_actual=campana_actual, empresa_actual=empresa_actual)
         if not str(pedido_previsto.get("Cultivo", "") or "").strip() or not str(pedido_previsto.get("Campaña", "") or "").strip():
+            logger.warning(
+                "Pedido previsto inválido cultivo=%s campana=%s id=%s",
+                pedido_previsto.get("Cultivo", ""),
+                pedido_previsto.get("Campaña", ""),
+                p.get("id_previsto", ""),
+            )
             messagebox.showwarning(
                 "Simulación de asignación",
                 "No se puede simular pedidos previstos sin cultivo y campaña. Revise filtros globales o complete el pedido previsto.",
@@ -2888,8 +2908,27 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     def _refrescar_simulacion() -> None:
         logger.info("Refrescando simulación por cambio en pedidos previstos")
         _guardar_previstos()
-        popup.destroy()
-        abrir_simulacion_asignacion(parent, pedidos, get_candidatos_cb, scoring=scoring, get_inventario_global_cb=get_inventario_global_cb, pedidos_detalle_horizonte=pedidos_detalle_horizonte, cultivo_actual=cultivo_actual)
+        ctx = getattr(popup, "_sim_context", {})
+        logger.info(
+            "Refresco simulación reutilizando contexto cultivo=%s campana=%s empresa=%s",
+            ctx.get("cultivo_actual", ""),
+            ctx.get("campana_actual", ""),
+            ctx.get("empresa_actual", ""),
+        )
+        abrir_simulacion_asignacion(
+            parent,
+            pedidos,
+            ctx.get("get_candidatos_cb", get_candidatos_cb),
+            scoring=ctx.get("scoring", scoring),
+            get_inventario_global_cb=ctx.get("get_inventario_global_cb", get_inventario_global_cb),
+            pedidos_detalle_horizonte=ctx.get("pedidos_detalle_horizonte", pedidos_detalle_horizonte),
+            cultivo_actual=ctx.get("cultivo_actual", cultivo_actual),
+            campana_actual=ctx.get("campana_actual", campana_actual),
+            empresa_actual=ctx.get("empresa_actual", empresa_actual),
+            filters_payload=ctx.get("filters_payload", filters_payload),
+            mode_refresh=True,
+            sim_window=popup,
+        )
         logger.info("Refresco simulación completado correctamente")
 
     prev_tbl.set_rows(_rows_previstos())
