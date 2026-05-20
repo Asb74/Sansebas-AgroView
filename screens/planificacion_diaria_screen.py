@@ -402,6 +402,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             cultivo_actual=cultivos_validos[0],
             campana_actual=campanas_validas[0],
             empresa_actual=empresa_actual,
+            filters_payload=filtros,
         )
 
     def _open_selected_balance_coverage(self) -> None:
