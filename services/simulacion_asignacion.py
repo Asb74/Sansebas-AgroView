@@ -95,22 +95,38 @@ def _guardar_pedidos_previstos(payload: dict) -> None:
 
 
 def _pedido_previsto_a_simulacion(p: dict) -> dict:
+    kg = _to_float(p.get("kg_estimados", 0))
+    cultivo = str(p.get("cultivo", p.get("Cultivo", "")) or "").strip()
+    campana = str(p.get("campana", p.get("Campaña", p.get("Campana", ""))) or "").strip()
+    grupo_confeccion = str(p.get("grupo_confeccion", p.get("Grupo confección", p.get("GrupoConfeccion", ""))) or "").strip()
+    perfil_confeccion = str(p.get("perfil_confeccion", p.get("Perfil confección", "")) or "").strip()
     return {
         "IdPedidoLora": p.get("id_previsto", ""),
         "Fecha salida": p.get("fecha_salida", ""),
         "fecha_salida": p.get("fecha_salida", ""),
+        "Cultivo": cultivo,
+        "Campaña": campana,
         "Cliente": p.get("cliente", ""),
         "Grupo varietal": p.get("grupo_varietal", ""),
         "Variedad": p.get("variedad", ""),
+        "Variedad Coop": p.get("variedad", ""),
         "Calibre": p.get("calibre", ""),
         "Categoría": p.get("categoria", ""),
-        "grupo_confeccion": p.get("grupo_confeccion", ""),
-        "perfil_confeccion": p.get("perfil_confeccion", ""),
-        "Kg pendientes": _to_float(p.get("kg_estimados", 0)),
-        "kg_pendiente": _to_float(p.get("kg_estimados", 0)),
+        "Categoria": p.get("categoria", ""),
+        "Grupo confección": grupo_confeccion,
+        "GrupoConfeccion": grupo_confeccion,
+        "grupo_confeccion": grupo_confeccion,
+        "Perfil confección": perfil_confeccion,
+        "perfil_confeccion": perfil_confeccion,
+        "Kg pendientes": kg,
+        "Kg pendiente": kg,
+        "Kg pedidos pendientes": kg,
+        "kg_pendiente": kg,
+        "kg_pendientes": kg,
         "Línea": 0,
         "origen_demanda": "PREVISTO",
-        "kg_necesario": _to_float(p.get("kg_estimados", 0)),
+        "Tipo línea": "Pedido previsto",
+        "kg_necesario": kg,
     }
 
 
@@ -1512,9 +1528,14 @@ def normalizar_pedido_para_simulacion(pedido: dict) -> dict:
     item["Variedad"] = item.get("Variedad") or item.get("Variedad Coop") or item.get("variedad", "")
     item["Grupo varietal"] = item.get("Grupo varietal") or item.get("grupo_varietal", "")
     item["Categoría"] = item.get("Categoría") or item.get("Categoria") or item.get("categoria", "")
+    item["grupo_confeccion"] = item.get("grupo_confeccion") or item.get("Grupo confección") or item.get("GrupoConfeccion", "")
+    item["perfil_confeccion"] = item.get("perfil_confeccion") or item.get("Perfil confección", "")
     kg_pend = _kg_pendiente_linea(item)
+    if _norm_text(item.get("origen_demanda", "")) == "PREVISTO" and kg_pend <= 0:
+        kg_pend = _to_float(item.get("kg_estimados", item.get("kg_necesario", 0)))
     item["Kg pedidos pendientes"] = kg_pend
     item["Kg pendiente"] = kg_pend
+    item["Kg pendientes"] = kg_pend
     item["kg_pendiente"] = kg_pend
     item["kg_pendientes"] = kg_pend
     if _norm_text(item.get("origen_demanda", "")) == "PREVISTO":
@@ -1875,8 +1896,25 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     logger.info("Demanda simulación: reales=%s previstos=%s total=%s", len(pedidos_reales), len(pedidos_previstos_sim), len(pedidos_informativos))
     for p in pedidos_informativos:
         p["prioridad_manual"] = prioridades_map.get(_pedido_id_prioridad(p), int(_to_float(p.get("prioridad_manual", 0))))
-    pedidos_operativos = construir_necesidades_operativas([normalizar_pedido_para_simulacion(p) for p in pedidos_informativos])
+    pedidos_normalizados = [normalizar_pedido_para_simulacion(p) for p in pedidos_informativos]
+    pedidos_operativos = [p for p in pedidos_normalizados if _kg_pendiente_linea(p) > 0]
+    necesidades_operativas = construir_necesidades_operativas(pedidos_operativos)
     logger.info("Pedidos simulación: informativos=%s operativos=%s", len(pedidos_informativos), len(pedidos_operativos))
+    logger.info("Necesidades operativas agregadas para análisis: %s", len(necesidades_operativas))
+    for p in pedidos_operativos:
+        logger.info(
+            "Pedido operativo para asignación origen=%s id=%s cliente=%s variedad=%s grupo=%s calibre=%s categoria=%s grupo_conf=%s perfil=%s kg=%s",
+            p.get("origen_demanda"),
+            p.get("IdPedidoLora"),
+            p.get("Cliente"),
+            p.get("Variedad"),
+            p.get("Grupo varietal"),
+            p.get("Calibre"),
+            p.get("Categoría"),
+            p.get("grupo_confeccion"),
+            p.get("perfil_confeccion"),
+            _kg_pendiente_linea(p),
+        )
     if not pedidos_operativos:
         logger.info("Simulación sin pedidos operativos: análisis de stock/sobrantes")
     if pedidos_detalle_horizonte is not None:
