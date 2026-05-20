@@ -376,11 +376,22 @@ class PlanificacionDiariaScreen(ttk.Frame):
         if not pedidos:
             logger.info("Simulación abierta sin pedidos: modo análisis stock/sobrantes")
 
-        cultivos = self.filter_widgets["cultivo"].get_selected()
+        filtros = self._filters_payload()
+        cultivos = filtros.get("cultivo", [])
         cultivos_validos = [str(c or "").strip() for c in cultivos if str(c or "").strip() and str(c or "").strip().upper() != "TODOS"]
         if len(cultivos_validos) != 1:
             messagebox.showwarning("Simulación de asignación", "Seleccione un único cultivo para simular.", parent=self)
             return
+
+        campanas = filtros.get("campana", [])
+        campanas_validas = [str(c or "").strip() for c in campanas if str(c or "").strip() and str(c or "").strip().upper() != "TODOS"]
+        if len(campanas_validas) != 1:
+            messagebox.showwarning("Simulación de asignación", "Seleccione una única campaña para simular.", parent=self)
+            return
+
+        empresas = filtros.get("empresa", [])
+        empresas_validas = [str(e or "").strip() for e in empresas if str(e or "").strip() and str(e or "").strip().upper() != "TODOS"]
+        empresa_actual = empresas_validas[0] if len(empresas_validas) == 1 else ""
 
         abrir_simulacion_asignacion(
             self,
@@ -389,6 +400,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
             get_inventario_global_cb=lambda: inventario_global,
             pedidos_detalle_horizonte=pedidos_detalle_horizonte,
             cultivo_actual=cultivos_validos[0],
+            campana_actual=campanas_validas[0],
+            empresa_actual=empresa_actual,
         )
 
     def _open_selected_balance_coverage(self) -> None:

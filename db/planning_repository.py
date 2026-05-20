@@ -1800,7 +1800,38 @@ class PlanningRepository:
 
     def get_candidatos_compatibles_para_pedido(self, filters: dict, pedido: dict, policy_cfg: dict | None = None) -> list[dict]:
         """Fuente única de candidatos compatibles para Balance y Simulación."""
-        candidatos = self.get_balance_cobertura_detalle(filters, pedido, policy=policy_cfg)
+        pedido_normalizado = dict(pedido)
+        cultivo = str(pedido_normalizado.get("Cultivo", pedido_normalizado.get("cultivo", "")) or "").strip()
+        campana = str(pedido_normalizado.get("Campaña", pedido_normalizado.get("Campana", pedido_normalizado.get("campana", ""))) or "").strip()
+        if not cultivo:
+            cultivos = filters.get("cultivo", []) if isinstance(filters, dict) else []
+            cultivos_validos = [str(c or "").strip() for c in cultivos if str(c or "").strip() and str(c or "").strip().upper() != "TODOS"]
+            if len(cultivos_validos) == 1:
+                cultivo = cultivos_validos[0]
+                pedido_normalizado.setdefault("Cultivo", cultivo)
+                pedido_normalizado.setdefault("cultivo", cultivo)
+        if not campana:
+            campanas = filters.get("campana", []) if isinstance(filters, dict) else []
+            campanas_validas = [str(c or "").strip() for c in campanas if str(c or "").strip() and str(c or "").strip().upper() != "TODOS"]
+            if len(campanas_validas) == 1:
+                campana = campanas_validas[0]
+                pedido_normalizado.setdefault("Campaña", campana)
+                pedido_normalizado.setdefault("Campana", campana)
+                pedido_normalizado.setdefault("campana", campana)
+        variedad = str(pedido_normalizado.get("Variedad", pedido_normalizado.get("Variedad Coop", "")) or "").strip()
+        grupo_varietal = str(pedido_normalizado.get("Grupo varietal", pedido_normalizado.get("grupo_varietal", "")) or "").strip()
+        calibre = str(pedido_normalizado.get("Calibre", pedido_normalizado.get("calibre", "")) or "").strip()
+        categoria = str(pedido_normalizado.get("Categoría", pedido_normalizado.get("Categoria", pedido_normalizado.get("categoria", ""))) or "").strip()
+        logger.info(
+            "Candidatos pedido filtro cultivo=%s campana=%s variedad=%s grupo=%s calibre=%s categoria=%s",
+            cultivo,
+            campana,
+            variedad,
+            grupo_varietal,
+            calibre,
+            categoria,
+        )
+        candidatos = self.get_balance_cobertura_detalle(filters, pedido_normalizado, policy=policy_cfg)
         out: list[dict] = []
         for row in candidatos:
             cand = dict(row)
