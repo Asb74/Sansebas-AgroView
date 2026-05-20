@@ -329,7 +329,9 @@ class PlanningRepository:
             "permitir_variedad_alternativa": True,
             "permitir_calibre_admitido": True,
             "permitir_calibre_agrupado": True,
-            "permitir_solape_parcial": False,
+            "permitir_solape_parcial": True,
+            "usar_factor_calibre_agrupado": True,
+            "usar_stock_completo_en_calibre_admitido": False,
             "permitir_categoria_inferior": False,
             "permitir_categoria_superior": False,
             "usar_stock_industrial": True,
@@ -350,6 +352,33 @@ class PlanningRepository:
         result = self.comparar_calibres_para_cobertura(calibre_pedido, calibre_stock, calibre_map=calibre_map)
         legacy = {"EXACTA": "EXACTO", "CALIBRE_ADMITIDO": "COBERTURA_ADMITIDA", "AGRUPADA": "COBERTURA_AGRUPADA", "SOLAPE_PARCIAL": "SOLAPE_PARCIAL", "SIN_COBERTURA": "SIN_COBERTURA"}
         return legacy.get(result["tipo"], "SIN_COBERTURA")
+
+    @staticmethod
+    def calcular_factor_cobertura_calibre(
+        calibre_pedido: Any,
+        calibre_stock: Any,
+        calibre_map: dict[str, str] | None = None,
+        usar_stock_completo_en_calibre_admitido: bool = False,
+    ) -> tuple[float, str, list[str]]:
+        pedido_set = PlanningRepository.normalizar_calibre_a_set(calibre_pedido, calibre_map)
+        stock_set = PlanningRepository.normalizar_calibre_a_set(calibre_stock, calibre_map)
+        if not pedido_set or not stock_set:
+            return 0.0, "SIN_COBERTURA", []
+        coincidentes = sorted(pedido_set.intersection(stock_set), key=lambda x: int(x) if x.isdigit() else 9999)
+        if not coincidentes:
+            return 0.0, "SIN_COBERTURA", []
+        if pedido_set == stock_set:
+            return 1.0, "EXACTA", coincidentes
+        if stock_set.issubset(pedido_set):
+            if usar_stock_completo_en_calibre_admitido:
+                return 1.0, "CALIBRE_ADMITIDO", coincidentes
+            factor = len(coincidentes) / max(len(stock_set), 1)
+            return factor, "CALIBRE_ADMITIDO", coincidentes
+        if pedido_set.issubset(stock_set):
+            factor = len(coincidentes) / max(len(stock_set), 1)
+            return factor, "AGRUPADA_PARCIAL", coincidentes
+        factor = len(coincidentes) / max(len(stock_set), 1)
+        return factor, "SOLAPE_PARCIAL", coincidentes
 
     def comparar_calibres_para_cobertura(self, calibre_pedido: Any, calibre_stock: Any, calibre_map: dict[str, str] | None = None) -> dict[str, Any]:
         pedido = self.normalizar_calibre_a_set(calibre_pedido, calibre_map=calibre_map)
@@ -482,21 +511,38 @@ class PlanningRepository:
                 continue
             if cmp_result["tipo"] == "SOLAPE_PARCIAL" and not policy_cfg["permitir_solape_parcial"]:
                 continue
+            factor_calibre, tipo_factor, coincidentes = self.calcular_factor_cobertura_calibre(
+                calibre,
+                ind_calibre,
+                calibre_map=calibre_map,
+                usar_stock_completo_en_calibre_admitido=policy_cfg.get("usar_stock_completo_en_calibre_admitido", False),
+            )
+            if factor_calibre <= 0:
+                continue
+            kg_util = ind_kg * (factor_calibre if policy_cfg.get("usar_factor_calibre_agrupado", True) else 1.0)
 
             logger.info(
-                "MATCH OK stock grupo=%s variedad=%s calibre=%s categoria=%s kg=%s tipo=%s",
-                ind_grupo, ind_variedad, ind_calibre, ind_categoria, ind_kg, cmp_result["tipo"]
+                "MATCH CALIBRE pedido=%s stock=%s pedido_set=%s stock_set=%s coincidentes=%s tipo=%s factor=%s kg_stock=%s kg_util=%s",
+                calibre,
+                ind_calibre,
+                sorted(cmp_result.get("pedido_set") or []),
+                sorted(cmp_result.get("stock_set") or []),
+                coincidentes,
+                tipo_factor,
+                factor_calibre,
+                ind_kg,
+                round(kg_util, 2),
             )
             if flex_cat:
                 flex_aplicada.add(flex_cat)
             variedades_stock.add(str(ind_variedad or "").strip())
-            calibres_coincidentes.update(cmp_result.get("coincidentes") or [])
+            calibres_coincidentes.update(coincidentes or [])
             if cmp_result["tipo"] == "EXACTA":
-                kg_exacta += ind_kg
+                kg_exacta += kg_util
             elif cmp_result["tipo"] in {"AGRUPADA", "CALIBRE_ADMITIDO"}:
-                kg_agrupada += ind_kg
+                kg_agrupada += kg_util
             elif cmp_result["tipo"] == "SOLAPE_PARCIAL":
-                kg_solape += ind_kg
+                kg_solape += kg_util
 
         kg_exacta = round(kg_exacta, 2)
         kg_agrupada = round(kg_agrupada, 2)

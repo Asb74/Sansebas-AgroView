@@ -69,6 +69,9 @@ PRIORIDADES_PEDIDOS_PATH = Path("runtime_config/prioridades_pedidos.json")
 COMPATIBILIDADES_OPERATIVAS_PATH = Path("runtime_config/compatibilidades_operativas.json")
 PEDIDOS_PREVISTOS_PATH = Path("runtime_config/pedidos_previstos.json")
 _planning_service = PlanningService()
+SIMULACION_PERMITIR_SOLAPE_PARCIAL = True
+SIMULACION_USAR_FACTOR_CALIBRE_AGRUPADO = True
+SIMULACION_USAR_STOCK_COMPLETO_CALIBRE_ADMITIDO = False
 
 
 def _default_pedidos_previstos_payload() -> dict:
@@ -1155,6 +1158,18 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
                 cand["riesgo_compatibilidad"] = "MEDIO"
                 cand["motivo_compatibilidad"] = "Compatible por motor de cobertura; sin regla operativa específica"
             perfil_stock = cand.get("perfil_stock", "")
+            factor_calibre = 1.0
+            calibres_coincidentes: list[str] = []
+            tipo_factor = "SIN_COBERTURA"
+            if SIMULACION_PERMITIR_SOLAPE_PARCIAL:
+                factor_calibre, tipo_factor, calibres_coincidentes = repo_calibre.calcular_factor_cobertura_calibre(
+                    pedido.get("Calibre", pedido.get("calibre", "")),
+                    cand.get("Calibre stock", cand.get("calibre_stock", cand.get("Calibre", ""))),
+                    calibre_map=calibre_map,
+                    usar_stock_completo_en_calibre_admitido=SIMULACION_USAR_STOCK_COMPLETO_CALIBRE_ADMITIDO,
+                )
+            if factor_calibre <= 0:
+                continue
             perfil_conf = _norm_text(pedido.get("perfil_confeccion", "")) or detectar_perfil_confeccion(pedido)
             cat_pedido = _norm_text(pedido.get("Categoría", pedido.get("categoria", "")))
             subcands: list[dict] = []
@@ -1174,6 +1189,12 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
                 subcands = [dict(cand, subpool_calidad="MIXTO", categoria_util=cand.get("Categoría", ""), kg_utiles_finales=_to_float(cand.get("kg_utiles_estimados", 0)))]
 
             for sc in subcands:
+                kg_base = _to_float(sc.get("kg_utiles_finales", 0))
+                kg_final = kg_base * factor_calibre if SIMULACION_USAR_FACTOR_CALIBRE_AGRUPADO else kg_base
+                sc["factor_calibre"] = factor_calibre
+                sc["calibres_coincidentes"] = ",".join(calibres_coincidentes)
+                sc["tipo_compatibilidad_calibre"] = tipo_factor
+                sc["kg_utiles_finales"] = kg_final
                 pool_id = _build_pool_id(sc) + f"|{_norm_text(sc.get('subpool_calidad', 'MIXTO'))}"
                 sc["pool_id"] = pool_id
                 if pool_id not in stock_simulado:
@@ -1216,6 +1237,15 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             pendiente -= kg_asign
             asignado += kg_asign
             if kg_asign > 0:
+                logger.info(
+                    "ASIGNACION PREVISTO id=%s calibre=%s stock_calibre=%s kg_necesario=%s kg_asignado=%s kg_restante_pool=%s",
+                    pedido.get("IdPedidoLora", pedido.get("id_pedido", "")),
+                    pedido.get("Calibre", pedido.get("calibre", "")),
+                    cand.get("Calibre stock", cand.get("calibre_stock", cand.get("Calibre", ""))),
+                    kg_necesario,
+                    kg_asign,
+                    despues,
+                )
                 asignaciones.append({"pedido_id": pedido.get("IdPedidoLora", pedido.get("id_pedido", "")), "pool_id": cand["pool_id"], "kg_asignados": kg_asign, "origen": cand.get("Origen", ""), "tipo_cobertura": cand.get("Tipo cobertura", ""), "score": cand.get("score_total", 0), "riesgo": cand.get("riesgo_operativo", "")})
                 asignaciones[-1].update({
                     "tipo_compatibilidad": cand.get("tipo_compatibilidad", ""),
