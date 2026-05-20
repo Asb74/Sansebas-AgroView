@@ -465,6 +465,25 @@ def _normalizar_fecha_salida(row: dict) -> date | None:
     return None
 
 
+def pedido_previsto_en_rango_temporal(pedido: dict, filters_payload: dict | None, hoy: date | None = None) -> bool:
+    hoy_ref = hoy or date.today()
+    fecha_dt = _normalizar_fecha_salida(pedido)
+    if not fecha_dt:
+        return False
+    if fecha_dt < hoy_ref:
+        return False
+
+    filtros = filters_payload or {}
+    fecha_desde = _parse_fecha_salida(filtros.get("fecha_desde"))
+    fecha_hasta = _parse_fecha_salida(filtros.get("fecha_hasta"))
+
+    if fecha_desde and fecha_dt < fecha_desde:
+        return False
+    if fecha_hasta and fecha_dt > fecha_hasta:
+        return False
+    return True
+
+
 def _calcular_bloque_temporal(fecha: date | None, hoy: date) -> tuple[int, str]:
     if not fecha:
         return 9999, "FUTURO"
@@ -1907,8 +1926,24 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     pedidos_previstos_payload = _cargar_pedidos_previstos()
     pedidos_previstos = list(pedidos_previstos_payload.get("pedidos", []))
     previstos_activos = []
+    hoy_ref = date.today()
     if pedidos_previstos_payload.get("incluir_en_simulacion", True):
-        previstos_activos = [p for p in pedidos_previstos if _norm_text(p.get("estado", "BORRADOR")) != "DESCARTADO" and _to_float(p.get("kg_estimados", 0)) > 0]
+        for p in pedidos_previstos:
+            if _norm_text(p.get("estado", "BORRADOR")) == "DESCARTADO" or _to_float(p.get("kg_estimados", 0)) <= 0:
+                continue
+            if not pedido_previsto_en_rango_temporal(p, filters_payload, hoy=hoy_ref):
+                fecha_desde = (filters_payload or {}).get("fecha_desde")
+                fecha_hasta = (filters_payload or {}).get("fecha_hasta")
+                logger.info(
+                    "Pedido previsto excluido por fecha id=%s fecha_salida=%s hoy=%s fecha_desde=%s fecha_hasta=%s",
+                    p.get("id_previsto", ""),
+                    p.get("fecha_salida", p.get("Fecha salida", p.get("FechaSalida", ""))),
+                    hoy_ref.isoformat(),
+                    fecha_desde,
+                    fecha_hasta,
+                )
+                continue
+            previstos_activos.append(p)
     logger.info("Pedidos previstos incluidos en simulación: %s", len(previstos_activos))
 
     pedidos_cols = ["Origen demanda", "Fecha salida", "Bloque temporal", "Prioridad manual", "Prioridad total", "Motivo prioridad", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Kg potencial físico", "Kg potencial útil"]
