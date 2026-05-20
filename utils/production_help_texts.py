@@ -23,11 +23,11 @@ PRODUCTION_FIELD_HELP = {
         "example": "Normal, Alta o Pico campaña.",
         "impact": "Puede servir después para ajustar rendimientos y saturaciones recomendadas.",
     },
-    "tipo_volcado": {
-        "title": "Tipo de volcado",
-        "description": "Forma principal en la que entra o se alimenta la fruta en la línea.",
-        "example": "Compacta, Tolva, Invierno o Manual.",
-        "impact": "Condiciona la velocidad de entrada, continuidad y posible saturación.",
+    "tipos_volcado_activos": {
+        "title": "Líneas de volcado activas",
+        "description": "Indica qué líneas o formas de entrada de fruta estarán disponibles durante la jornada. No es una opción excluyente: pueden estar activas varias a la vez.",
+        "example": "Compacta + Línea invierno si ambas se van a utilizar el mismo día.",
+        "impact": "Estas líneas condicionan la capacidad de entrada de fruta, la continuidad de trabajo y posibles cuellos de botella. En fases posteriores se cruzarán con máquinas, rendimientos y saturación.",
     },
     "saturacion_maxima_pct": {
         "title": "Saturación máxima %",

@@ -10,12 +10,15 @@ from widgets.screen_header import ScreenHeader
 
 
 class ProductionSettingsScreen(ttk.Frame):
+    VOLCADO_OPTIONS = ["Compacta", "Línea invierno", "Línea verano", "Tolva", "Manual"]
+
     def __init__(self, master: tk.Misc, on_back) -> None:
         super().__init__(master, padding=10)
         self.on_back = on_back
         self.service = ProductionSettingsService()
 
         self._general_vars: dict[str, tk.Variable] = {}
+        self._tipos_volcado_vars: dict[str, tk.IntVar] = {}
         self._build_ui()
         self._load_general_settings()
 
@@ -71,11 +74,21 @@ class ProductionSettingsScreen(ttk.Frame):
             self._add_help_button(panel, key, row, 2)
             self._general_vars[key] = var
 
+        def add_volcado_checks(row: int) -> None:
+            ttk.Label(panel, text="Líneas de volcado activas").grid(row=row, column=0, sticky="nw", padx=(0, 8), pady=4)
+            container = ttk.Frame(panel)
+            container.grid(row=row, column=1, sticky="w", pady=4)
+            for idx, option in enumerate(self.VOLCADO_OPTIONS):
+                var = tk.IntVar(value=1 if option == "Compacta" else 0)
+                self._tipos_volcado_vars[option] = var
+                ttk.Checkbutton(container, text=option, variable=var).grid(row=idx, column=0, sticky="w", pady=1)
+            self._add_help_button(panel, "tipos_volcado_activos", row, 2)
+
         add_entry(0, "horas_turno", "Horas por turno", "8")
         add_entry(1, "numero_turnos", "Número de turnos", "1")
         add_entry(2, "horas_descanso", "Horas de descanso", "0.5")
         add_combo(3, "tipo_campana", "Tipo de campaña", ["Baja actividad", "Normal", "Alta", "Pico campaña"])
-        add_combo(4, "tipo_volcado", "Tipo de volcado", ["Compacta", "Tolva", "Invierno", "Manual"])
+        add_volcado_checks(4)
         add_entry(5, "saturacion_maxima_pct", "Saturación máxima %", "90")
 
         add_check(6, "permitir_horas_extra", "Permitir horas extra", 1)
@@ -149,6 +162,9 @@ class ProductionSettingsScreen(ttk.Frame):
                     var.set(int(data[key]))
                 else:
                     var.set(str(data[key]))
+        activos = set(data.get("tipos_volcado_activos", []))
+        for option, var in self._tipos_volcado_vars.items():
+            var.set(1 if option in activos else 0)
         self._recalculate()
 
     def _parse_float(self, key: str, label: str) -> float:
@@ -173,13 +189,16 @@ class ProductionSettingsScreen(ttk.Frame):
             raise ValueError("Horas por turno, número de turnos y horas de descanso deben ser >= 0")
         if saturacion < 0 or saturacion > 100:
             raise ValueError("Saturación máxima % debe estar entre 0 y 100")
+        tipos_volcado_activos = [option for option, var in self._tipos_volcado_vars.items() if int(var.get()) == 1]
+        if not tipos_volcado_activos:
+            raise ValueError("Debe activar al menos una línea de volcado")
 
         return {
             "horas_turno": horas_turno,
             "numero_turnos": numero_turnos,
             "horas_descanso": horas_descanso,
             "tipo_campana": self._general_vars["tipo_campana"].get(),
-            "tipo_volcado": self._general_vars["tipo_volcado"].get(),
+            "tipos_volcado_activos": tipos_volcado_activos,
             "saturacion_maxima_pct": saturacion,
             "permitir_horas_extra": int(self._general_vars["permitir_horas_extra"].get()),
             "permitir_segundo_turno": int(self._general_vars["permitir_segundo_turno"].get()),
