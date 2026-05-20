@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 
 from db.connection import get_connection
 
@@ -10,6 +11,7 @@ DEFAULT_GENERAL_SETTINGS = {
     "horas_descanso": 0.5,
     "tipo_campana": "Normal",
     "tipo_volcado": "Compacta",
+    "tipos_volcado_activos": ["Compacta"],
     "saturacion_maxima_pct": 90.0,
     "permitir_horas_extra": 1,
     "permitir_segundo_turno": 0,
@@ -35,6 +37,7 @@ class ProductionSettingsRepository:
                     horas_descanso REAL NOT NULL,
                     tipo_campana TEXT NOT NULL,
                     tipo_volcado TEXT NOT NULL,
+                    tipos_volcado_activos TEXT,
                     saturacion_maxima_pct REAL NOT NULL,
                     permitir_horas_extra INTEGER NOT NULL,
                     permitir_segundo_turno INTEGER NOT NULL,
@@ -49,6 +52,11 @@ class ProductionSettingsRepository:
                 )
                 """
             )
+            columns = {
+                row["name"] for row in conn.execute("PRAGMA table_info(production_general_settings)").fetchall()
+            }
+            if "tipos_volcado_activos" not in columns:
+                conn.execute("ALTER TABLE production_general_settings ADD COLUMN tipos_volcado_activos TEXT")
 
     def ensure_defaults(self) -> None:
         self.ensure_schema()
@@ -58,13 +66,13 @@ class ProductionSettingsRepository:
                 """
                 INSERT INTO production_general_settings (
                     id, horas_turno, numero_turnos, horas_descanso, tipo_campana,
-                    tipo_volcado, saturacion_maxima_pct, permitir_horas_extra,
+                    tipo_volcado, tipos_volcado_activos, saturacion_maxima_pct, permitir_horas_extra,
                     permitir_segundo_turno, priorizar_pedidos_reales,
                     permitir_adelantar_produccion, agrupar_pedidos_compatibles,
                     minimizar_cambios_formato, kg_objetivo_dia, palets_objetivo_dia,
                     pedidos_maximos_recomendados, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO NOTHING
                 """,
                 (
@@ -74,6 +82,7 @@ class ProductionSettingsRepository:
                     DEFAULT_GENERAL_SETTINGS["horas_descanso"],
                     DEFAULT_GENERAL_SETTINGS["tipo_campana"],
                     DEFAULT_GENERAL_SETTINGS["tipo_volcado"],
+                    json.dumps(DEFAULT_GENERAL_SETTINGS["tipos_volcado_activos"], ensure_ascii=False),
                     DEFAULT_GENERAL_SETTINGS["saturacion_maxima_pct"],
                     DEFAULT_GENERAL_SETTINGS["permitir_horas_extra"],
                     DEFAULT_GENERAL_SETTINGS["permitir_segundo_turno"],
@@ -92,7 +101,9 @@ class ProductionSettingsRepository:
         self.ensure_defaults()
         with get_connection() as conn:
             row = conn.execute("SELECT * FROM production_general_settings WHERE id = 1").fetchone()
-        return dict(row) if row else {"id": 1, **DEFAULT_GENERAL_SETTINGS}
+        data = dict(row) if row else {"id": 1, **DEFAULT_GENERAL_SETTINGS}
+        data["tipos_volcado_activos"] = self._parse_tipos_volcado_activos(data)
+        return data
 
     def save_general_settings(self, data: dict) -> None:
         self.ensure_schema()
@@ -102,19 +113,20 @@ class ProductionSettingsRepository:
                 """
                 INSERT INTO production_general_settings (
                     id, horas_turno, numero_turnos, horas_descanso, tipo_campana,
-                    tipo_volcado, saturacion_maxima_pct, permitir_horas_extra,
+                    tipo_volcado, tipos_volcado_activos, saturacion_maxima_pct, permitir_horas_extra,
                     permitir_segundo_turno, priorizar_pedidos_reales,
                     permitir_adelantar_produccion, agrupar_pedidos_compatibles,
                     minimizar_cambios_formato, kg_objetivo_dia, palets_objetivo_dia,
                     pedidos_maximos_recomendados, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     horas_turno=excluded.horas_turno,
                     numero_turnos=excluded.numero_turnos,
                     horas_descanso=excluded.horas_descanso,
                     tipo_campana=excluded.tipo_campana,
                     tipo_volcado=excluded.tipo_volcado,
+                    tipos_volcado_activos=excluded.tipos_volcado_activos,
                     saturacion_maxima_pct=excluded.saturacion_maxima_pct,
                     permitir_horas_extra=excluded.permitir_horas_extra,
                     permitir_segundo_turno=excluded.permitir_segundo_turno,
@@ -133,7 +145,8 @@ class ProductionSettingsRepository:
                     data["numero_turnos"],
                     data["horas_descanso"],
                     data["tipo_campana"],
-                    data["tipo_volcado"],
+                    data["tipos_volcado_activos"][0] if data["tipos_volcado_activos"] else DEFAULT_GENERAL_SETTINGS["tipo_volcado"],
+                    json.dumps(data["tipos_volcado_activos"], ensure_ascii=False),
                     data["saturacion_maxima_pct"],
                     int(data["permitir_horas_extra"]),
                     int(data["permitir_segundo_turno"]),
@@ -150,3 +163,20 @@ class ProductionSettingsRepository:
 
     def reset_general_defaults(self) -> None:
         self.save_general_settings(DEFAULT_GENERAL_SETTINGS)
+
+    def _parse_tipos_volcado_activos(self, data: dict) -> list[str]:
+        raw = data.get("tipos_volcado_activos")
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    cleaned = [str(item).strip() for item in parsed if str(item).strip()]
+                    if cleaned:
+                        return cleaned
+            except (ValueError, TypeError):
+                cleaned = [item.strip() for item in str(raw).split(",") if item.strip()]
+                if cleaned:
+                    return cleaned
+
+        legacy = str(data.get("tipo_volcado", "")).strip()
+        return [legacy] if legacy else list(DEFAULT_GENERAL_SETTINGS["tipos_volcado_activos"])
