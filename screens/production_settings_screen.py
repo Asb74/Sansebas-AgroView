@@ -5,7 +5,7 @@ from tkinter import messagebox, ttk
 
 from services.production_settings_service import ProductionSettingsService
 from utils.help_dialog import show_tab_help
-from utils.production_help_texts import PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PERSONAL_HELP
+from utils.production_help_texts import PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERSONAL_HELP
 from widgets.screen_header import ScreenHeader
 
 
@@ -18,6 +18,10 @@ class ProductionSettingsScreen(ttk.Frame):
     PACKAGING_MESH_TYPES = ["No aplica", "Tradicional", "Clip-to-clip", "Girsac", "Bolsa", "Otro"]
     LINE_TYPES = ["Volcado", "Malla", "Encajado", "Granel", "Granelera", "Calibrador", "Final línea", "Expedición", "Soporte", "Otro"]
     LINE_FAMILIES = ["Entrada fruta", "Producción directa", "Clasificación", "Envasado", "Salida / expedición", "Apoyo"]
+    PERFORMANCE_FAMILIES = ["Malla", "Encajado", "Granel", "Granelera", "Volcado", "Calibrador", "Final línea", "Otro"]
+    PERFORMANCE_LINE_TYPES = PERFORMANCE_FAMILIES
+    PERFORMANCE_CONDITIONS = ["Normal", "Calibre pequeño", "Calibre grande", "Con BOX", "Con precalibrado", "Sin precalibrado", "Destrío alto", "Pedido pequeño", "Otro"]
+    PERFORMANCE_DIFFICULTIES = ["Baja", "Media", "Alta", "Muy alta"]
 
     def __init__(self, master: tk.Misc, on_back) -> None:
         super().__init__(master, padding=10)
@@ -35,10 +39,15 @@ class ProductionSettingsScreen(ttk.Frame):
         self._lines_editor_vars: dict[str, tk.Variable] = {}
         self._new_line_counter = 1
         self._new_packaging_counter = 1
+        self._performance_tree: ttk.Treeview | None = None
+        self._performance_editor_vars: dict[str, tk.Variable] = {}
+        self._new_performance_counter = 1
         self._build_ui()
         self._load_general_settings()
         self._load_staff_settings()
         self._load_packaging_settings()
+        self._load_lines_settings()
+        self._load_performance_settings()
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
@@ -62,7 +71,9 @@ class ProductionSettingsScreen(ttk.Frame):
         notebook.add(packaging_tab, text="Confecciones")
         lines_tab = ttk.Frame(notebook, padding=12)
         notebook.add(lines_tab, text="Máquinas / líneas")
-        for title in ("Rendimientos", "Penalizaciones", "Reglas / semáforo"):
+        performance_tab = ttk.Frame(notebook, padding=12)
+        notebook.add(performance_tab, text="Rendimientos")
+        for title in ("Penalizaciones", "Reglas / semáforo"):
             placeholder = ttk.Frame(notebook, padding=12)
             ttk.Label(placeholder, text="Pestaña preparada para una próxima integración.").pack(anchor="w")
             notebook.add(placeholder, text=title)
@@ -71,6 +82,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._build_staff_tab(personal_tab)
         self._build_packaging_tab(packaging_tab)
         self._build_lines_tab(lines_tab)
+        self._build_performance_tab(performance_tab)
 
     # General tab (sin cambios funcionales)
     def _build_general_tab(self, parent: ttk.Frame) -> None:
@@ -580,3 +592,104 @@ class ProductionSettingsScreen(ttk.Frame):
         ttk.Button(btns, text="Guardar líneas", command=self._save_lines_settings).pack(side="left", padx=4)
         ttk.Button(btns, text="Restaurar valores por defecto", command=self._reset_lines_defaults).pack(side="left", padx=4)
         ttk.Button(btns, text="Eliminar línea seleccionada", command=self._delete_line_row).pack(side="left", padx=4)
+
+
+    def _build_performance_tab(self, parent: ttk.Frame) -> None:
+        parent.grid_columnconfigure(0, weight=1); parent.grid_rowconfigure(1, weight=1)
+        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_performance_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        catalog = ttk.LabelFrame(parent, text="Catálogo de rendimientos", padding=12)
+        catalog.grid(row=1, column=0, sticky="nsew"); catalog.grid_columnconfigure(0, weight=1); catalog.grid_rowconfigure(0, weight=1)
+        cols = ("id","codigo","familia","confeccion_formato","tipo_linea","condicion","oph_referencia","oph_minimo","oph_optimo","kg_h_referencia","factor_precalibrado","factor_destrio_alto","dificultad","activo","observaciones")
+        tree = ttk.Treeview(catalog, columns=cols, show="headings", height=8); self._performance_tree = tree
+        for c,h,w in [("id","ID",40),("codigo","Código",150),("familia","Familia",90),("confeccion_formato","Confección / formato",180),("tipo_linea","Tipo línea",100),("condicion","Condición",120),("oph_referencia","OPH referencia",100),("oph_minimo","OPH mínimo",90),("oph_optimo","OPH óptimo",90),("kg_h_referencia","Kg/h referencia",110),("factor_precalibrado","Factor precalibrado",120),("factor_destrio_alto","Factor destrío alto",120),("dificultad","Dificultad",90),("activo","Activo",60),("observaciones","Observaciones",220)]:
+            tree.heading(c,text=h); tree.column(c,width=w,anchor="w")
+        yscroll = ttk.Scrollbar(catalog, orient="vertical", command=tree.yview); xscroll = ttk.Scrollbar(catalog, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0,column=0,sticky="nsew"); yscroll.grid(row=0,column=1,sticky="ns"); xscroll.grid(row=1,column=0,sticky="ew")
+        tree.bind("<<TreeviewSelect>>", self._on_performance_row_selected)
+        editor = ttk.LabelFrame(parent, text="Editar rendimiento seleccionado", padding=12)
+        editor.grid(row=2,column=0,sticky="ew",pady=(10,0)); editor.grid_columnconfigure(1, weight=1)
+        self._performance_editor_vars = {"id": tk.StringVar(value=""), "codigo": tk.StringVar(value=""), "familia": tk.StringVar(value=self.PERFORMANCE_FAMILIES[0]), "confeccion_formato": tk.StringVar(value=""), "tipo_linea": tk.StringVar(value=self.PERFORMANCE_LINE_TYPES[0]), "condicion": tk.StringVar(value=self.PERFORMANCE_CONDITIONS[0]), "oph_referencia": tk.StringVar(value="0"), "oph_minimo": tk.StringVar(value="0"), "oph_optimo": tk.StringVar(value="0"), "kg_h_referencia": tk.StringVar(value="0"), "factor_precalibrado": tk.StringVar(value="1.0"), "factor_destrio_alto": tk.StringVar(value="1.0"), "dificultad": tk.StringVar(value=self.PERFORMANCE_DIFFICULTIES[0]), "activo": tk.IntVar(value=1), "observaciones": tk.StringVar(value="")}
+        fields=[("codigo","Código"),("familia","Familia"),("confeccion_formato","Confección / formato"),("tipo_linea","Tipo línea"),("condicion","Condición"),("oph_referencia","OPH referencia"),("oph_minimo","OPH mínimo"),("oph_optimo","OPH óptimo"),("kg_h_referencia","Kg/h referencia"),("factor_precalibrado","Factor precalibrado"),("factor_destrio_alto","Factor destrío alto"),("dificultad","Dificultad")]
+        for r,(k,l) in enumerate(fields):
+            ttk.Label(editor,text=l).grid(row=r,column=0,sticky="w",padx=(0,8),pady=3)
+            if k in ("familia","tipo_linea","condicion","dificultad"):
+                vals = getattr(self, f"PERFORMANCE_{'LINE_TYPES' if k=='tipo_linea' else 'CONDITIONS' if k=='condicion' else 'DIFFICULTIES' if k=='dificultad' else 'FAMILIES'}")
+                ttk.Combobox(editor,textvariable=self._performance_editor_vars[k],values=vals).grid(row=r,column=1,sticky="ew",pady=3)
+            else: ttk.Entry(editor,textvariable=self._performance_editor_vars[k]).grid(row=r,column=1,sticky="ew",pady=3)
+        ttk.Checkbutton(editor,text="Activo",variable=self._performance_editor_vars["activo"]).grid(row=12,column=1,sticky="w",pady=2)
+        ttk.Label(editor,text="Observaciones").grid(row=13,column=0,sticky="w",padx=(0,8),pady=3); ttk.Entry(editor,textvariable=self._performance_editor_vars["observaciones"]).grid(row=13,column=1,sticky="ew",pady=3)
+        btns = ttk.Frame(parent); btns.grid(row=3,column=0,sticky="ew",pady=(12,0))
+        ttk.Button(btns,text="Nuevo rendimiento",command=self._add_performance_row).pack(side="left",padx=4)
+        ttk.Button(btns,text="Aplicar cambios a selección",command=self._apply_performance_row_changes).pack(side="left",padx=4)
+        ttk.Button(btns,text="Guardar rendimientos",command=self._save_performance_settings).pack(side="left",padx=4)
+        ttk.Button(btns,text="Restaurar valores por defecto",command=self._reset_performance_defaults).pack(side="left",padx=4)
+        ttk.Button(btns,text="Eliminar rendimiento seleccionado",command=self._delete_performance_row).pack(side="left",padx=4)
+
+    def _show_performance_help(self) -> None:
+        keys=["codigo","familia","confeccion_formato","tipo_linea","condicion","oph_referencia","oph_minimo","oph_optimo","kg_h_referencia","factor_precalibrado","factor_destrio_alto","dificultad","activo","observaciones"]
+        show_tab_help(self, title="Descripción de campos - Rendimientos", intro="Esta pestaña define los rendimientos productivos de referencia que se usarán posteriormente para estimar horas necesarias, capacidad diaria y plantilla recomendada.", help_items=[PRODUCTION_PERFORMANCE_HELP[k] for k in keys if k in PRODUCTION_PERFORMANCE_HELP])
+
+
+    def _load_performance_settings(self) -> None:
+        self._refresh_performance_tree(self.service.get_performance_rules())
+
+    def _refresh_performance_tree(self, rows: list[dict]) -> None:
+        if not self._performance_tree: return
+        self._performance_tree.delete(*self._performance_tree.get_children())
+        for row in rows: self._performance_tree.insert("", "end", values=(row.get("id",""), row.get("codigo",""), row.get("familia",""), row.get("confeccion_formato",""), row.get("tipo_linea",""), row.get("condicion",""), row.get("oph_referencia",0), row.get("oph_minimo",0), row.get("oph_optimo",0), row.get("kg_h_referencia",0), row.get("factor_precalibrado",1), row.get("factor_destrio_alto",1), row.get("dificultad",""), row.get("activo",1), row.get("observaciones","")))
+
+    def _on_performance_row_selected(self, _event=None) -> None:
+        if not self._performance_tree: return
+        selected=self._performance_tree.selection()
+        if not selected: return
+        vals=self._performance_tree.item(selected[0],"values")
+        for i,k in enumerate(("id","codigo","familia","confeccion_formato","tipo_linea","condicion","oph_referencia","oph_minimo","oph_optimo","kg_h_referencia","factor_precalibrado","factor_destrio_alto","dificultad","activo","observaciones")): self._performance_editor_vars[k].set(vals[i])
+
+    def _validate_performance_values(self, values: tuple) -> tuple:
+        code,fam,form,tipo,cond = [str(values[i]).strip() for i in (1,2,3,4,5)]
+        if not all([code,fam,form,tipo,cond]): raise ValueError("Código, familia, confección/formato, tipo línea y condición son obligatorios")
+        oph_ref=float(str(values[6]).replace(',','.')); oph_min=float(str(values[7]).replace(',','.')); oph_opt=float(str(values[8]).replace(',','.')); kgh=float(str(values[9]).replace(',','.')); fpre=float(str(values[10]).replace(',','.')); fdes=float(str(values[11]).replace(',','.')); dif=str(values[12]).strip()
+        if min(oph_ref,oph_min,oph_opt,kgh) < 0: raise ValueError("OPH y Kg/h deben ser >= 0")
+        if fpre <= 0 or fdes <= 0: raise ValueError("Factores deben ser > 0")
+        if oph_opt < oph_min: raise ValueError("OPH óptimo no debe ser menor que OPH mínimo")
+        if not dif: raise ValueError("La dificultad es obligatoria")
+        if oph_ref == 0 and kgh == 0: raise ValueError("OPH referencia y Kg/h referencia no pueden ser ambos 0")
+        return (values[0],code,fam,form,tipo,cond,oph_ref,oph_min,oph_opt,kgh,fpre,fdes,dif,1 if str(values[13]).strip() in ("1","True","true") else 0,str(values[14]).strip())
+
+    def _add_performance_row(self) -> None:
+        if not self._performance_tree: return
+        code=f"NUEVO_REND_{self._new_performance_counter}"; self._new_performance_counter += 1
+        self._performance_tree.insert("", "end", values=("", code, "Otro", "Nuevo formato", "Otro", "Normal", 0, 0, 0, 0, 1.0, 1.0, "Media", 1, ""))
+
+    def _apply_performance_row_changes(self) -> None:
+        if not self._performance_tree: return
+        selected=self._performance_tree.selection()
+        if not selected: messagebox.showerror("Rendimientos", "Seleccione una fila para editar.", parent=self); return
+        try:
+            vals=self._validate_performance_values((self._performance_editor_vars["id"].get(), self._performance_editor_vars["codigo"].get(), self._performance_editor_vars["familia"].get(), self._performance_editor_vars["confeccion_formato"].get(), self._performance_editor_vars["tipo_linea"].get(), self._performance_editor_vars["condicion"].get(), self._performance_editor_vars["oph_referencia"].get(), self._performance_editor_vars["oph_minimo"].get(), self._performance_editor_vars["oph_optimo"].get(), self._performance_editor_vars["kg_h_referencia"].get(), self._performance_editor_vars["factor_precalibrado"].get(), self._performance_editor_vars["factor_destrio_alto"].get(), self._performance_editor_vars["dificultad"].get(), self._performance_editor_vars["activo"].get(), self._performance_editor_vars["observaciones"].get()))
+            self._performance_tree.item(selected[0], values=vals)
+        except Exception as exc: messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _delete_performance_row(self) -> None:
+        if not self._performance_tree: return
+        selected=self._performance_tree.selection()
+        if not selected: messagebox.showerror("Rendimientos", "Seleccione una fila para eliminar.", parent=self); return
+        if messagebox.askyesno("Confirmar eliminación", "¿Desea eliminar el rendimiento seleccionado?", parent=self): self._performance_tree.delete(selected[0])
+
+    def _collect_performance_rows_payload(self) -> list[dict]:
+        if not self._performance_tree: return []
+        rows=[]; codes=set()
+        for item_id in self._performance_tree.get_children():
+            clean=self._validate_performance_values(self._performance_tree.item(item_id,"values")); key=clean[1].lower()
+            if key in codes: raise ValueError(f"Código duplicado: {clean[1]}")
+            codes.add(key)
+            rows.append({"codigo":clean[1],"familia":clean[2],"confeccion_formato":clean[3],"tipo_linea":clean[4],"condicion":clean[5],"oph_referencia":clean[6],"oph_minimo":clean[7],"oph_optimo":clean[8],"kg_h_referencia":clean[9],"factor_precalibrado":clean[10],"factor_destrio_alto":clean[11],"dificultad":clean[12],"activo":clean[13],"observaciones":clean[14]})
+        return rows
+
+    def _save_performance_settings(self) -> None:
+        try: self.service.save_performance_rules(self._collect_performance_rows_payload()); self._load_performance_settings(); messagebox.showinfo("Configuración productiva", "Rendimientos guardados correctamente.", parent=self)
+        except Exception as exc: messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _reset_performance_defaults(self) -> None:
+        self.service.reset_performance_defaults(); self._load_performance_settings(); messagebox.showinfo("Configuración productiva", "Valores por defecto de rendimientos restaurados.", parent=self)

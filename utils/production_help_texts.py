@@ -153,3 +153,20 @@ PRODUCTION_LINES_HELP = {
     "permite_box": {"title": "Permite BOX", "description": "Indica si la línea puede trabajar con BOX o alimentación especial.", "example": "Uso de BOX para alimentar línea de malla.", "impact": "Puede mejorar continuidad y reducir saturaciones."},
     "observaciones": {"title": "Observaciones", "description": "Notas internas sobre limitaciones o uso.", "example": "Solo utilizar con formato 2 kg.", "impact": "Ayuda a tomar decisiones operativas."},
 }
+
+PRODUCTION_PERFORMANCE_HELP = {
+    "codigo": {"title": "Código", "description": "Identificador interno único de la regla de rendimiento.", "example": "MALLA_PRECALIBRADO.", "impact": "Se usará para relacionar confecciones, líneas y cálculos de capacidad."},
+    "familia": {"title": "Familia", "description": "Grupo productivo al que pertenece el rendimiento.", "example": "Malla, Encajado, Granel o Volcado.", "impact": "Permite aplicar reglas por tipo de trabajo."},
+    "confeccion_formato": {"title": "Confección / formato", "description": "Formato concreto al que aplica el rendimiento.", "example": "Malla 2 kg clip-to-clip o Encajado 10 kg cartón.", "impact": "Diferentes formatos pueden tener velocidades muy distintas."},
+    "tipo_linea": {"title": "Tipo línea", "description": "Línea o proceso donde se aplica el rendimiento.", "example": "Malla, Encajado, Granelera.", "impact": "Ayuda a detectar cuellos de botella por línea."},
+    "condicion": {"title": "Condición", "description": "Situación operativa bajo la que aplica el rendimiento.", "example": "Normal, con BOX, con precalibrado o destrío alto.", "impact": "Permite ajustar el rendimiento según la realidad del día."},
+    "oph_referencia": {"title": "OPH referencia", "description": "Valor de referencia de producción por hora cuando se trabaja en unidades operativas por hora.", "example": "398 OPH en mallas.", "impact": "Base principal para estimar horas necesarias en procesos medidos en unidades/hora."},
+    "oph_minimo": {"title": "OPH mínimo", "description": "Rendimiento mínimo esperable en condiciones desfavorables.", "example": "300 OPH.", "impact": "Permite calcular escenarios conservadores."},
+    "oph_optimo": {"title": "OPH óptimo", "description": "Rendimiento esperable en buenas condiciones.", "example": "500 OPH con precalibrado.", "impact": "Permite comparar rendimiento normal frente a rendimiento mejorado."},
+    "kg_h_referencia": {"title": "Kg/h referencia", "description": "Capacidad expresada directamente en kilos por hora.", "example": "10.000 kg/h de entrada de fruta.", "impact": "Útil para procesos como volcado, entrada o líneas donde el cálculo se realiza en kilos/hora."},
+    "factor_precalibrado": {"title": "Factor precalibrado", "description": "Multiplicador aplicado cuando la fruta está precalibrada.", "example": "1.25 equivale a mejorar un 25%.", "impact": "Permite reflejar la mejora de continuidad y reducción de saturación."},
+    "factor_destrio_alto": {"title": "Factor destrío alto", "description": "Multiplicador aplicado cuando hay mucho destrío o dificultad.", "example": "0.90 equivale a reducir el rendimiento un 10%.", "impact": "Evita sobreestimar capacidad en fruta difícil."},
+    "dificultad": {"title": "Dificultad", "description": "Valor cualitativo que resume la complejidad del rendimiento.", "example": "Baja, Media, Alta o Muy alta.", "impact": "Servirá para priorizar alertas y ajustar planificación."},
+    "activo": {"title": "Activo", "description": "Indica si esta regla de rendimiento se puede usar.", "example": "Desactivar reglas antiguas o no utilizadas.", "impact": "Evita que el motor use parámetros no válidos."},
+    "observaciones": {"title": "Observaciones", "description": "Notas internas sobre cuándo aplicar esta regla.", "example": "Usar solo con fruta limpia o requiere máquina específica.", "impact": "Ayuda a producción a interpretar el dato."},
+}

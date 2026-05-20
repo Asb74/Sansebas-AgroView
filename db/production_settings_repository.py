@@ -61,6 +61,18 @@ DEFAULT_PRODUCTION_LINES = [
     {"codigo": "FINAL_LINEA", "nombre": "Final de línea", "tipo_linea": "Final línea", "familia_principal": "Salida / expedición", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
 ]
 
+
+
+DEFAULT_PERFORMANCE_RULES = [
+    {"codigo": "ENCAJADO_NORMAL", "familia": "Encajado", "confeccion_formato": "Encajado general", "tipo_linea": "Encajado", "condicion": "Normal", "oph_referencia": 250.0, "oph_minimo": 200.0, "oph_optimo": 300.0, "kg_h_referencia": 0.0, "factor_precalibrado": 1.00, "factor_destrio_alto": 0.90, "dificultad": "Media", "activo": 1, "observaciones": "Referencia general encajado."},
+    {"codigo": "MALLA_NORMAL", "familia": "Malla", "confeccion_formato": "Malla general", "tipo_linea": "Malla", "condicion": "Normal", "oph_referencia": 398.0, "oph_minimo": 300.0, "oph_optimo": 465.0, "kg_h_referencia": 0.0, "factor_precalibrado": 1.00, "factor_destrio_alto": 0.90, "dificultad": "Media", "activo": 1, "observaciones": "Referencia general mallas."},
+    {"codigo": "MALLA_CON_BOX", "familia": "Malla", "confeccion_formato": "Malla con BOX", "tipo_linea": "Malla", "condicion": "Con BOX", "oph_referencia": 465.0, "oph_minimo": 350.0, "oph_optimo": 500.0, "kg_h_referencia": 0.0, "factor_precalibrado": 1.00, "factor_destrio_alto": 0.90, "dificultad": "Media", "activo": 1, "observaciones": "Mejora por alimentación con BOX."},
+    {"codigo": "MALLA_PRECALIBRADO", "familia": "Malla", "confeccion_formato": "Malla con precalibrado", "tipo_linea": "Malla", "condicion": "Con precalibrado", "oph_referencia": 500.0, "oph_minimo": 400.0, "oph_optimo": 550.0, "kg_h_referencia": 0.0, "factor_precalibrado": 1.25, "factor_destrio_alto": 0.95, "dificultad": "Baja", "activo": 1, "observaciones": "Referencia con fruta precalibrada."},
+    {"codigo": "GRANEL_MANUAL_NORMAL", "familia": "Granel", "confeccion_formato": "Granel manual", "tipo_linea": "Granel", "condicion": "Normal", "oph_referencia": 420.0, "oph_minimo": 350.0, "oph_optimo": 450.0, "kg_h_referencia": 0.0, "factor_precalibrado": 1.00, "factor_destrio_alto": 0.90, "dificultad": "Baja", "activo": 1, "observaciones": "Referencia granel manual."},
+    {"codigo": "GRANEL_MANUAL_PRECALIBRADO", "familia": "Granel", "confeccion_formato": "Granel manual con precalibrado", "tipo_linea": "Granel", "condicion": "Con precalibrado", "oph_referencia": 450.0, "oph_minimo": 380.0, "oph_optimo": 500.0, "kg_h_referencia": 0.0, "factor_precalibrado": 1.10, "factor_destrio_alto": 0.95, "dificultad": "Baja", "activo": 1, "observaciones": "Mejora por precalibrado."},
+    {"codigo": "VOLCADO_REFERENCIA", "familia": "Volcado", "confeccion_formato": "Entrada fruta", "tipo_linea": "Volcado", "condicion": "Normal", "oph_referencia": 0.0, "oph_minimo": 0.0, "oph_optimo": 0.0, "kg_h_referencia": 10000.0, "factor_precalibrado": 1.00, "factor_destrio_alto": 0.90, "dificultad": "Media", "activo": 1, "observaciones": "Referencia orientativa de entrada de fruta."},
+]
+
 DEFAULT_STAFF_AREAS = [
     ("Volcado", "Directo", 0, 0, 0, 1, ""),
     ("Tría principal", "Directo", 0, 0, 0, 1, ""),
@@ -89,6 +101,7 @@ class ProductionSettingsRepository:
         self.ensure_staff_defaults()
         self.ensure_lines_defaults()
         self.ensure_packaging_defaults()
+        self.ensure_performance_defaults()
 
     def ensure_schema(self) -> None:
         with get_connection() as conn:
@@ -500,6 +513,7 @@ class ProductionSettingsRepository:
 
     def get_packaging_types(self) -> list[dict]:
         self.ensure_packaging_defaults()
+        self.ensure_performance_defaults()
         with get_connection() as conn:
             rows = conn.execute("SELECT * FROM production_packaging_types ORDER BY id").fetchall()
         return [dict(row) for row in rows]
@@ -533,3 +547,68 @@ class ProductionSettingsRepository:
         self.ensure_packaging_schema()
         with get_connection() as conn:
             conn.execute("DELETE FROM production_packaging_types WHERE id = ?", (packaging_id,))
+
+
+    def ensure_performance_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_performance_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    codigo TEXT NOT NULL UNIQUE,
+                    familia TEXT NOT NULL,
+                    confeccion_formato TEXT NOT NULL,
+                    tipo_linea TEXT NOT NULL,
+                    condicion TEXT NOT NULL,
+                    oph_referencia REAL NOT NULL,
+                    oph_minimo REAL NOT NULL,
+                    oph_optimo REAL NOT NULL,
+                    kg_h_referencia REAL NOT NULL,
+                    factor_precalibrado REAL NOT NULL,
+                    factor_destrio_alto REAL NOT NULL,
+                    dificultad TEXT NOT NULL,
+                    activo INTEGER NOT NULL,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+
+    def ensure_performance_defaults(self) -> None:
+        self.ensure_performance_schema()
+        with get_connection() as conn:
+            existing = conn.execute("SELECT COUNT(*) AS n FROM production_performance_rules").fetchone()["n"]
+            if existing == 0:
+                self.save_performance_rules(DEFAULT_PERFORMANCE_RULES)
+
+    def get_performance_rules(self) -> list[dict]:
+        self.ensure_performance_defaults()
+        with get_connection() as conn:
+            rows = conn.execute("SELECT * FROM production_performance_rules ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+    def save_performance_rules(self, rows: list[dict]) -> None:
+        self.ensure_performance_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_performance_rules")
+            conn.executemany(
+                """
+                INSERT INTO production_performance_rules (
+                    codigo, familia, confeccion_formato, tipo_linea, condicion,
+                    oph_referencia, oph_minimo, oph_optimo, kg_h_referencia,
+                    factor_precalibrado, factor_destrio_alto, dificultad,
+                    activo, observaciones, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [(
+                    row["codigo"], row["familia"], row["confeccion_formato"], row["tipo_linea"], row["condicion"],
+                    float(row["oph_referencia"]), float(row["oph_minimo"]), float(row["oph_optimo"]), float(row["kg_h_referencia"]),
+                    float(row["factor_precalibrado"]), float(row["factor_destrio_alto"]), row["dificultad"],
+                    int(row["activo"]), row.get("observaciones", ""), now,
+                ) for row in rows],
+            )
+
+    def reset_performance_defaults(self) -> None:
+        self.save_performance_rules(DEFAULT_PERFORMANCE_RULES)
