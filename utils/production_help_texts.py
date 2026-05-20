@@ -138,3 +138,18 @@ PRODUCTION_PACKAGING_HELP = {
     "activo": {"title": "Activo", "description": "Indica si la confección está disponible para usar en planificación.", "example": "Desactivar formatos que no se usan esta campaña.", "impact": "Evita que el sistema proponga formatos no disponibles."},
     "observaciones": {"title": "Observaciones", "description": "Notas internas sobre limitaciones, ajustes o particularidades.", "example": "Solo usar con máquina 2 o requiere etiqueta especial.", "impact": "Ayuda a justificar decisiones operativas."},
 }
+
+PRODUCTION_LINES_HELP = {
+    "codigo": {"title": "Código", "description": "Identificador interno único de la línea o máquina.", "example": "MALLAS_CLIP.", "impact": "Se usará para relacionar líneas con confecciones, rendimientos y reglas."},
+    "nombre": {"title": "Nombre", "description": "Nombre visible de la línea o máquina.", "example": "Línea mallas clip-to-clip.", "impact": "Facilita la interpretación por producción."},
+    "tipo_linea": {"title": "Tipo línea", "description": "Clasifica la función principal de la línea.", "example": "Volcado, Malla, Encajado.", "impact": "Permite detectar cuellos de botella por tipo de proceso."},
+    "familia_principal": {"title": "Familia principal", "description": "Agrupa la línea dentro del flujo operativo.", "example": "Entrada fruta, Envasado, Expedición.", "impact": "Ayuda a ordenar el proceso productivo."},
+    "numero_maquinas": {"title": "Nº máquinas", "description": "Número de máquinas disponibles de ese tipo.", "example": "3 máquinas de malla.", "impact": "Limita la capacidad máxima simultánea."},
+    "activa": {"title": "Activa", "description": "Indica si la línea estará disponible para la planificación.", "example": "Desactivar línea verano fuera de campaña.", "impact": "Las líneas inactivas no deben considerarse después."},
+    "capacidad_kg_h_referencia": {"title": "Capacidad kg/h referencia", "description": "Capacidad orientativa de la línea en kilos por hora.", "example": "10.000 kg/h en una línea de entrada.", "impact": "Servirá como base para calcular capacidad productiva."},
+    "personal_minimo": {"title": "Personal mínimo", "description": "Personas mínimas necesarias para operar la línea.", "example": "4 personas.", "impact": "Si no se alcanza, la línea puede marcarse como no operativa."},
+    "personal_optimo": {"title": "Personal óptimo", "description": "Personas recomendadas para operar con rendimiento normal.", "example": "8 personas.", "impact": "Permite estimar pérdida de rendimiento si falta personal."},
+    "permite_precalibrado": {"title": "Permite pre calibrado", "description": "Indica si la línea puede trabajar con fruta pre calibrada.", "example": "Línea preparada para recibir fruta pre calibrada.", "impact": "Afectará a optimización de rendimiento y orden de trabajo."},
+    "permite_box": {"title": "Permite BOX", "description": "Indica si la línea puede trabajar con BOX o alimentación especial.", "example": "Uso de BOX para alimentar línea de malla.", "impact": "Puede mejorar continuidad y reducir saturaciones."},
+    "observaciones": {"title": "Observaciones", "description": "Notas internas sobre limitaciones o uso.", "example": "Solo utilizar con formato 2 kg.", "impact": "Ayuda a tomar decisiones operativas."},
+}

@@ -5,7 +5,7 @@ from tkinter import messagebox, ttk
 
 from services.production_settings_service import ProductionSettingsService
 from utils.help_dialog import show_tab_help
-from utils.production_help_texts import PRODUCTION_FIELD_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PERSONAL_HELP
+from utils.production_help_texts import PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PERSONAL_HELP
 from widgets.screen_header import ScreenHeader
 
 
@@ -16,6 +16,8 @@ class ProductionSettingsScreen(ttk.Frame):
     PACKAGING_SUBTYPES = ["Tradicional", "Clip-to-clip", "Girsac", "Bolsa", "Caja cartón", "Caja madera", "Granel", "Granelera", "Otro"]
     PACKAGING_MATERIALS = ["Plástico", "Cartón", "Madera", "Malla", "Mixto", "Sin material", "Otro"]
     PACKAGING_MESH_TYPES = ["No aplica", "Tradicional", "Clip-to-clip", "Girsac", "Bolsa", "Otro"]
+    LINE_TYPES = ["Volcado", "Malla", "Encajado", "Granel", "Granelera", "Calibrador", "Final línea", "Expedición", "Soporte", "Otro"]
+    LINE_FAMILIES = ["Entrada fruta", "Producción directa", "Clasificación", "Envasado", "Salida / expedición", "Apoyo"]
 
     def __init__(self, master: tk.Misc, on_back) -> None:
         super().__init__(master, padding=10)
@@ -29,6 +31,9 @@ class ProductionSettingsScreen(ttk.Frame):
         self._staff_tree: ttk.Treeview | None = None
         self._packaging_tree: ttk.Treeview | None = None
         self._packaging_editor_vars: dict[str, tk.Variable] = {}
+        self._lines_tree: ttk.Treeview | None = None
+        self._lines_editor_vars: dict[str, tk.Variable] = {}
+        self._new_line_counter = 1
         self._new_packaging_counter = 1
         self._build_ui()
         self._load_general_settings()
@@ -55,7 +60,9 @@ class ProductionSettingsScreen(ttk.Frame):
         notebook.add(personal_tab, text="Personal")
         packaging_tab = ttk.Frame(notebook, padding=12)
         notebook.add(packaging_tab, text="Confecciones")
-        for title in ("Máquinas / líneas", "Rendimientos", "Penalizaciones", "Reglas / semáforo"):
+        lines_tab = ttk.Frame(notebook, padding=12)
+        notebook.add(lines_tab, text="Máquinas / líneas")
+        for title in ("Rendimientos", "Penalizaciones", "Reglas / semáforo"):
             placeholder = ttk.Frame(notebook, padding=12)
             ttk.Label(placeholder, text="Pestaña preparada para una próxima integración.").pack(anchor="w")
             notebook.add(placeholder, text=title)
@@ -63,6 +70,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._build_general_tab(general_tab)
         self._build_staff_tab(personal_tab)
         self._build_packaging_tab(packaging_tab)
+        self._build_lines_tab(lines_tab)
 
     # General tab (sin cambios funcionales)
     def _build_general_tab(self, parent: ttk.Frame) -> None:
@@ -381,6 +389,84 @@ class ProductionSettingsScreen(ttk.Frame):
         keys = ["codigo", "descripcion", "familia", "subtipo", "kg_formato", "material", "tipo_malla", "requiere_precalibrado", "compatible_box", "activo", "observaciones"]
         show_tab_help(self, title="Descripción de campos - Confecciones", intro="Esta pestaña define el catálogo de confecciones que podrá usar la planificación productiva. Cada confección representa una forma concreta de preparar la fruta: malla, encajado, granel, granelera u otros formatos.", help_items=[PRODUCTION_PACKAGING_HELP[k] for k in keys if k in PRODUCTION_PACKAGING_HELP])
 
+    def _show_lines_help(self) -> None:
+        keys = ["codigo", "nombre", "tipo_linea", "familia_principal", "numero_maquinas", "activa", "capacidad_kg_h_referencia", "personal_minimo", "personal_optimo", "permite_precalibrado", "permite_box", "observaciones"]
+        show_tab_help(self, title="Descripción de campos - Máquinas / líneas", intro="Esta pestaña define los recursos físicos y operativos disponibles en el almacén: líneas de volcado, máquinas de malla, encajado, granelera, calibrador y puntos de apoyo.", help_items=[PRODUCTION_LINES_HELP[k] for k in keys if k in PRODUCTION_LINES_HELP])
+
+    def _load_lines_settings(self) -> None:
+        self._refresh_lines_tree(self.service.get_lines())
+
+    def _refresh_lines_tree(self, rows: list[dict]) -> None:
+        if not self._lines_tree: return
+        self._lines_tree.delete(*self._lines_tree.get_children())
+        for row in rows:
+            self._lines_tree.insert("", "end", values=(row.get("id",""), row.get("codigo",""), row.get("nombre",""), row.get("tipo_linea",""), row.get("familia_principal",""), row.get("numero_maquinas",0), row.get("activa",1), row.get("capacidad_kg_h_referencia",0), row.get("personal_minimo",0), row.get("personal_optimo",0), row.get("permite_precalibrado",0), row.get("permite_box",0), row.get("observaciones","")))
+
+    def _on_line_row_selected(self, _event=None) -> None:
+        if not self._lines_tree: return
+        selected = self._lines_tree.selection()
+        if not selected: return
+        vals = self._lines_tree.item(selected[0], "values")
+        for i, key in enumerate(("id", "codigo", "nombre", "tipo_linea", "familia_principal", "numero_maquinas", "activa", "capacidad_kg_h_referencia", "personal_minimo", "personal_optimo", "permite_precalibrado", "permite_box", "observaciones")):
+            self._lines_editor_vars[key].set(vals[i])
+
+    def _validate_line_values(self, values: tuple) -> tuple:
+        codigo = str(values[1]).strip(); nombre = str(values[2]).strip()
+        if not codigo: raise ValueError("El código es obligatorio")
+        if not nombre: raise ValueError("El nombre es obligatorio")
+        numero_maquinas = int(str(values[5]).strip()); capacidad = float(str(values[7]).strip().replace(",", ".")); pmin = int(str(values[8]).strip()); popt = int(str(values[9]).strip())
+        if numero_maquinas < 0: raise ValueError("Nº máquinas debe ser >= 0")
+        if capacidad < 0: raise ValueError("Capacidad kg/h referencia debe ser >= 0")
+        if pmin < 0: raise ValueError("Personal mínimo debe ser >= 0")
+        if popt < 0: raise ValueError("Personal óptimo debe ser >= 0")
+        if popt < pmin: raise ValueError("Personal óptimo no debe ser menor que personal mínimo")
+        return (values[0], codigo, nombre, str(values[3]).strip(), str(values[4]).strip(), numero_maquinas, 1 if str(values[6]).strip() in ("1","True","true") else 0, capacidad, pmin, popt, 1 if str(values[10]).strip() in ("1","True","true") else 0, 1 if str(values[11]).strip() in ("1","True","true") else 0, str(values[12]).strip())
+
+    def _apply_line_row_changes(self) -> None:
+        if not self._lines_tree: return
+        selected = self._lines_tree.selection()
+        if not selected: messagebox.showerror("Máquinas / líneas", "Seleccione una fila para editar.", parent=self); return
+        try:
+            values = self._validate_line_values((self._lines_editor_vars["id"].get(), self._lines_editor_vars["codigo"].get(), self._lines_editor_vars["nombre"].get(), self._lines_editor_vars["tipo_linea"].get(), self._lines_editor_vars["familia_principal"].get(), self._lines_editor_vars["numero_maquinas"].get(), self._lines_editor_vars["activa"].get(), self._lines_editor_vars["capacidad_kg_h_referencia"].get(), self._lines_editor_vars["personal_minimo"].get(), self._lines_editor_vars["personal_optimo"].get(), self._lines_editor_vars["permite_precalibrado"].get(), self._lines_editor_vars["permite_box"].get(), self._lines_editor_vars["observaciones"].get()))
+            self._lines_tree.item(selected[0], values=values)
+        except Exception as exc:
+            messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _add_line_row(self) -> None:
+        if not self._lines_tree: return
+        code = f"NUEVA_LINEA_{self._new_line_counter}"; self._new_line_counter += 1
+        self._lines_tree.insert("", "end", values=("", code, "Nueva línea", "Otro", "Apoyo", 0, 1, 0.0, 0, 0, 0, 0, ""))
+
+    def _delete_line_row(self) -> None:
+        if not self._lines_tree: return
+        selected = self._lines_tree.selection()
+        if not selected: messagebox.showerror("Máquinas / líneas", "Seleccione una fila para eliminar.", parent=self); return
+        if messagebox.askyesno("Confirmar eliminación", "¿Desea eliminar la línea seleccionada?", parent=self):
+            self._lines_tree.delete(selected[0])
+
+    def _collect_lines_rows_payload(self) -> list[dict]:
+        if not self._lines_tree: return []
+        rows = []; codes = set()
+        for item_id in self._lines_tree.get_children():
+            clean = self._validate_line_values(self._lines_tree.item(item_id, "values"))
+            code_key = clean[1].lower()
+            if code_key in codes: raise ValueError(f"Código duplicado: {clean[1]}")
+            codes.add(code_key)
+            rows.append({"codigo": clean[1], "nombre": clean[2], "tipo_linea": clean[3], "familia_principal": clean[4], "numero_maquinas": clean[5], "activa": clean[6], "capacidad_kg_h_referencia": clean[7], "personal_minimo": clean[8], "personal_optimo": clean[9], "permite_precalibrado": clean[10], "permite_box": clean[11], "observaciones": clean[12]})
+        return rows
+
+    def _save_lines_settings(self) -> None:
+        try:
+            self.service.save_lines(self._collect_lines_rows_payload())
+            self._load_lines_settings()
+            messagebox.showinfo("Configuración productiva", "Líneas guardadas correctamente.", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _reset_lines_defaults(self) -> None:
+        self.service.reset_lines_defaults(); self._load_lines_settings()
+        messagebox.showinfo("Configuración productiva", "Valores por defecto de líneas restaurados.", parent=self)
+
     def _load_packaging_settings(self) -> None:
         self._refresh_packaging_tree(self.service.get_packaging_types())
 
@@ -457,3 +543,40 @@ class ProductionSettingsScreen(ttk.Frame):
         self.service.reset_packaging_defaults()
         self._load_packaging_settings()
         messagebox.showinfo("Configuración productiva", "Valores por defecto de confecciones restaurados.", parent=self)
+
+    def _build_lines_tab(self, parent: ttk.Frame) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_lines_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        catalog = ttk.LabelFrame(parent, text="Catálogo de máquinas y líneas", padding=12)
+        catalog.grid(row=1, column=0, sticky="nsew")
+        catalog.grid_columnconfigure(0, weight=1); catalog.grid_rowconfigure(0, weight=1)
+        cols = ("id", "codigo", "nombre", "tipo_linea", "familia_principal", "numero_maquinas", "activa", "capacidad_kg_h_referencia", "personal_minimo", "personal_optimo", "permite_precalibrado", "permite_box", "observaciones")
+        tree = ttk.Treeview(catalog, columns=cols, show="headings", height=9)
+        self._lines_tree = tree
+        for c,h,w in [("id","ID",40),("codigo","Código",150),("nombre","Nombre",170),("tipo_linea","Tipo línea",110),("familia_principal","Familia principal",150),("numero_maquinas","Nº máquinas",90),("activa","Activa",60),("capacidad_kg_h_referencia","Capacidad kg/h referencia",160),("personal_minimo","Personal mínimo",100),("personal_optimo","Personal óptimo",100),("permite_precalibrado","Permite pre calibrado",130),("permite_box","Permite BOX",100),("observaciones","Observaciones",220)]:
+            tree.heading(c,text=h); tree.column(c,width=w,anchor="w")
+        yscroll = ttk.Scrollbar(catalog, orient="vertical", command=tree.yview)
+        xscroll = ttk.Scrollbar(catalog, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew"); yscroll.grid(row=0, column=1, sticky="ns"); xscroll.grid(row=1, column=0, sticky="ew")
+        tree.bind("<<TreeviewSelect>>", self._on_line_row_selected)
+        editor = ttk.LabelFrame(parent, text="Editar línea seleccionada", padding=12)
+        editor.grid(row=2, column=0, sticky="ew", pady=(10, 0)); editor.grid_columnconfigure(1, weight=1)
+        self._lines_editor_vars = {"id": tk.StringVar(value=""), "codigo": tk.StringVar(value=""), "nombre": tk.StringVar(value=""), "tipo_linea": tk.StringVar(value=self.LINE_TYPES[0]), "familia_principal": tk.StringVar(value=self.LINE_FAMILIES[0]), "numero_maquinas": tk.StringVar(value="0"), "activa": tk.IntVar(value=1), "capacidad_kg_h_referencia": tk.StringVar(value="0"), "personal_minimo": tk.StringVar(value="0"), "personal_optimo": tk.StringVar(value="0"), "permite_precalibrado": tk.IntVar(value=0), "permite_box": tk.IntVar(value=0), "observaciones": tk.StringVar(value="")}
+        ttk.Label(editor,text="Código").grid(row=0,column=0,sticky="w",padx=(0,8),pady=4); ttk.Entry(editor,textvariable=self._lines_editor_vars["codigo"]).grid(row=0,column=1,sticky="ew",pady=4)
+        ttk.Label(editor,text="Nombre").grid(row=1,column=0,sticky="w",padx=(0,8),pady=4); ttk.Entry(editor,textvariable=self._lines_editor_vars["nombre"]).grid(row=1,column=1,sticky="ew",pady=4)
+        ttk.Label(editor,text="Tipo línea").grid(row=2,column=0,sticky="w",padx=(0,8),pady=4); ttk.Combobox(editor,textvariable=self._lines_editor_vars["tipo_linea"],values=self.LINE_TYPES,state="readonly").grid(row=2,column=1,sticky="ew",pady=4)
+        ttk.Label(editor,text="Familia principal").grid(row=3,column=0,sticky="w",padx=(0,8),pady=4); ttk.Combobox(editor,textvariable=self._lines_editor_vars["familia_principal"],values=self.LINE_FAMILIES,state="readonly").grid(row=3,column=1,sticky="ew",pady=4)
+        for r,k,l in ((4,"numero_maquinas","Nº máquinas"),(5,"capacidad_kg_h_referencia","Capacidad kg/h referencia"),(6,"personal_minimo","Personal mínimo"),(7,"personal_optimo","Personal óptimo")):
+            ttk.Label(editor,text=l).grid(row=r,column=0,sticky="w",padx=(0,8),pady=4); ttk.Entry(editor,textvariable=self._lines_editor_vars[k]).grid(row=r,column=1,sticky="ew",pady=4)
+        ttk.Checkbutton(editor,text="Activa",variable=self._lines_editor_vars["activa"]).grid(row=8,column=1,sticky="w",pady=2)
+        ttk.Checkbutton(editor,text="Permite pre calibrado",variable=self._lines_editor_vars["permite_precalibrado"]).grid(row=9,column=1,sticky="w",pady=2)
+        ttk.Checkbutton(editor,text="Permite BOX",variable=self._lines_editor_vars["permite_box"]).grid(row=10,column=1,sticky="w",pady=2)
+        ttk.Label(editor,text="Observaciones").grid(row=11,column=0,sticky="w",padx=(0,8),pady=4); ttk.Entry(editor,textvariable=self._lines_editor_vars["observaciones"]).grid(row=11,column=1,sticky="ew",pady=4)
+        btns = ttk.Frame(parent); btns.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        ttk.Button(btns, text="Nueva línea", command=self._add_line_row).pack(side="left", padx=4)
+        ttk.Button(btns, text="Aplicar cambios a selección", command=self._apply_line_row_changes).pack(side="left", padx=4)
+        ttk.Button(btns, text="Guardar líneas", command=self._save_lines_settings).pack(side="left", padx=4)
+        ttk.Button(btns, text="Restaurar valores por defecto", command=self._reset_lines_defaults).pack(side="left", padx=4)
+        ttk.Button(btns, text="Eliminar línea seleccionada", command=self._delete_line_row).pack(side="left", padx=4)
