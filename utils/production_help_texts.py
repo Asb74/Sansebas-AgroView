@@ -123,3 +123,18 @@ PRODUCTION_PERSONAL_HELP = {
     "activo": {"title": "Activo", "description": "Indica si el área estará operativa ese día.", "example": "Desactivar Granelera si no se va a usar.", "impact": "Las áreas inactivas no deberían considerarse en cálculos posteriores."},
     "observaciones": {"title": "Observaciones", "description": "Notas libres para explicar incidencias, restricciones o particularidades.", "example": "Falta carretillero por la tarde.", "impact": "Ayuda a justificar decisiones operativas."},
 }
+
+
+PRODUCTION_PACKAGING_HELP = {
+    "codigo": {"title": "Código", "description": "Identificador interno único de la confección.", "example": "MALLA_2KG_CLIP.", "impact": "Se usará para relacionar pedidos, rendimientos, máquinas y reglas de planificación."},
+    "descripcion": {"title": "Descripción", "description": "Nombre legible de la confección.", "example": "Malla 2 kg clip-to-clip.", "impact": "Ayuda a producción a reconocer fácilmente el formato."},
+    "familia": {"title": "Familia", "description": "Grupo principal al que pertenece la confección.", "example": "Malla, Encajado, Granel o Granelera.", "impact": "Permite agrupar pedidos y aplicar reglas generales de rendimiento."},
+    "subtipo": {"title": "Subtipo", "description": "Detalle específico dentro de la familia.", "example": "Tradicional, Clip-to-clip, Girsac, Caja cartón.", "impact": "Ayuda a distinguir formatos con rendimientos y cambios distintos."},
+    "kg_formato": {"title": "Kg formato", "description": "Peso unitario del formato de venta o confección.", "example": "2 kg para una malla de 2 kg, 10 kg para una caja.", "impact": "Permite convertir kilos pedidos en unidades, cajas, bolsas o palets estimados."},
+    "material": {"title": "Material", "description": "Material principal utilizado en la confección.", "example": "Cartón, madera, malla o plástico.", "impact": "Afecta a disponibilidad de material, cambios y compatibilidad con líneas."},
+    "tipo_malla": {"title": "Tipo malla", "description": "Tipo específico de malla si aplica.", "example": "Tradicional, clip-to-clip, girsac.", "impact": "Distintos tipos de malla pueden requerir máquinas y rendimientos diferentes."},
+    "requiere_precalibrado": {"title": "Requiere pre calibrado", "description": "Indica si esta confección necesita fruta pre calibrada para funcionar correctamente.", "example": "Algunos formatos especiales pueden requerir pre calibrado.", "impact": "Condiciona el orden de volcado y la disponibilidad real de fruta útil."},
+    "compatible_box": {"title": "Compatible BOX", "description": "Indica si esta confección puede trabajar con BOX o alimentación especial.", "example": "Malla con BOX cuando se alimenta desde un contenedor específico.", "impact": "Puede mejorar continuidad y rendimiento en algunos casos."},
+    "activo": {"title": "Activo", "description": "Indica si la confección está disponible para usar en planificación.", "example": "Desactivar formatos que no se usan esta campaña.", "impact": "Evita que el sistema proponga formatos no disponibles."},
+    "observaciones": {"title": "Observaciones", "description": "Notas internas sobre limitaciones, ajustes o particularidades.", "example": "Solo usar con máquina 2 o requiere etiqueta especial.", "impact": "Ayuda a justificar decisiones operativas."},
+}

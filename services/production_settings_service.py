@@ -30,3 +30,12 @@ class ProductionSettingsService:
 
     def reset_staff_defaults(self) -> None:
         self.repository.reset_staff_defaults()
+
+    def get_packaging_types(self) -> list[dict]:
+        return self.repository.get_packaging_types()
+
+    def save_packaging_types(self, rows: list[dict]) -> None:
+        self.repository.save_packaging_types(rows)
+
+    def reset_packaging_defaults(self) -> None:
+        self.repository.reset_packaging_defaults()

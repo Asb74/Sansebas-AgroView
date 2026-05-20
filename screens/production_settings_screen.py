@@ -5,13 +5,17 @@ from tkinter import messagebox, ttk
 
 from services.production_settings_service import ProductionSettingsService
 from utils.help_dialog import show_tab_help
-from utils.production_help_texts import PRODUCTION_FIELD_HELP, PRODUCTION_PERSONAL_HELP
+from utils.production_help_texts import PRODUCTION_FIELD_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PERSONAL_HELP
 from widgets.screen_header import ScreenHeader
 
 
 class ProductionSettingsScreen(ttk.Frame):
     VOLCADO_OPTIONS = ["Compacta", "Línea invierno", "Línea verano", "Tolva", "Manual"]
     STAFF_TYPES = ["Directo", "Indirecto", "Soporte"]
+    PACKAGING_FAMILIES = ["Malla", "Encajado", "Granel", "Granelera", "Flowpack", "Otro"]
+    PACKAGING_SUBTYPES = ["Tradicional", "Clip-to-clip", "Girsac", "Bolsa", "Caja cartón", "Caja madera", "Granel", "Granelera", "Otro"]
+    PACKAGING_MATERIALS = ["Plástico", "Cartón", "Madera", "Malla", "Mixto", "Sin material", "Otro"]
+    PACKAGING_MESH_TYPES = ["No aplica", "Tradicional", "Clip-to-clip", "Girsac", "Bolsa", "Otro"]
 
     def __init__(self, master: tk.Misc, on_back) -> None:
         super().__init__(master, padding=10)
@@ -23,9 +27,13 @@ class ProductionSettingsScreen(ttk.Frame):
         self._staff_summary_vars: dict[str, tk.Variable] = {}
         self._staff_editor_vars: dict[str, tk.Variable] = {}
         self._staff_tree: ttk.Treeview | None = None
+        self._packaging_tree: ttk.Treeview | None = None
+        self._packaging_editor_vars: dict[str, tk.Variable] = {}
+        self._new_packaging_counter = 1
         self._build_ui()
         self._load_general_settings()
         self._load_staff_settings()
+        self._load_packaging_settings()
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
@@ -45,13 +53,16 @@ class ProductionSettingsScreen(ttk.Frame):
         notebook.add(general_tab, text="General del día")
         personal_tab = ttk.Frame(notebook, padding=12)
         notebook.add(personal_tab, text="Personal")
-        for title in ("Confecciones", "Máquinas / líneas", "Rendimientos", "Penalizaciones", "Reglas / semáforo"):
+        packaging_tab = ttk.Frame(notebook, padding=12)
+        notebook.add(packaging_tab, text="Confecciones")
+        for title in ("Máquinas / líneas", "Rendimientos", "Penalizaciones", "Reglas / semáforo"):
             placeholder = ttk.Frame(notebook, padding=12)
             ttk.Label(placeholder, text="Pestaña preparada para una próxima integración.").pack(anchor="w")
             notebook.add(placeholder, text=title)
 
         self._build_general_tab(general_tab)
         self._build_staff_tab(personal_tab)
+        self._build_packaging_tab(packaging_tab)
 
     # General tab (sin cambios funcionales)
     def _build_general_tab(self, parent: ttk.Frame) -> None:
@@ -174,6 +185,48 @@ class ProductionSettingsScreen(ttk.Frame):
         ttk.Button(btns, text="Añadir área", command=self._add_staff_area).pack(side="left", padx=4)
         ttk.Button(btns, text="Eliminar área seleccionada", command=self._delete_staff_area).pack(side="left", padx=4)
 
+
+
+    def _build_packaging_tab(self, parent: ttk.Frame) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_packaging_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+
+        catalog = ttk.LabelFrame(parent, text="Catálogo de confecciones", padding=12)
+        catalog.grid(row=1, column=0, sticky="nsew")
+        catalog.grid_columnconfigure(0, weight=1); catalog.grid_rowconfigure(0, weight=1)
+        cols = ("id", "codigo", "descripcion", "familia", "subtipo", "kg_formato", "material", "tipo_malla", "requiere_precalibrado", "compatible_box", "activo", "observaciones")
+        tree = ttk.Treeview(catalog, columns=cols, show="headings", height=9)
+        self._packaging_tree = tree
+        for c,h,w in [("id","ID",40),("codigo","Código",150),("descripcion","Descripción",190),("familia","Familia",90),("subtipo","Subtipo",120),("kg_formato","Kg formato",80),("material","Material",90),("tipo_malla","Tipo malla",100),("requiere_precalibrado","Req. pre calib.",110),("compatible_box","Compatible BOX",110),("activo","Activo",60),("observaciones","Observaciones",220)]:
+            tree.heading(c,text=h); tree.column(c,width=w,anchor="w")
+        yscroll = ttk.Scrollbar(catalog, orient="vertical", command=tree.yview)
+        xscroll = ttk.Scrollbar(catalog, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew"); yscroll.grid(row=0, column=1, sticky="ns"); xscroll.grid(row=1, column=0, sticky="ew")
+        tree.bind("<<TreeviewSelect>>", self._on_packaging_row_selected)
+
+        editor = ttk.LabelFrame(parent, text="Editar confección seleccionada", padding=12)
+        editor.grid(row=2, column=0, sticky="ew", pady=(10, 0)); editor.grid_columnconfigure(1, weight=1)
+        self._packaging_editor_vars = {"id": tk.StringVar(value=""), "codigo": tk.StringVar(value=""), "descripcion": tk.StringVar(value=""), "familia": tk.StringVar(value=self.PACKAGING_FAMILIES[0]), "subtipo": tk.StringVar(value=self.PACKAGING_SUBTYPES[0]), "kg_formato": tk.StringVar(value="0"), "material": tk.StringVar(value=self.PACKAGING_MATERIALS[0]), "tipo_malla": tk.StringVar(value=self.PACKAGING_MESH_TYPES[0]), "requiere_precalibrado": tk.IntVar(value=0), "compatible_box": tk.IntVar(value=0), "activo": tk.IntVar(value=1), "observaciones": tk.StringVar(value="")}
+        ttk.Label(editor, text="Código").grid(row=0,column=0,sticky="w",padx=(0,8),pady=4); ttk.Entry(editor,textvariable=self._packaging_editor_vars["codigo"]).grid(row=0,column=1,sticky="ew",pady=4)
+        ttk.Label(editor, text="Descripción").grid(row=1,column=0,sticky="w",padx=(0,8),pady=4); ttk.Entry(editor,textvariable=self._packaging_editor_vars["descripcion"]).grid(row=1,column=1,sticky="ew",pady=4)
+        ttk.Label(editor, text="Familia").grid(row=2,column=0,sticky="w",padx=(0,8),pady=4); ttk.Combobox(editor,textvariable=self._packaging_editor_vars["familia"],values=self.PACKAGING_FAMILIES,state="readonly").grid(row=2,column=1,sticky="ew",pady=4)
+        ttk.Label(editor, text="Subtipo").grid(row=3,column=0,sticky="w",padx=(0,8),pady=4); ttk.Combobox(editor,textvariable=self._packaging_editor_vars["subtipo"],values=self.PACKAGING_SUBTYPES).grid(row=3,column=1,sticky="ew",pady=4)
+        ttk.Label(editor, text="Kg formato").grid(row=4,column=0,sticky="w",padx=(0,8),pady=4); ttk.Entry(editor,textvariable=self._packaging_editor_vars["kg_formato"]).grid(row=4,column=1,sticky="ew",pady=4)
+        ttk.Label(editor, text="Material").grid(row=5,column=0,sticky="w",padx=(0,8),pady=4); ttk.Combobox(editor,textvariable=self._packaging_editor_vars["material"],values=self.PACKAGING_MATERIALS).grid(row=5,column=1,sticky="ew",pady=4)
+        ttk.Label(editor, text="Tipo malla").grid(row=6,column=0,sticky="w",padx=(0,8),pady=4); ttk.Combobox(editor,textvariable=self._packaging_editor_vars["tipo_malla"],values=self.PACKAGING_MESH_TYPES).grid(row=6,column=1,sticky="ew",pady=4)
+        ttk.Checkbutton(editor,text="Requiere pre calibrado",variable=self._packaging_editor_vars["requiere_precalibrado"]).grid(row=7,column=1,sticky="w",pady=2)
+        ttk.Checkbutton(editor,text="Compatible BOX",variable=self._packaging_editor_vars["compatible_box"]).grid(row=8,column=1,sticky="w",pady=2)
+        ttk.Checkbutton(editor,text="Activo",variable=self._packaging_editor_vars["activo"]).grid(row=9,column=1,sticky="w",pady=2)
+        ttk.Label(editor, text="Observaciones").grid(row=10,column=0,sticky="w",padx=(0,8),pady=4); ttk.Entry(editor,textvariable=self._packaging_editor_vars["observaciones"]).grid(row=10,column=1,sticky="ew",pady=4)
+
+        btns = ttk.Frame(parent); btns.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        ttk.Button(btns, text="Nueva confección", command=self._add_packaging_row).pack(side="left", padx=4)
+        ttk.Button(btns, text="Aplicar cambios a selección", command=self._apply_packaging_row_changes).pack(side="left", padx=4)
+        ttk.Button(btns, text="Guardar confecciones", command=self._save_packaging_settings).pack(side="left", padx=4)
+        ttk.Button(btns, text="Restaurar valores por defecto", command=self._reset_packaging_defaults).pack(side="left", padx=4)
+        ttk.Button(btns, text="Eliminar confección seleccionada", command=self._delete_packaging_row).pack(side="left", padx=4)
     def _add_readonly(self, parent: ttk.Frame, row: int, key: str, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
         ttk.Entry(parent, textvariable=variable, state="readonly").grid(row=row, column=1, sticky="ew", pady=4)
@@ -322,3 +375,85 @@ class ProductionSettingsScreen(ttk.Frame):
         self.service.reset_staff_defaults()
         self._load_staff_settings()
         messagebox.showinfo("Configuración productiva", "Valores por defecto de personal restaurados.", parent=self)
+
+
+    def _show_packaging_help(self) -> None:
+        keys = ["codigo", "descripcion", "familia", "subtipo", "kg_formato", "material", "tipo_malla", "requiere_precalibrado", "compatible_box", "activo", "observaciones"]
+        show_tab_help(self, title="Descripción de campos - Confecciones", intro="Esta pestaña define el catálogo de confecciones que podrá usar la planificación productiva. Cada confección representa una forma concreta de preparar la fruta: malla, encajado, granel, granelera u otros formatos.", help_items=[PRODUCTION_PACKAGING_HELP[k] for k in keys if k in PRODUCTION_PACKAGING_HELP])
+
+    def _load_packaging_settings(self) -> None:
+        self._refresh_packaging_tree(self.service.get_packaging_types())
+
+    def _refresh_packaging_tree(self, rows: list[dict]) -> None:
+        if not self._packaging_tree:
+            return
+        self._packaging_tree.delete(*self._packaging_tree.get_children())
+        for row in rows:
+            self._packaging_tree.insert("", "end", values=(row.get("id", ""), row.get("codigo", ""), row.get("descripcion", ""), row.get("familia", ""), row.get("subtipo", ""), row.get("kg_formato", 0), row.get("material", ""), row.get("tipo_malla", ""), row.get("requiere_precalibrado", 0), row.get("compatible_box", 0), row.get("activo", 1), row.get("observaciones", "")))
+
+    def _on_packaging_row_selected(self, _event=None) -> None:
+        if not self._packaging_tree: return
+        selected = self._packaging_tree.selection()
+        if not selected: return
+        vals = self._packaging_tree.item(selected[0], "values")
+        for i, key in enumerate(("id", "codigo", "descripcion", "familia", "subtipo", "kg_formato", "material", "tipo_malla", "requiere_precalibrado", "compatible_box", "activo", "observaciones")):
+            self._packaging_editor_vars[key].set(vals[i])
+
+    def _validate_packaging_values(self, values: tuple) -> tuple:
+        codigo = str(values[1]).strip(); descripcion = str(values[2]).strip(); familia = str(values[3]).strip()
+        if not codigo: raise ValueError("El código es obligatorio")
+        if not descripcion: raise ValueError("La descripción es obligatoria")
+        if not familia: raise ValueError("La familia es obligatoria")
+        kg = float(str(values[5]).replace(",", "."))
+        if kg < 0: raise ValueError("Kg formato debe ser >= 0")
+        return (values[0], codigo, descripcion, familia, str(values[4]).strip(), kg, str(values[6]).strip(), str(values[7]).strip(), 1 if str(values[8]).strip() in ("1", "True", "true") else 0, 1 if str(values[9]).strip() in ("1", "True", "true") else 0, 1 if str(values[10]).strip() in ("1", "True", "true") else 0, str(values[11]).strip())
+
+    def _apply_packaging_row_changes(self) -> None:
+        if not self._packaging_tree: return
+        selected = self._packaging_tree.selection()
+        if not selected:
+            messagebox.showerror("Confecciones", "Seleccione una fila para editar.", parent=self); return
+        try:
+            values = self._validate_packaging_values((self._packaging_editor_vars["id"].get(), self._packaging_editor_vars["codigo"].get(), self._packaging_editor_vars["descripcion"].get(), self._packaging_editor_vars["familia"].get(), self._packaging_editor_vars["subtipo"].get(), self._packaging_editor_vars["kg_formato"].get(), self._packaging_editor_vars["material"].get(), self._packaging_editor_vars["tipo_malla"].get(), self._packaging_editor_vars["requiere_precalibrado"].get(), self._packaging_editor_vars["compatible_box"].get(), self._packaging_editor_vars["activo"].get(), self._packaging_editor_vars["observaciones"].get()))
+            self._packaging_tree.item(selected[0], values=values)
+        except Exception as exc:
+            messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _add_packaging_row(self) -> None:
+        if not self._packaging_tree: return
+        code = f"NUEVA_{self._new_packaging_counter}"
+        self._new_packaging_counter += 1
+        self._packaging_tree.insert("", "end", values=("", code, "Nueva confección", "Otro", "Otro", 0, "Otro", "No aplica", 0, 0, 1, ""))
+
+    def _delete_packaging_row(self) -> None:
+        if not self._packaging_tree: return
+        selected = self._packaging_tree.selection()
+        if not selected:
+            messagebox.showerror("Confecciones", "Seleccione una fila para eliminar.", parent=self); return
+        if messagebox.askyesno("Confirmar eliminación", "¿Desea eliminar la confección seleccionada?", parent=self):
+            self._packaging_tree.delete(selected[0])
+
+    def _collect_packaging_rows_payload(self) -> list[dict]:
+        if not self._packaging_tree: return []
+        rows = []; codes = set()
+        for item_id in self._packaging_tree.get_children():
+            clean = self._validate_packaging_values(self._packaging_tree.item(item_id, "values"))
+            code_key = clean[1].lower()
+            if code_key in codes: raise ValueError(f"Código duplicado: {clean[1]}")
+            codes.add(code_key)
+            rows.append({"codigo": clean[1], "descripcion": clean[2], "familia": clean[3], "subtipo": clean[4], "kg_formato": clean[5], "material": clean[6], "tipo_malla": clean[7], "requiere_precalibrado": clean[8], "compatible_box": clean[9], "activo": clean[10], "observaciones": clean[11]})
+        return rows
+
+    def _save_packaging_settings(self) -> None:
+        try:
+            rows = self._collect_packaging_rows_payload()
+            self.service.save_packaging_types(rows)
+            self._load_packaging_settings()
+            messagebox.showinfo("Configuración productiva", "Confecciones guardadas correctamente.", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _reset_packaging_defaults(self) -> None:
+        self.service.reset_packaging_defaults()
+        self._load_packaging_settings()
+        messagebox.showinfo("Configuración productiva", "Valores por defecto de confecciones restaurados.", parent=self)
