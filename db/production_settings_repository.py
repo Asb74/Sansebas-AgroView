@@ -72,6 +72,19 @@ DEFAULT_PERFORMANCE_RULES = [
     {"codigo": "GRANEL_MANUAL_PRECALIBRADO", "familia": "Granel", "confeccion_formato": "Granel manual con precalibrado", "tipo_linea": "Granel", "condicion": "Con precalibrado", "oph_referencia": 450.0, "oph_minimo": 380.0, "oph_optimo": 500.0, "kg_h_referencia": 0.0, "factor_precalibrado": 1.10, "factor_destrio_alto": 0.95, "dificultad": "Baja", "activo": 1, "observaciones": "Mejora por precalibrado."},
     {"codigo": "VOLCADO_REFERENCIA", "familia": "Volcado", "confeccion_formato": "Entrada fruta", "tipo_linea": "Volcado", "condicion": "Normal", "oph_referencia": 0.0, "oph_minimo": 0.0, "oph_optimo": 0.0, "kg_h_referencia": 10000.0, "factor_precalibrado": 1.00, "factor_destrio_alto": 0.90, "dificultad": "Media", "activo": 1, "observaciones": "Referencia orientativa de entrada de fruta."},
 ]
+DEFAULT_PENALTY_RULES = [
+    {"codigo": "CAMBIO_CLIENTE", "tipo_penalizacion": "Cambio cliente", "ambito": "General", "minutos_perdida": 5.0, "factor_rendimiento": 1.00, "aplica_por": "Cada cambio", "umbral": "cliente distinto", "activa": 1, "observaciones": "Tiempo orientativo por cambio administrativo/operativo de cliente."},
+    {"codigo": "CAMBIO_PLATAFORMA", "tipo_penalizacion": "Cambio plataforma", "ambito": "General", "minutos_perdida": 5.0, "factor_rendimiento": 1.00, "aplica_por": "Cada cambio", "umbral": "plataforma distinta", "activa": 1, "observaciones": ""},
+    {"codigo": "CAMBIO_FORMATO_KG", "tipo_penalizacion": "Cambio formato kg", "ambito": "Malla", "minutos_perdida": 15.0, "factor_rendimiento": 1.00, "aplica_por": "Cada cambio", "umbral": "cambia kg por bolsa", "activa": 1, "observaciones": ""},
+    {"codigo": "CAMBIO_TIPO_MALLA", "tipo_penalizacion": "Cambio tipo malla", "ambito": "Malla", "minutos_perdida": 25.0, "factor_rendimiento": 0.95, "aplica_por": "Cada cambio", "umbral": "tradicional / clip-to-clip / girsac", "activa": 1, "observaciones": ""},
+    {"codigo": "CAMBIO_MATERIAL", "tipo_penalizacion": "Cambio material", "ambito": "General", "minutos_perdida": 20.0, "factor_rendimiento": 1.00, "aplica_por": "Cada cambio", "umbral": "cartón / madera / malla / plástico", "activa": 1, "observaciones": ""},
+    {"codigo": "CAMBIO_ETIQUETA", "tipo_penalizacion": "Cambio etiqueta", "ambito": "General", "minutos_perdida": 3.0, "factor_rendimiento": 1.00, "aplica_por": "Cada cambio", "umbral": "etiqueta distinta", "activa": 1, "observaciones": ""},
+    {"codigo": "CAMBIO_CONFECCION", "tipo_penalizacion": "Cambio confección", "ambito": "General", "minutos_perdida": 40.0, "factor_rendimiento": 0.90, "aplica_por": "Cada cambio", "umbral": "familia de confección distinta", "activa": 1, "observaciones": ""},
+    {"codigo": "PEDIDO_PEQUENO", "tipo_penalizacion": "Pedido pequeño", "ambito": "General", "minutos_perdida": 8.0, "factor_rendimiento": 0.90, "aplica_por": "Cada pedido", "umbral": "< 3 palets", "activa": 1, "observaciones": "Penalización por fragmentación del trabajo en pedidos pequeños."},
+    {"codigo": "ARRANQUE_LINEA", "tipo_penalizacion": "Arranque línea", "ambito": "General", "minutos_perdida": 20.0, "factor_rendimiento": 1.00, "aplica_por": "Cada arranque", "umbral": "inicio línea", "activa": 1, "observaciones": ""},
+    {"codigo": "LIMPIEZA_CAMBIO", "tipo_penalizacion": "Limpieza", "ambito": "General", "minutos_perdida": 15.0, "factor_rendimiento": 1.00, "aplica_por": "Cada cambio", "umbral": "limpieza necesaria", "activa": 1, "observaciones": ""},
+    {"codigo": "ESPERA_MATERIAL", "tipo_penalizacion": "Espera material", "ambito": "General", "minutos_perdida": 10.0, "factor_rendimiento": 0.95, "aplica_por": "Cada parada", "umbral": "material no disponible", "activa": 1, "observaciones": ""},
+]
 
 DEFAULT_STAFF_AREAS = [
     ("Volcado", "Directo", 0, 0, 0, 1, ""),
@@ -102,6 +115,7 @@ class ProductionSettingsRepository:
         self.ensure_lines_defaults()
         self.ensure_packaging_defaults()
         self.ensure_performance_defaults()
+        self.ensure_penalties_defaults()
 
     def ensure_schema(self) -> None:
         with get_connection() as conn:
@@ -612,3 +626,59 @@ class ProductionSettingsRepository:
 
     def reset_performance_defaults(self) -> None:
         self.save_performance_rules(DEFAULT_PERFORMANCE_RULES)
+
+    def ensure_penalties_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_penalty_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    codigo TEXT NOT NULL UNIQUE,
+                    tipo_penalizacion TEXT NOT NULL,
+                    ambito TEXT NOT NULL,
+                    minutos_perdida REAL NOT NULL,
+                    factor_rendimiento REAL NOT NULL,
+                    aplica_por TEXT NOT NULL,
+                    umbral TEXT,
+                    activa INTEGER NOT NULL,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+
+    def ensure_penalties_defaults(self) -> None:
+        self.ensure_penalties_schema()
+        with get_connection() as conn:
+            existing = conn.execute("SELECT COUNT(*) AS n FROM production_penalty_rules").fetchone()["n"]
+            if existing == 0:
+                self.save_penalty_rules(DEFAULT_PENALTY_RULES)
+
+    def get_penalty_rules(self) -> list[dict]:
+        self.ensure_penalties_defaults()
+        with get_connection() as conn:
+            rows = conn.execute("SELECT * FROM production_penalty_rules ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+    def save_penalty_rules(self, rows: list[dict]) -> None:
+        self.ensure_penalties_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_penalty_rules")
+            conn.executemany(
+                """
+                INSERT INTO production_penalty_rules (
+                    codigo, tipo_penalizacion, ambito, minutos_perdida, factor_rendimiento,
+                    aplica_por, umbral, activa, observaciones, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [(
+                    row["codigo"], row["tipo_penalizacion"], row["ambito"], float(row["minutos_perdida"]),
+                    float(row["factor_rendimiento"]), row["aplica_por"], row.get("umbral", ""),
+                    int(row["activa"]), row.get("observaciones", ""), now,
+                ) for row in rows],
+            )
+
+    def reset_penalty_defaults(self) -> None:
+        self.save_penalty_rules(DEFAULT_PENALTY_RULES)

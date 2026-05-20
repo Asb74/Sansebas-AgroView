@@ -5,7 +5,7 @@ from tkinter import messagebox, ttk
 
 from services.production_settings_service import ProductionSettingsService
 from utils.help_dialog import show_tab_help
-from utils.production_help_texts import PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERSONAL_HELP
+from utils.production_help_texts import PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PENALTIES_HELP, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERSONAL_HELP
 from widgets.screen_header import ScreenHeader
 
 
@@ -22,6 +22,9 @@ class ProductionSettingsScreen(ttk.Frame):
     PERFORMANCE_LINE_TYPES = PERFORMANCE_FAMILIES
     PERFORMANCE_CONDITIONS = ["Normal", "Calibre pequeño", "Calibre grande", "Con BOX", "Con precalibrado", "Sin precalibrado", "Destrío alto", "Pedido pequeño", "Otro"]
     PERFORMANCE_DIFFICULTIES = ["Baja", "Media", "Alta", "Muy alta"]
+    PENALTY_TYPES = ["Cambio cliente", "Cambio plataforma", "Cambio formato kg", "Cambio material", "Cambio tipo malla", "Cambio etiqueta", "Cambio confección", "Cambio calibre", "Cambio categoría", "Pedido pequeño", "Arranque línea", "Parada línea", "Limpieza", "Espera fruta", "Espera material", "Otro"]
+    PENALTY_SCOPES = ["General", "Malla", "Encajado", "Granel", "Granelera", "Volcado", "Expedición", "Línea específica", "Otro"]
+    PENALTY_APPLIES = ["Cada cambio", "Cada pedido", "Cada línea de pedido", "Cada cliente", "Cada plataforma", "Cada jornada", "Cada arranque", "Cada parada", "Otro"]
 
     def __init__(self, master: tk.Misc, on_back) -> None:
         super().__init__(master, padding=10)
@@ -42,12 +45,16 @@ class ProductionSettingsScreen(ttk.Frame):
         self._performance_tree: ttk.Treeview | None = None
         self._performance_editor_vars: dict[str, tk.Variable] = {}
         self._new_performance_counter = 1
+        self._penalties_tree: ttk.Treeview | None = None
+        self._penalties_editor_vars: dict[str, tk.Variable] = {}
+        self._new_penalty_counter = 1
         self._build_ui()
         self._load_general_settings()
         self._load_staff_settings()
         self._load_packaging_settings()
         self._load_lines_settings()
         self._load_performance_settings()
+        self._load_penalty_settings()
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
@@ -73,16 +80,18 @@ class ProductionSettingsScreen(ttk.Frame):
         notebook.add(lines_tab, text="Máquinas / líneas")
         performance_tab = ttk.Frame(notebook, padding=12)
         notebook.add(performance_tab, text="Rendimientos")
-        for title in ("Penalizaciones", "Reglas / semáforo"):
-            placeholder = ttk.Frame(notebook, padding=12)
-            ttk.Label(placeholder, text="Pestaña preparada para una próxima integración.").pack(anchor="w")
-            notebook.add(placeholder, text=title)
+        penalties_tab = ttk.Frame(notebook, padding=12)
+        notebook.add(penalties_tab, text="Penalizaciones")
+        placeholder = ttk.Frame(notebook, padding=12)
+        ttk.Label(placeholder, text="Pestaña preparada para una próxima integración.").pack(anchor="w")
+        notebook.add(placeholder, text="Reglas / semáforo")
 
         self._build_general_tab(general_tab)
         self._build_staff_tab(personal_tab)
         self._build_packaging_tab(packaging_tab)
         self._build_lines_tab(lines_tab)
         self._build_performance_tab(performance_tab)
+        self._build_penalties_tab(penalties_tab)
 
     # General tab (sin cambios funcionales)
     def _build_general_tab(self, parent: ttk.Frame) -> None:
@@ -693,3 +702,105 @@ class ProductionSettingsScreen(ttk.Frame):
 
     def _reset_performance_defaults(self) -> None:
         self.service.reset_performance_defaults(); self._load_performance_settings(); messagebox.showinfo("Configuración productiva", "Valores por defecto de rendimientos restaurados.", parent=self)
+
+    def _build_penalties_tab(self, parent: ttk.Frame) -> None:
+        parent.grid_columnconfigure(0, weight=1); parent.grid_rowconfigure(1, weight=1)
+        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_penalties_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        catalog = ttk.LabelFrame(parent, text="Catálogo de penalizaciones operativas", padding=12)
+        catalog.grid(row=1, column=0, sticky="nsew"); catalog.grid_columnconfigure(0, weight=1); catalog.grid_rowconfigure(0, weight=1)
+        cols = ("id","codigo","tipo_penalizacion","ambito","minutos_perdida","factor_rendimiento","aplica_por","umbral","activa","observaciones")
+        tree = ttk.Treeview(catalog, columns=cols, show="headings", height=8); self._penalties_tree = tree
+        for c,h,w in [("id","ID",40),("codigo","Código",140),("tipo_penalizacion","Tipo penalización",160),("ambito","Ámbito",120),("minutos_perdida","Minutos pérdida",110),("factor_rendimiento","Factor rendimiento",120),("aplica_por","Aplica por",130),("umbral","Umbral",180),("activa","Activa",60),("observaciones","Observaciones",220)]:
+            tree.heading(c,text=h); tree.column(c,width=w,anchor="w")
+        yscroll = ttk.Scrollbar(catalog, orient="vertical", command=tree.yview); xscroll = ttk.Scrollbar(catalog, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0,column=0,sticky="nsew"); yscroll.grid(row=0,column=1,sticky="ns"); xscroll.grid(row=1,column=0,sticky="ew")
+        tree.bind("<<TreeviewSelect>>", self._on_penalty_row_selected)
+
+        editor = ttk.LabelFrame(parent, text="Editar penalización seleccionada", padding=12)
+        editor.grid(row=2,column=0,sticky="ew",pady=(10,0)); editor.grid_columnconfigure(1, weight=1)
+        self._penalties_editor_vars = {"id": tk.StringVar(value=""), "codigo": tk.StringVar(value=""), "tipo_penalizacion": tk.StringVar(value=self.PENALTY_TYPES[0]), "ambito": tk.StringVar(value=self.PENALTY_SCOPES[0]), "minutos_perdida": tk.StringVar(value="0"), "factor_rendimiento": tk.StringVar(value="1.00"), "aplica_por": tk.StringVar(value=self.PENALTY_APPLIES[0]), "umbral": tk.StringVar(value=""), "activa": tk.IntVar(value=1), "observaciones": tk.StringVar(value="")}
+        ttk.Label(editor,text="Código").grid(row=0,column=0,sticky="w",padx=(0,8),pady=3); ttk.Entry(editor,textvariable=self._penalties_editor_vars["codigo"]).grid(row=0,column=1,sticky="ew",pady=3)
+        ttk.Label(editor,text="Tipo penalización").grid(row=1,column=0,sticky="w",padx=(0,8),pady=3); ttk.Combobox(editor,textvariable=self._penalties_editor_vars["tipo_penalizacion"],values=self.PENALTY_TYPES).grid(row=1,column=1,sticky="ew",pady=3)
+        ttk.Label(editor,text="Ámbito").grid(row=2,column=0,sticky="w",padx=(0,8),pady=3); ttk.Combobox(editor,textvariable=self._penalties_editor_vars["ambito"],values=self.PENALTY_SCOPES).grid(row=2,column=1,sticky="ew",pady=3)
+        ttk.Label(editor,text="Minutos pérdida").grid(row=3,column=0,sticky="w",padx=(0,8),pady=3); ttk.Entry(editor,textvariable=self._penalties_editor_vars["minutos_perdida"]).grid(row=3,column=1,sticky="ew",pady=3)
+        ttk.Label(editor,text="Factor rendimiento").grid(row=4,column=0,sticky="w",padx=(0,8),pady=3); ttk.Entry(editor,textvariable=self._penalties_editor_vars["factor_rendimiento"]).grid(row=4,column=1,sticky="ew",pady=3)
+        ttk.Label(editor,text="Aplica por").grid(row=5,column=0,sticky="w",padx=(0,8),pady=3); ttk.Combobox(editor,textvariable=self._penalties_editor_vars["aplica_por"],values=self.PENALTY_APPLIES).grid(row=5,column=1,sticky="ew",pady=3)
+        ttk.Label(editor,text="Umbral").grid(row=6,column=0,sticky="w",padx=(0,8),pady=3); ttk.Entry(editor,textvariable=self._penalties_editor_vars["umbral"]).grid(row=6,column=1,sticky="ew",pady=3)
+        ttk.Checkbutton(editor,text="Activa",variable=self._penalties_editor_vars["activa"]).grid(row=7,column=1,sticky="w",pady=2)
+        ttk.Label(editor,text="Observaciones").grid(row=8,column=0,sticky="w",padx=(0,8),pady=3); ttk.Entry(editor,textvariable=self._penalties_editor_vars["observaciones"]).grid(row=8,column=1,sticky="ew",pady=3)
+
+        ttk.Button(editor,text="Aplicar cambios a selección",command=self._apply_penalty_row_changes).grid(row=9,column=1,sticky="e",pady=(6,0))
+        btns = ttk.Frame(parent); btns.grid(row=3,column=0,sticky="ew",pady=(12,0))
+        ttk.Button(btns,text="Nueva penalización",command=self._add_penalty_row).pack(side="left",padx=4)
+        ttk.Button(btns,text="Guardar penalizaciones",command=self._save_penalty_settings).pack(side="left",padx=4)
+        ttk.Button(btns,text="Restaurar valores por defecto",command=self._reset_penalty_defaults).pack(side="left",padx=4)
+        ttk.Button(btns,text="Eliminar penalización seleccionada",command=self._delete_penalty_row).pack(side="left",padx=4)
+
+    def _show_penalties_help(self) -> None:
+        keys=["codigo","tipo_penalizacion","ambito","minutos_perdida","factor_rendimiento","aplica_por","umbral","activa","observaciones"]
+        show_tab_help(self, title="Descripción de campos - Penalizaciones", intro="Esta pestaña define pérdidas de tiempo y ajustes de rendimiento asociados a cambios, paradas o fragmentación del trabajo. Estas reglas permitirán estimar una capacidad más realista que el simple cálculo por kilos u OPH.", help_items=[PRODUCTION_PENALTIES_HELP[k] for k in keys if k in PRODUCTION_PENALTIES_HELP])
+
+    def _load_penalty_settings(self) -> None:
+        self._refresh_penalties_tree(self.service.get_penalty_rules())
+
+    def _refresh_penalties_tree(self, rows: list[dict]) -> None:
+        if not self._penalties_tree: return
+        self._penalties_tree.delete(*self._penalties_tree.get_children())
+        for row in rows: self._penalties_tree.insert("", "end", values=(row.get("id",""), row.get("codigo",""), row.get("tipo_penalizacion",""), row.get("ambito",""), row.get("minutos_perdida",0), row.get("factor_rendimiento",1), row.get("aplica_por",""), row.get("umbral",""), row.get("activa",1), row.get("observaciones","")))
+
+    def _on_penalty_row_selected(self, _event=None) -> None:
+        if not self._penalties_tree: return
+        selected=self._penalties_tree.selection()
+        if not selected: return
+        vals=self._penalties_tree.item(selected[0],"values")
+        for i,k in enumerate(("id","codigo","tipo_penalizacion","ambito","minutos_perdida","factor_rendimiento","aplica_por","umbral","activa","observaciones")): self._penalties_editor_vars[k].set(vals[i])
+
+    def _validate_penalty_values(self, values: tuple) -> tuple:
+        codigo = str(values[1]).strip(); tipo = str(values[2]).strip(); ambito = str(values[3]).strip(); aplica = str(values[6]).strip()
+        if not codigo: raise ValueError("El código es obligatorio")
+        if not tipo: raise ValueError("El tipo de penalización es obligatorio")
+        if not ambito: raise ValueError("El ámbito es obligatorio")
+        minutos=float(str(values[4]).replace(',', '.')); factor=float(str(values[5]).replace(',', '.'))
+        if minutos < 0: raise ValueError("Minutos pérdida debe ser >= 0")
+        if factor <= 0 or factor > 1.5: raise ValueError("Factor rendimiento debe ser > 0 y <= 1.5")
+        if not aplica: raise ValueError("Aplica por es obligatorio")
+        if minutos == 0 and abs(factor - 1.0) < 1e-9: raise ValueError("La penalización no tendría efecto: ajuste minutos pérdida o factor rendimiento")
+        return (values[0], codigo, tipo, ambito, minutos, factor, aplica, str(values[7]).strip(), 1 if str(values[8]).strip() in ("1","True","true") else 0, str(values[9]).strip())
+
+    def _add_penalty_row(self) -> None:
+        if not self._penalties_tree: return
+        code=f"NUEVA_PENAL_{self._new_penalty_counter}"; self._new_penalty_counter += 1
+        self._penalties_tree.insert("", "end", values=("", code, "Otro", "General", 0, 0.95, "Cada cambio", "", 1, ""))
+
+    def _apply_penalty_row_changes(self) -> None:
+        if not self._penalties_tree: return
+        selected=self._penalties_tree.selection()
+        if not selected: messagebox.showerror("Penalizaciones", "Seleccione una fila para editar.", parent=self); return
+        try:
+            vals=self._validate_penalty_values((self._penalties_editor_vars["id"].get(), self._penalties_editor_vars["codigo"].get(), self._penalties_editor_vars["tipo_penalizacion"].get(), self._penalties_editor_vars["ambito"].get(), self._penalties_editor_vars["minutos_perdida"].get(), self._penalties_editor_vars["factor_rendimiento"].get(), self._penalties_editor_vars["aplica_por"].get(), self._penalties_editor_vars["umbral"].get(), self._penalties_editor_vars["activa"].get(), self._penalties_editor_vars["observaciones"].get()))
+            self._penalties_tree.item(selected[0], values=vals)
+        except Exception as exc: messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _delete_penalty_row(self) -> None:
+        if not self._penalties_tree: return
+        selected=self._penalties_tree.selection()
+        if not selected: messagebox.showerror("Penalizaciones", "Seleccione una fila para eliminar.", parent=self); return
+        if messagebox.askyesno("Confirmar eliminación", "¿Desea eliminar la penalización seleccionada?", parent=self): self._penalties_tree.delete(selected[0])
+
+    def _collect_penalty_rows_payload(self) -> list[dict]:
+        if not self._penalties_tree: return []
+        rows=[]; codes=set()
+        for item_id in self._penalties_tree.get_children():
+            clean=self._validate_penalty_values(self._penalties_tree.item(item_id,"values")); key=clean[1].lower()
+            if key in codes: raise ValueError(f"Código duplicado: {clean[1]}")
+            codes.add(key)
+            rows.append({"codigo": clean[1], "tipo_penalizacion": clean[2], "ambito": clean[3], "minutos_perdida": clean[4], "factor_rendimiento": clean[5], "aplica_por": clean[6], "umbral": clean[7], "activa": clean[8], "observaciones": clean[9]})
+        return rows
+
+    def _save_penalty_settings(self) -> None:
+        try: self.service.save_penalty_rules(self._collect_penalty_rows_payload()); self._load_penalty_settings(); messagebox.showinfo("Configuración productiva", "Penalizaciones guardadas correctamente.", parent=self)
+        except Exception as exc: messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _reset_penalty_defaults(self) -> None:
+        self.service.reset_penalty_defaults(); self._load_penalty_settings(); messagebox.showinfo("Configuración productiva", "Valores por defecto de penalizaciones restaurados.", parent=self)

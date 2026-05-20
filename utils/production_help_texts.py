@@ -170,3 +170,15 @@ PRODUCTION_PERFORMANCE_HELP = {
     "activo": {"title": "Activo", "description": "Indica si esta regla de rendimiento se puede usar.", "example": "Desactivar reglas antiguas o no utilizadas.", "impact": "Evita que el motor use parámetros no válidos."},
     "observaciones": {"title": "Observaciones", "description": "Notas internas sobre cuándo aplicar esta regla.", "example": "Usar solo con fruta limpia o requiere máquina específica.", "impact": "Ayuda a producción a interpretar el dato."},
 }
+
+PRODUCTION_PENALTIES_HELP = {
+    "codigo": {"title": "Código", "description": "Identificador interno único de la penalización.", "example": "CAMBIO_FORMATO_KG.", "impact": "Se usará para aplicar la regla en el cálculo posterior de carga productiva."},
+    "tipo_penalizacion": {"title": "Tipo penalización", "description": "Tipo de evento que genera pérdida de tiempo o reducción de rendimiento.", "example": "Cambio cliente, cambio material o pedido pequeño.", "impact": "Permite clasificar el motivo de pérdida productiva."},
+    "ambito": {"title": "Ámbito", "description": "Zona o proceso donde aplica la penalización.", "example": "Malla, Encajado, General o Expedición.", "impact": "Evita aplicar penalizaciones donde no corresponden."},
+    "minutos_perdida": {"title": "Minutos pérdida", "description": "Tiempo estimado que se pierde cuando ocurre la penalización.", "example": "15 minutos por cambio de formato de kg.", "impact": "Se sumará a las horas necesarias de producción."},
+    "factor_rendimiento": {"title": "Factor rendimiento", "description": "Multiplicador que ajusta el rendimiento cuando aplica esta condición.", "example": "0.90 reduce el rendimiento un 10%.", "impact": "Permite reflejar pérdidas de ritmo además del tiempo parado."},
+    "aplica_por": {"title": "Aplica por", "description": "Frecuencia con la que debe aplicarse la penalización.", "example": "Cada cambio, cada pedido o cada jornada.", "impact": "Evita contar de más o de menos la misma pérdida."},
+    "umbral": {"title": "Umbral", "description": "Condición concreta que activa la penalización.", "example": "< 3 palets o material distinto.", "impact": "Define cuándo debe aplicarse la regla."},
+    "activa": {"title": "Activa", "description": "Indica si la penalización se tendrá en cuenta.", "example": "Desactivar reglas que aún no se quieran aplicar.", "impact": "Permite probar escenarios sin borrar la configuración."},
+    "observaciones": {"title": "Observaciones", "description": "Notas internas sobre cuándo usar o revisar la regla.", "example": "Revisar en campaña alta.", "impact": "Ayuda a mantener criterios operativos claros."},
+}
