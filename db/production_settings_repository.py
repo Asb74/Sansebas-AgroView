@@ -23,9 +23,41 @@ DEFAULT_GENERAL_SETTINGS = {
     "palets_objetivo_dia": 0.0,
     "pedidos_maximos_recomendados": 0,
 }
+DEFAULT_STAFF_SUMMARY = {
+    "personal_total": 0,
+    "personal_directo": 0,
+    "personal_indirecto": 0,
+    "horas_por_persona": 7.5,
+    "ausencias_previstas": 0,
+    "observaciones": "",
+}
+DEFAULT_STAFF_AREAS = [
+    ("Volcado", "Directo", 0, 0, 0, 1, ""),
+    ("Tría principal", "Directo", 0, 0, 0, 1, ""),
+    ("Tría mallas", "Directo", 0, 0, 0, 1, ""),
+    ("Mallas", "Directo", 0, 0, 0, 1, ""),
+    ("Encajado", "Directo", 0, 0, 0, 1, ""),
+    ("Granel manual", "Directo", 0, 0, 0, 1, ""),
+    ("Granelera", "Directo", 0, 0, 0, 1, ""),
+    ("Calibrador", "Soporte", 0, 0, 0, 1, ""),
+    ("Calidad", "Indirecto", 0, 0, 0, 1, ""),
+    ("Control destrío", "Soporte", 0, 0, 0, 1, ""),
+    ("Alimentación", "Soporte", 0, 0, 0, 1, ""),
+    ("Loteado", "Soporte", 0, 0, 0, 1, ""),
+    ("Expedición", "Indirecto", 0, 0, 0, 1, ""),
+    ("Carretilleros", "Indirecto", 0, 0, 0, 1, ""),
+    ("Flejado", "Soporte", 0, 0, 0, 1, ""),
+    ("Mantenimiento", "Soporte", 0, 0, 0, 1, ""),
+    ("Limpieza", "Indirecto", 0, 0, 0, 1, ""),
+    ("Encargados", "Indirecto", 0, 0, 0, 1, ""),
+]
 
 
 class ProductionSettingsRepository:
+    def __init__(self) -> None:
+        self.ensure_defaults()
+        self.ensure_staff_defaults()
+
     def ensure_schema(self) -> None:
         with get_connection() as conn:
             conn.execute(
@@ -180,3 +212,163 @@ class ProductionSettingsRepository:
 
         legacy = str(data.get("tipo_volcado", "")).strip()
         return [legacy] if legacy else list(DEFAULT_GENERAL_SETTINGS["tipos_volcado_activos"])
+
+    def ensure_staff_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_staff_summary (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    personal_total INTEGER NOT NULL,
+                    personal_directo INTEGER NOT NULL,
+                    personal_indirecto INTEGER NOT NULL,
+                    horas_por_persona REAL NOT NULL,
+                    ausencias_previstas INTEGER NOT NULL,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_staff_areas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    area TEXT NOT NULL UNIQUE,
+                    tipo_personal TEXT NOT NULL,
+                    disponible INTEGER NOT NULL,
+                    minimo_operativo INTEGER NOT NULL,
+                    optimo INTEGER NOT NULL,
+                    activo INTEGER NOT NULL,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+
+    def ensure_staff_defaults(self) -> None:
+        self.ensure_staff_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO production_staff_summary (
+                    id, personal_total, personal_directo, personal_indirecto,
+                    horas_por_persona, ausencias_previstas, observaciones, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
+                """,
+                (
+                    1,
+                    DEFAULT_STAFF_SUMMARY["personal_total"],
+                    DEFAULT_STAFF_SUMMARY["personal_directo"],
+                    DEFAULT_STAFF_SUMMARY["personal_indirecto"],
+                    DEFAULT_STAFF_SUMMARY["horas_por_persona"],
+                    DEFAULT_STAFF_SUMMARY["ausencias_previstas"],
+                    DEFAULT_STAFF_SUMMARY["observaciones"],
+                    now,
+                ),
+            )
+            existing = conn.execute("SELECT COUNT(*) AS n FROM production_staff_areas").fetchone()["n"]
+            if existing == 0:
+                conn.executemany(
+                    """
+                    INSERT INTO production_staff_areas (
+                        area, tipo_personal, disponible, minimo_operativo, optimo, activo, observaciones, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [(*row, now) for row in DEFAULT_STAFF_AREAS],
+                )
+
+    def get_staff_summary(self) -> dict:
+        self.ensure_staff_defaults()
+        with get_connection() as conn:
+            row = conn.execute("SELECT * FROM production_staff_summary WHERE id = 1").fetchone()
+        return dict(row) if row else {"id": 1, **DEFAULT_STAFF_SUMMARY}
+
+    def save_staff_summary(self, data: dict) -> None:
+        self.ensure_staff_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO production_staff_summary (
+                    id, personal_total, personal_directo, personal_indirecto,
+                    horas_por_persona, ausencias_previstas, observaciones, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    personal_total=excluded.personal_total,
+                    personal_directo=excluded.personal_directo,
+                    personal_indirecto=excluded.personal_indirecto,
+                    horas_por_persona=excluded.horas_por_persona,
+                    ausencias_previstas=excluded.ausencias_previstas,
+                    observaciones=excluded.observaciones,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    1,
+                    data["personal_total"],
+                    data["personal_directo"],
+                    data["personal_indirecto"],
+                    data["horas_por_persona"],
+                    data["ausencias_previstas"],
+                    data.get("observaciones", ""),
+                    now,
+                ),
+            )
+
+    def get_staff_areas(self) -> list[dict]:
+        self.ensure_staff_defaults()
+        with get_connection() as conn:
+            rows = conn.execute("SELECT * FROM production_staff_areas ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+    def save_staff_areas(self, rows: list[dict]) -> None:
+        self.ensure_staff_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_staff_areas")
+            conn.executemany(
+                """
+                INSERT INTO production_staff_areas (
+                    area, tipo_personal, disponible, minimo_operativo, optimo, activo, observaciones, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row["area"],
+                        row["tipo_personal"],
+                        int(row["disponible"]),
+                        int(row["minimo_operativo"]),
+                        int(row["optimo"]),
+                        int(row["activo"]),
+                        row.get("observaciones", ""),
+                        now,
+                    )
+                    for row in rows
+                ],
+            )
+
+    def reset_staff_defaults(self) -> None:
+        self.ensure_staff_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_staff_areas")
+            conn.executemany(
+                """
+                INSERT INTO production_staff_areas (
+                    area, tipo_personal, disponible, minimo_operativo, optimo, activo, observaciones, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [(*row, now) for row in DEFAULT_STAFF_AREAS],
+            )
+        self.save_staff_summary(DEFAULT_STAFF_SUMMARY)
+
+    def delete_staff_area(self, area_id: int) -> None:
+        self.ensure_staff_schema()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_staff_areas WHERE id = ?", (area_id,))

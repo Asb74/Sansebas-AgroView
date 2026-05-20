@@ -108,3 +108,18 @@ PRODUCTION_FIELD_HELP = {
         "impact": "Representa la capacidad planificable recomendada sin forzar el almacén.",
     },
 }
+
+PRODUCTION_PERSONAL_HELP = {
+    "personal_total": {"title": "Personal disponible total", "description": "Número total de personas disponibles para la jornada.", "example": "80 personas.", "impact": "Sirve como referencia global para comparar plantilla disponible frente a plantilla recomendada."},
+    "personal_directo": {"title": "Personal directo disponible", "description": "Personas que trabajan directamente en producción: mallas, encajado, tría, granel, volcado, etc.", "example": "60 personas directas.", "impact": "Determina la capacidad productiva directa."},
+    "personal_indirecto": {"title": "Personal indirecto disponible", "description": "Personas de apoyo necesarias para que la producción funcione: calidad, expedición, carretilleros, limpieza, mantenimiento, encargados, etc.", "example": "20 personas indirectas.", "impact": "Permite detectar cuellos de botella fuera de la línea principal."},
+    "horas_por_persona": {"title": "Horas por persona", "description": "Horas útiles previstas por trabajador durante la jornada.", "example": "7.5 horas útiles.", "impact": "Se usará para convertir plantilla disponible en horas de trabajo disponibles."},
+    "ausencias_previstas": {"title": "Ausencias previstas", "description": "Número de personas inicialmente previstas que no estarán disponibles.", "example": "5 ausencias.", "impact": "Permite ajustar la capacidad real del día."},
+    "area": {"title": "Área", "description": "Zona o función operativa del almacén.", "example": "Mallas, Encajado, Expedición.", "impact": "Permite repartir el personal por función y detectar cuellos de botella concretos."},
+    "tipo_personal": {"title": "Tipo personal", "description": "Clasificación del área como Directo, Indirecto o Soporte.", "example": "Mallas = Directo; Calidad = Indirecto.", "impact": "Ayuda a separar capacidad productiva directa de personal necesario de apoyo."},
+    "disponible": {"title": "Disponible", "description": "Número de personas disponibles en esa área.", "example": "12 personas en Mallas.", "impact": "Se comparará después contra mínimo y óptimo."},
+    "minimo_operativo": {"title": "Mínimo operativo", "description": "Número mínimo de personas necesarias para que esa área pueda funcionar.", "example": "4 personas para abrir una línea determinada.", "impact": "Si no se alcanza, la herramienta podrá marcar esa área como no operativa."},
+    "optimo": {"title": "Óptimo", "description": "Número recomendado de personas para trabajar con rendimiento normal.", "example": "8 personas en Encajado.", "impact": "Permite saber si se trabaja por debajo del rendimiento esperado."},
+    "activo": {"title": "Activo", "description": "Indica si el área estará operativa ese día.", "example": "Desactivar Granelera si no se va a usar.", "impact": "Las áreas inactivas no deberían considerarse en cálculos posteriores."},
+    "observaciones": {"title": "Observaciones", "description": "Notas libres para explicar incidencias, restricciones o particularidades.", "example": "Falta carretillero por la tarde.", "impact": "Ayuda a justificar decisiones operativas."},
+}
