@@ -31,6 +31,18 @@ DEFAULT_STAFF_SUMMARY = {
     "ausencias_previstas": 0,
     "observaciones": "",
 }
+
+DEFAULT_PACKAGING_TYPES = [
+    {"codigo": "MALLA_1KG_TRAD", "descripcion": "Malla 1 kg tradicional", "familia": "Malla", "subtipo": "Tradicional", "kg_formato": 1.0, "material": "Malla", "tipo_malla": "Tradicional", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_2KG_TRAD", "descripcion": "Malla 2 kg tradicional", "familia": "Malla", "subtipo": "Tradicional", "kg_formato": 2.0, "material": "Malla", "tipo_malla": "Tradicional", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_2KG_CLIP", "descripcion": "Malla 2 kg clip-to-clip", "familia": "Malla", "subtipo": "Clip-to-clip", "kg_formato": 2.0, "material": "Malla", "tipo_malla": "Clip-to-clip", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_3KG_GIRSAC", "descripcion": "Malla 3 kg girsac", "familia": "Malla", "subtipo": "Girsac", "kg_formato": 3.0, "material": "Malla", "tipo_malla": "Girsac", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "ENCAJADO_10KG_CARTON", "descripcion": "Encajado 10 kg cartón", "familia": "Encajado", "subtipo": "Caja cartón", "kg_formato": 10.0, "material": "Cartón", "tipo_malla": "No aplica", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "ENCAJADO_15KG_MADERA", "descripcion": "Encajado 15 kg madera", "familia": "Encajado", "subtipo": "Caja madera", "kg_formato": 15.0, "material": "Madera", "tipo_malla": "No aplica", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "GRANEL", "descripcion": "Granel", "familia": "Granel", "subtipo": "Granel", "kg_formato": 0.0, "material": "Sin material", "tipo_malla": "No aplica", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "GRANELERA", "descripcion": "Granelera", "familia": "Granelera", "subtipo": "Granelera", "kg_formato": 0.0, "material": "Sin material", "tipo_malla": "No aplica", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+]
+
 DEFAULT_STAFF_AREAS = [
     ("Volcado", "Directo", 0, 0, 0, 1, ""),
     ("Tría principal", "Directo", 0, 0, 0, 1, ""),
@@ -372,3 +384,68 @@ class ProductionSettingsRepository:
         self.ensure_staff_schema()
         with get_connection() as conn:
             conn.execute("DELETE FROM production_staff_areas WHERE id = ?", (area_id,))
+
+    def ensure_packaging_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_packaging_types (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    codigo TEXT NOT NULL UNIQUE,
+                    descripcion TEXT NOT NULL,
+                    familia TEXT NOT NULL,
+                    subtipo TEXT NOT NULL,
+                    kg_formato REAL NOT NULL,
+                    material TEXT NOT NULL,
+                    tipo_malla TEXT NOT NULL,
+                    requiere_precalibrado INTEGER NOT NULL,
+                    compatible_box INTEGER NOT NULL,
+                    activo INTEGER NOT NULL,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+
+    def ensure_packaging_defaults(self) -> None:
+        self.ensure_packaging_schema()
+        with get_connection() as conn:
+            existing = conn.execute("SELECT COUNT(*) AS n FROM production_packaging_types").fetchone()["n"]
+            if existing == 0:
+                self.save_packaging_types(DEFAULT_PACKAGING_TYPES)
+
+    def get_packaging_types(self) -> list[dict]:
+        self.ensure_packaging_defaults()
+        with get_connection() as conn:
+            rows = conn.execute("SELECT * FROM production_packaging_types ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+    def save_packaging_types(self, rows: list[dict]) -> None:
+        self.ensure_packaging_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_packaging_types")
+            conn.executemany(
+                """
+                INSERT INTO production_packaging_types (
+                    codigo, descripcion, familia, subtipo, kg_formato, material, tipo_malla,
+                    requiere_precalibrado, compatible_box, activo, observaciones, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row["codigo"], row["descripcion"], row["familia"], row["subtipo"], float(row["kg_formato"]),
+                        row["material"], row["tipo_malla"], int(row["requiere_precalibrado"]), int(row["compatible_box"]),
+                        int(row["activo"]), row.get("observaciones", ""), now,
+                    ) for row in rows
+                ],
+            )
+
+    def reset_packaging_defaults(self) -> None:
+        self.save_packaging_types(DEFAULT_PACKAGING_TYPES)
+
+    def delete_packaging_type(self, packaging_id: int) -> None:
+        self.ensure_packaging_schema()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_packaging_types WHERE id = ?", (packaging_id,))
