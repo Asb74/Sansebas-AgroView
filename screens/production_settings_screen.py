@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from services.production_settings_service import ProductionSettingsService
-from utils.help_dialog import show_help
+from utils.help_dialog import show_tab_help
 from utils.production_help_texts import PRODUCTION_FIELD_HELP
 from widgets.screen_header import ScreenHeader
 
@@ -51,13 +51,17 @@ class ProductionSettingsScreen(ttk.Frame):
         panel = ttk.LabelFrame(parent, text="Parámetros operativos diarios", padding=12)
         panel.grid(row=0, column=0, sticky="nsew")
         panel.grid_columnconfigure(1, weight=1)
+        ttk.Button(
+            panel,
+            text="ⓘ Descripción de campos",
+            command=self._show_general_day_help,
+        ).grid(row=0, column=2, sticky="e", padx=(8, 0), pady=(0, 8))
 
         def add_entry(row: int, key: str, label: str, default: str = "") -> None:
             ttk.Label(panel, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
             var = tk.StringVar(value=default)
             entry = ttk.Entry(panel, textvariable=var)
             entry.grid(row=row, column=1, sticky="ew", pady=4)
-            self._add_help_button(panel, key, row, 2)
             self._general_vars[key] = var
 
         def add_combo(row: int, key: str, label: str, values: list[str]) -> None:
@@ -65,13 +69,11 @@ class ProductionSettingsScreen(ttk.Frame):
             var = tk.StringVar(value=values[0])
             combo = ttk.Combobox(panel, textvariable=var, values=values, state="readonly")
             combo.grid(row=row, column=1, sticky="ew", pady=4)
-            self._add_help_button(panel, key, row, 2)
             self._general_vars[key] = var
 
         def add_check(row: int, key: str, label: str, default: int = 0) -> None:
             var = tk.IntVar(value=default)
             ttk.Checkbutton(panel, text=label, variable=var).grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
-            self._add_help_button(panel, key, row, 2)
             self._general_vars[key] = var
 
         def add_volcado_checks(row: int) -> None:
@@ -82,25 +84,23 @@ class ProductionSettingsScreen(ttk.Frame):
                 var = tk.IntVar(value=1 if option == "Compacta" else 0)
                 self._tipos_volcado_vars[option] = var
                 ttk.Checkbutton(container, text=option, variable=var).grid(row=idx, column=0, sticky="w", pady=1)
-            self._add_help_button(panel, "tipos_volcado_activos", row, 2)
+        add_entry(1, "horas_turno", "Horas por turno", "8")
+        add_entry(2, "numero_turnos", "Número de turnos", "1")
+        add_entry(3, "horas_descanso", "Horas de descanso", "0.5")
+        add_combo(4, "tipo_campana", "Tipo de campaña", ["Baja actividad", "Normal", "Alta", "Pico campaña"])
+        add_volcado_checks(5)
+        add_entry(6, "saturacion_maxima_pct", "Saturación máxima %", "90")
 
-        add_entry(0, "horas_turno", "Horas por turno", "8")
-        add_entry(1, "numero_turnos", "Número de turnos", "1")
-        add_entry(2, "horas_descanso", "Horas de descanso", "0.5")
-        add_combo(3, "tipo_campana", "Tipo de campaña", ["Baja actividad", "Normal", "Alta", "Pico campaña"])
-        add_volcado_checks(4)
-        add_entry(5, "saturacion_maxima_pct", "Saturación máxima %", "90")
+        add_check(7, "permitir_horas_extra", "Permitir horas extra", 1)
+        add_check(8, "permitir_segundo_turno", "Permitir segundo turno", 0)
+        add_check(9, "priorizar_pedidos_reales", "Priorizar pedidos reales", 1)
+        add_check(10, "permitir_adelantar_produccion", "Permitir adelantar producción", 1)
+        add_check(11, "agrupar_pedidos_compatibles", "Agrupar pedidos compatibles", 1)
+        add_check(12, "minimizar_cambios_formato", "Minimizar cambios de formato", 1)
 
-        add_check(6, "permitir_horas_extra", "Permitir horas extra", 1)
-        add_check(7, "permitir_segundo_turno", "Permitir segundo turno", 0)
-        add_check(8, "priorizar_pedidos_reales", "Priorizar pedidos reales", 1)
-        add_check(9, "permitir_adelantar_produccion", "Permitir adelantar producción", 1)
-        add_check(10, "agrupar_pedidos_compatibles", "Agrupar pedidos compatibles", 1)
-        add_check(11, "minimizar_cambios_formato", "Minimizar cambios de formato", 1)
-
-        add_entry(12, "kg_objetivo_dia", "Kg objetivo día", "0")
-        add_entry(13, "palets_objetivo_dia", "Palets objetivo día", "0")
-        add_entry(14, "pedidos_maximos_recomendados", "Pedidos máximos recomendados", "0")
+        add_entry(13, "kg_objetivo_dia", "Kg objetivo día", "0")
+        add_entry(14, "palets_objetivo_dia", "Palets objetivo día", "0")
+        add_entry(15, "pedidos_maximos_recomendados", "Pedidos máximos recomendados", "0")
 
         calc = ttk.LabelFrame(parent, text="Campos calculados", padding=12)
         calc.grid(row=1, column=0, sticky="ew", pady=(10, 0))
@@ -126,33 +126,38 @@ class ProductionSettingsScreen(ttk.Frame):
     def _add_readonly(self, parent: ttk.Frame, row: int, key: str, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
         ttk.Entry(parent, textvariable=variable, state="readonly").grid(row=row, column=1, sticky="ew", pady=4)
-        self._add_help_button(parent, key, row, 2)
-
-    def _show_field_help(self, field_key: str) -> None:
-        help_data = PRODUCTION_FIELD_HELP.get(field_key)
-        if not help_data:
-            messagebox.showinfo(
-                "Ayuda no disponible",
-                "No hay información configurada para este campo.",
-                parent=self,
-            )
-            return
-
-        show_help(
+    
+    def _show_general_day_help(self) -> None:
+        keys = [
+            "horas_turno",
+            "numero_turnos",
+            "horas_descanso",
+            "tipo_campana",
+            "tipos_volcado_activos" if "tipos_volcado_activos" in PRODUCTION_FIELD_HELP else "tipo_volcado",
+            "saturacion_maxima_pct",
+            "permitir_horas_extra",
+            "permitir_segundo_turno",
+            "priorizar_pedidos_reales",
+            "permitir_adelantar_produccion",
+            "agrupar_pedidos_compatibles",
+            "minimizar_cambios_formato",
+            "kg_objetivo_dia",
+            "palets_objetivo_dia",
+            "pedidos_maximos_recomendados",
+            "horas_brutas_dia",
+            "horas_utiles_dia",
+            "saturacion_util_objetivo",
+        ]
+        items = [PRODUCTION_FIELD_HELP[key] for key in keys if key in PRODUCTION_FIELD_HELP]
+        show_tab_help(
             self,
-            help_data.get("title", "Ayuda"),
-            help_data.get("description", ""),
-            help_data.get("example", ""),
-            help_data.get("impact", ""),
+            title="Descripción de campos - General del día",
+            intro=(
+                "Esta pestaña define los parámetros básicos de trabajo que se usarán "
+                "para calcular la capacidad productiva diaria del almacén."
+            ),
+            help_items=items,
         )
-
-    def _add_help_button(self, parent: ttk.Frame, field_key: str, row: int, column: int) -> None:
-        ttk.Button(
-            parent,
-            text="ⓘ",
-            width=3,
-            command=lambda key=field_key: self._show_field_help(key),
-        ).grid(row=row, column=column, padx=(4, 0), pady=2, sticky="w")
 
     def _load_general_settings(self) -> None:
         data = self.service.get_general_settings()
