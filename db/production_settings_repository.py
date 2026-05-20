@@ -43,6 +43,24 @@ DEFAULT_PACKAGING_TYPES = [
     {"codigo": "GRANELERA", "descripcion": "Granelera", "familia": "Granelera", "subtipo": "Granelera", "kg_formato": 0.0, "material": "Sin material", "tipo_malla": "No aplica", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
 ]
 
+
+
+DEFAULT_PRODUCTION_LINES = [
+    {"codigo": "VOLCADO_COMPACTA", "nombre": "Compacta", "tipo_linea": "Volcado", "familia_principal": "Entrada fruta", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
+    {"codigo": "VOLCADO_INVIERNO", "nombre": "Línea invierno", "tipo_linea": "Volcado", "familia_principal": "Entrada fruta", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
+    {"codigo": "VOLCADO_VERANO", "nombre": "Línea verano", "tipo_linea": "Volcado", "familia_principal": "Entrada fruta", "numero_maquinas": 1, "activa": 0, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
+    {"codigo": "VOLCADO_TOLVA", "nombre": "Tolva", "tipo_linea": "Volcado", "familia_principal": "Entrada fruta", "numero_maquinas": 1, "activa": 0, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
+    {"codigo": "VOLCADO_MANUAL", "nombre": "Manual", "tipo_linea": "Volcado", "familia_principal": "Entrada fruta", "numero_maquinas": 1, "activa": 0, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
+    {"codigo": "MALLAS_TRADICIONAL", "nombre": "Línea mallas tradicional", "tipo_linea": "Malla", "familia_principal": "Envasado", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
+    {"codigo": "MALLAS_CLIP", "nombre": "Línea mallas clip-to-clip", "tipo_linea": "Malla", "familia_principal": "Envasado", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
+    {"codigo": "MALLAS_GIRSAC", "nombre": "Línea mallas girsac", "tipo_linea": "Malla", "familia_principal": "Envasado", "numero_maquinas": 1, "activa": 0, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
+    {"codigo": "ENCAJADO", "nombre": "Línea encajado", "tipo_linea": "Encajado", "familia_principal": "Envasado", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
+    {"codigo": "GRANEL_MANUAL", "nombre": "Granel manual", "tipo_linea": "Granel", "familia_principal": "Envasado", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
+    {"codigo": "GRANELERA", "nombre": "Granelera", "tipo_linea": "Granelera", "familia_principal": "Envasado", "numero_maquinas": 1, "activa": 0, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
+    {"codigo": "CALIBRADOR", "nombre": "Calibrador", "tipo_linea": "Calibrador", "familia_principal": "Clasificación", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
+    {"codigo": "FINAL_LINEA", "nombre": "Final de línea", "tipo_linea": "Final línea", "familia_principal": "Salida / expedición", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
+]
+
 DEFAULT_STAFF_AREAS = [
     ("Volcado", "Directo", 0, 0, 0, 1, ""),
     ("Tría principal", "Directo", 0, 0, 0, 1, ""),
@@ -69,6 +87,8 @@ class ProductionSettingsRepository:
     def __init__(self) -> None:
         self.ensure_defaults()
         self.ensure_staff_defaults()
+        self.ensure_lines_defaults()
+        self.ensure_packaging_defaults()
 
     def ensure_schema(self) -> None:
         with get_connection() as conn:
@@ -384,6 +404,70 @@ class ProductionSettingsRepository:
         self.ensure_staff_schema()
         with get_connection() as conn:
             conn.execute("DELETE FROM production_staff_areas WHERE id = ?", (area_id,))
+
+    def ensure_lines_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_lines (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    codigo TEXT NOT NULL UNIQUE,
+                    nombre TEXT NOT NULL,
+                    tipo_linea TEXT NOT NULL,
+                    familia_principal TEXT NOT NULL,
+                    numero_maquinas INTEGER NOT NULL,
+                    activa INTEGER NOT NULL,
+                    capacidad_kg_h_referencia REAL NOT NULL,
+                    personal_minimo INTEGER NOT NULL,
+                    personal_optimo INTEGER NOT NULL,
+                    permite_precalibrado INTEGER NOT NULL,
+                    permite_box INTEGER NOT NULL,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+
+    def ensure_lines_defaults(self) -> None:
+        self.ensure_lines_schema()
+        with get_connection() as conn:
+            existing = conn.execute("SELECT COUNT(*) AS n FROM production_lines").fetchone()["n"]
+            if existing == 0:
+                self.save_lines(DEFAULT_PRODUCTION_LINES)
+
+    def get_lines(self) -> list[dict]:
+        self.ensure_lines_defaults()
+        with get_connection() as conn:
+            rows = conn.execute("SELECT * FROM production_lines ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+    def save_lines(self, rows: list[dict]) -> None:
+        self.ensure_lines_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_lines")
+            conn.executemany(
+                """
+                INSERT INTO production_lines (
+                    codigo, nombre, tipo_linea, familia_principal, numero_maquinas, activa,
+                    capacidad_kg_h_referencia, personal_minimo, personal_optimo,
+                    permite_precalibrado, permite_box, observaciones, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row["codigo"], row["nombre"], row["tipo_linea"], row["familia_principal"],
+                        int(row["numero_maquinas"]), int(row["activa"]), float(row["capacidad_kg_h_referencia"]),
+                        int(row["personal_minimo"]), int(row["personal_optimo"]), int(row["permite_precalibrado"]),
+                        int(row["permite_box"]), row.get("observaciones", ""), now,
+                    )
+                    for row in rows
+                ],
+            )
+
+    def reset_lines_defaults(self) -> None:
+        self.save_lines(DEFAULT_PRODUCTION_LINES)
 
     def ensure_packaging_schema(self) -> None:
         with get_connection() as conn:

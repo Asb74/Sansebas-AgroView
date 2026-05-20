@@ -39,3 +39,12 @@ class ProductionSettingsService:
 
     def reset_packaging_defaults(self) -> None:
         self.repository.reset_packaging_defaults()
+
+    def get_lines(self) -> list[dict]:
+        return self.repository.get_lines()
+
+    def save_lines(self, rows: list[dict]) -> None:
+        self.repository.save_lines(rows)
+
+    def reset_lines_defaults(self) -> None:
+        self.repository.reset_lines_defaults()
