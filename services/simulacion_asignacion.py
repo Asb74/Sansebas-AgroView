@@ -97,18 +97,43 @@ def _guardar_pedidos_previstos(payload: dict) -> None:
     PEDIDOS_PREVISTOS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _pedido_previsto_a_simulacion(p: dict) -> dict:
+def _pedido_previsto_a_simulacion(p: dict, cultivo_actual: str = "", campana_actual: str = "", empresa_actual: str = "") -> dict:
     kg = _to_float(p.get("kg_estimados", 0))
-    cultivo = str(p.get("cultivo", p.get("Cultivo", "")) or "").strip()
-    campana = str(p.get("campana", p.get("Campaña", p.get("Campana", ""))) or "").strip()
+    cultivo = str(p.get("cultivo", p.get("Cultivo", "")) or "").strip() or str(cultivo_actual or "").strip()
+    campana = str(p.get("campana", p.get("Campaña", p.get("Campana", ""))) or "").strip() or str(campana_actual or "").strip()
+    empresa = str(p.get("empresa", p.get("EMPRESA", p.get("Empresa", ""))) or "").strip() or str(empresa_actual or "").strip()
     grupo_confeccion = str(p.get("grupo_confeccion", p.get("Grupo confección", p.get("GrupoConfeccion", ""))) or "").strip()
     perfil_confeccion = str(p.get("perfil_confeccion", p.get("Perfil confección", "")) or "").strip()
+    fecha_salida = str(p.get("fecha_salida", p.get("Fecha salida", p.get("FechaSalida", ""))) or "").strip()
+    semana = ""
+    fecha_dt = _parse_fecha_salida(fecha_salida)
+    if fecha_dt:
+        iso = fecha_dt.isocalendar()
+        semana = f"{iso.year}-W{iso.week:02d}"
+    logger.info(
+        "Pedido previsto normalizado filtros cultivo=%s campana=%s empresa=%s id=%s variedad=%s grupo=%s calibre=%s kg=%s",
+        cultivo,
+        campana,
+        empresa,
+        p.get("id_previsto", ""),
+        p.get("variedad", ""),
+        p.get("grupo_varietal", ""),
+        p.get("calibre", ""),
+        kg,
+    )
     return {
         "IdPedidoLora": p.get("id_previsto", ""),
-        "Fecha salida": p.get("fecha_salida", ""),
-        "fecha_salida": p.get("fecha_salida", ""),
+        "Fecha salida": fecha_salida,
+        "FechaSalida": fecha_salida,
+        "fecha_salida": fecha_salida,
+        "Semana": semana,
         "Cultivo": cultivo,
+        "cultivo": cultivo,
         "Campaña": campana,
+        "Campana": campana,
+        "campana": campana,
+        "EMPRESA": empresa,
+        "Empresa": empresa,
         "Cliente": p.get("cliente", ""),
         "Grupo varietal": p.get("grupo_varietal", ""),
         "Variedad": p.get("variedad", ""),
@@ -1802,7 +1827,7 @@ def calcular_horizonte_cobertura(
     return {"fecha_limite_cubierta": fecha_limite_display, "dias_autonomia": dias_autonomia, "estado_horizonte": estado_horizonte, "pedidos_cubiertos": sum(1 for s in simulaciones if s.get('estado_global') in {'CUBIERTO EXACTO', 'CUBIERTO FLEXIBLE'}), "pedidos_parciales": sum(1 for s in simulaciones if s.get('estado_global') == 'PARCIAL'), "pedidos_insuficientes": sum(1 for s in simulaciones if s.get('estado_global') == 'INSUFICIENTE'), "kg_pendientes_total": kg_pend_total, "kg_asignados_total": kg_asig_total, "kg_faltantes_total": kg_falt_total, "primer_fallo": primer_fallo or {}, "resumen_por_fecha": resumen_por_fecha, "faltantes_por_calibre": sorted(faltantes_rows, key=lambda r: (r["Primera fecha afectada"] or "9999-99-99", -r["Kg faltantes"])), "stock_restante_por_calibre": stock_restante, "recomendaciones": recomendaciones, "hay_fechas_validas": hay_fechas_validas}
 
 
-def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None, pedidos_detalle_horizonte: list[dict] | None = None, cultivo_actual: str = "") -> None:
+def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None, pedidos_detalle_horizonte: list[dict] | None = None, cultivo_actual: str = "", campana_actual: str = "", empresa_actual: str = "") -> None:
     popup = tk.Toplevel(parent)
     popup.title("Simulación de asignación")
     popup.geometry("1300x750")
@@ -1919,7 +1944,15 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         p["origen_demanda"] = "REAL"
     pedidos_previstos_sim = []
     for p in previstos_activos:
-        pedido_previsto = _pedido_previsto_a_simulacion(p)
+        pedido_previsto = _pedido_previsto_a_simulacion(p, cultivo_actual=cultivo_actual, campana_actual=campana_actual, empresa_actual=empresa_actual)
+        if not str(pedido_previsto.get("Cultivo", "") or "").strip() or not str(pedido_previsto.get("Campaña", "") or "").strip():
+            messagebox.showwarning(
+                "Simulación de asignación",
+                "No se puede simular pedidos previstos sin cultivo y campaña. Revise filtros globales o complete el pedido previsto.",
+                parent=popup,
+            )
+            popup.destroy()
+            return
         pedidos_previstos_sim.append(pedido_previsto)
         logger.info("Pedido previsto integrado id=%s variedad=%s calibre=%s kg=%s", p.get("id_previsto", ""), p.get("variedad", ""), p.get("calibre", ""), p.get("kg_estimados", 0))
     pedidos_informativos = pedidos_reales + pedidos_previstos_sim
