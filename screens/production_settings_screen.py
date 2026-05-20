@@ -4,6 +4,8 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from services.production_settings_service import ProductionSettingsService
+from utils.help_dialog import show_help
+from utils.production_help_texts import PRODUCTION_FIELD_HELP
 from widgets.screen_header import ScreenHeader
 
 
@@ -52,6 +54,7 @@ class ProductionSettingsScreen(ttk.Frame):
             var = tk.StringVar(value=default)
             entry = ttk.Entry(panel, textvariable=var)
             entry.grid(row=row, column=1, sticky="ew", pady=4)
+            self._add_help_button(panel, key, row, 2)
             self._general_vars[key] = var
 
         def add_combo(row: int, key: str, label: str, values: list[str]) -> None:
@@ -59,11 +62,13 @@ class ProductionSettingsScreen(ttk.Frame):
             var = tk.StringVar(value=values[0])
             combo = ttk.Combobox(panel, textvariable=var, values=values, state="readonly")
             combo.grid(row=row, column=1, sticky="ew", pady=4)
+            self._add_help_button(panel, key, row, 2)
             self._general_vars[key] = var
 
         def add_check(row: int, key: str, label: str, default: int = 0) -> None:
             var = tk.IntVar(value=default)
             ttk.Checkbutton(panel, text=label, variable=var).grid(row=row, column=0, columnspan=2, sticky="w", pady=2)
+            self._add_help_button(panel, key, row, 2)
             self._general_vars[key] = var
 
         add_entry(0, "horas_turno", "Horas por turno", "8")
@@ -92,9 +97,9 @@ class ProductionSettingsScreen(ttk.Frame):
         self._general_vars["horas_utiles_dia"] = tk.StringVar()
         self._general_vars["saturacion_util_objetivo"] = tk.StringVar()
 
-        self._add_readonly(calc, 0, "Horas brutas día", self._general_vars["horas_brutas_dia"])
-        self._add_readonly(calc, 1, "Horas útiles día", self._general_vars["horas_utiles_dia"])
-        self._add_readonly(calc, 2, "Saturación útil objetivo", self._general_vars["saturacion_util_objetivo"])
+        self._add_readonly(calc, 0, "horas_brutas_dia", "Horas brutas día", self._general_vars["horas_brutas_dia"])
+        self._add_readonly(calc, 1, "horas_utiles_dia", "Horas útiles día", self._general_vars["horas_utiles_dia"])
+        self._add_readonly(calc, 2, "saturacion_util_objetivo", "Saturación útil objetivo", self._general_vars["saturacion_util_objetivo"])
 
         btns = ttk.Frame(parent)
         btns.grid(row=2, column=0, sticky="ew", pady=(12, 0))
@@ -105,9 +110,36 @@ class ProductionSettingsScreen(ttk.Frame):
         for key in ("horas_turno", "numero_turnos", "horas_descanso", "saturacion_maxima_pct"):
             self._general_vars[key].trace_add("write", lambda *_: self._recalculate())
 
-    def _add_readonly(self, parent: ttk.Frame, row: int, label: str, variable: tk.StringVar) -> None:
+    def _add_readonly(self, parent: ttk.Frame, row: int, key: str, label: str, variable: tk.StringVar) -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
         ttk.Entry(parent, textvariable=variable, state="readonly").grid(row=row, column=1, sticky="ew", pady=4)
+        self._add_help_button(parent, key, row, 2)
+
+    def _show_field_help(self, field_key: str) -> None:
+        help_data = PRODUCTION_FIELD_HELP.get(field_key)
+        if not help_data:
+            messagebox.showinfo(
+                "Ayuda no disponible",
+                "No hay información configurada para este campo.",
+                parent=self,
+            )
+            return
+
+        show_help(
+            self,
+            help_data.get("title", "Ayuda"),
+            help_data.get("description", ""),
+            help_data.get("example", ""),
+            help_data.get("impact", ""),
+        )
+
+    def _add_help_button(self, parent: ttk.Frame, field_key: str, row: int, column: int) -> None:
+        ttk.Button(
+            parent,
+            text="ⓘ",
+            width=3,
+            command=lambda key=field_key: self._show_field_help(key),
+        ).grid(row=row, column=column, padx=(4, 0), pady=2, sticky="w")
 
     def _load_general_settings(self) -> None:
         data = self.service.get_general_settings()
