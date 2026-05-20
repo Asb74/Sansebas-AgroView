@@ -86,6 +86,20 @@ DEFAULT_PENALTY_RULES = [
     {"codigo": "ESPERA_MATERIAL", "tipo_penalizacion": "Espera material", "ambito": "General", "minutos_perdida": 10.0, "factor_rendimiento": 0.95, "aplica_por": "Cada parada", "umbral": "material no disponible", "activa": 1, "observaciones": ""},
 ]
 
+
+DEFAULT_SEMAPHORE_RULES = [
+    {"codigo": "SATURACION_GENERAL", "tipo_regla": "Saturación capacidad", "ambito": "General", "metrica": "ocupacion_pct", "operador": ">=", "umbral_amarillo": 85.0, "umbral_rojo": 100.0, "accion_sugerida": "Revisar adelantos, horas extra o segundo turno.", "activa": 1, "observaciones": "Control general de ocupación productiva."},
+    {"codigo": "SATURACION_MALLA", "tipo_regla": "Saturación capacidad", "ambito": "Malla", "metrica": "ocupacion_pct", "operador": ">=", "umbral_amarillo": 85.0, "umbral_rojo": 100.0, "accion_sugerida": "Agrupar formatos, reducir cambios o activar más máquinas de malla.", "activa": 1, "observaciones": ""},
+    {"codigo": "SATURACION_ENCAJADO", "tipo_regla": "Saturación capacidad", "ambito": "Encajado", "metrica": "ocupacion_pct", "operador": ">=", "umbral_amarillo": 85.0, "umbral_rojo": 100.0, "accion_sugerida": "Adelantar encajado o reforzar personal.", "activa": 1, "observaciones": ""},
+    {"codigo": "FALTA_PERSONAL_GENERAL", "tipo_regla": "Falta personal", "ambito": "Personal", "metrica": "personas_faltantes", "operador": ">", "umbral_amarillo": 0.0, "umbral_rojo": 5.0, "accion_sugerida": "Revisar plantilla disponible o reducir carga prevista.", "activa": 1, "observaciones": ""},
+    {"codigo": "EXCESO_PEDIDOS_DIA", "tipo_regla": "Exceso pedidos", "ambito": "General", "metrica": "pedidos_dia", "operador": ">=", "umbral_amarillo": 35.0, "umbral_rojo": 50.0, "accion_sugerida": "Agrupar pedidos compatibles o adelantar preparación.", "activa": 1, "observaciones": ""},
+    {"codigo": "EXCESO_CAMBIOS_FORMATO", "tipo_regla": "Exceso cambios", "ambito": "General", "metrica": "cambios_formato", "operador": ">=", "umbral_amarillo": 8.0, "umbral_rojo": 15.0, "accion_sugerida": "Reordenar producción minimizando cambios de formato.", "activa": 1, "observaciones": ""},
+    {"codigo": "PEDIDOS_PEQUENOS", "tipo_regla": "Exceso pedidos", "ambito": "General", "metrica": "pedidos_pequenos", "operador": ">=", "umbral_amarillo": 8.0, "umbral_rojo": 15.0, "accion_sugerida": "Agrupar pedidos pequeños por cliente, plataforma o formato.", "activa": 1, "observaciones": ""},
+    {"codigo": "FECHA_SALIDA_CRITICA", "tipo_regla": "Fecha salida crítica", "ambito": "Pedido", "metrica": "dias_hasta_salida", "operador": "<=", "umbral_amarillo": 1.0, "umbral_rojo": 0.0, "accion_sugerida": "Priorizar pedido o revisar posibilidad real de salida.", "activa": 1, "observaciones": ""},
+    {"codigo": "RENDIMIENTO_BAJO", "tipo_regla": "Rendimiento bajo", "ambito": "General", "metrica": "rendimiento_pct", "operador": "<", "umbral_amarillo": 90.0, "umbral_rojo": 75.0, "accion_sugerida": "Revisar fruta, personal, máquina, material o exceso de cambios.", "activa": 1, "observaciones": ""},
+    {"codigo": "STOCK_COBERTURA_BAJA", "tipo_regla": "Stock insuficiente", "ambito": "General", "metrica": "stock_cobertura_pct", "operador": "<", "umbral_amarillo": 100.0, "umbral_rojo": 80.0, "accion_sugerida": "Programar recolección o ajustar pedidos.", "activa": 1, "observaciones": ""},
+]
+
 DEFAULT_STAFF_AREAS = [
     ("Volcado", "Directo", 0, 0, 0, 1, ""),
     ("Tría principal", "Directo", 0, 0, 0, 1, ""),
@@ -116,6 +130,7 @@ class ProductionSettingsRepository:
         self.ensure_packaging_defaults()
         self.ensure_performance_defaults()
         self.ensure_penalties_defaults()
+        self.ensure_semaphore_defaults()
 
     def ensure_schema(self) -> None:
         with get_connection() as conn:
@@ -682,3 +697,63 @@ class ProductionSettingsRepository:
 
     def reset_penalty_defaults(self) -> None:
         self.save_penalty_rules(DEFAULT_PENALTY_RULES)
+
+    def ensure_semaphore_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_semaphore_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    codigo TEXT NOT NULL UNIQUE,
+                    tipo_regla TEXT NOT NULL,
+                    ambito TEXT NOT NULL,
+                    metrica TEXT NOT NULL,
+                    operador TEXT NOT NULL,
+                    umbral_amarillo REAL NOT NULL,
+                    umbral_rojo REAL NOT NULL,
+                    accion_sugerida TEXT,
+                    activa INTEGER NOT NULL,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+
+    def ensure_semaphore_defaults(self) -> None:
+        self.ensure_semaphore_schema()
+        with get_connection() as conn:
+            existing = conn.execute("SELECT COUNT(*) AS n FROM production_semaphore_rules").fetchone()["n"]
+            if existing == 0:
+                self.save_semaphore_rules(DEFAULT_SEMAPHORE_RULES)
+
+    def get_semaphore_rules(self) -> list[dict]:
+        self.ensure_semaphore_defaults()
+        with get_connection() as conn:
+            rows = conn.execute("SELECT * FROM production_semaphore_rules ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+    def save_semaphore_rules(self, rows: list[dict]) -> None:
+        self.ensure_semaphore_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_semaphore_rules")
+            conn.executemany(
+                """
+                INSERT INTO production_semaphore_rules (
+                    codigo, tipo_regla, ambito, metrica, operador,
+                    umbral_amarillo, umbral_rojo, accion_sugerida,
+                    activa, observaciones, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row["codigo"], row["tipo_regla"], row["ambito"], row["metrica"], row["operador"],
+                        float(row["umbral_amarillo"]), float(row["umbral_rojo"]), row.get("accion_sugerida", ""),
+                        int(row.get("activa", 1)), row.get("observaciones", ""), now,
+                    )
+                    for row in rows
+                ],
+            )
+
+    def reset_semaphore_defaults(self) -> None:
+        self.save_semaphore_rules(DEFAULT_SEMAPHORE_RULES)

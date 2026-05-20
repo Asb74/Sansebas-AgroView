@@ -5,7 +5,7 @@ from tkinter import messagebox, ttk
 
 from services.production_settings_service import ProductionSettingsService
 from utils.help_dialog import show_tab_help
-from utils.production_help_texts import PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PENALTIES_HELP, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERSONAL_HELP
+from utils.production_help_texts import PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PENALTIES_HELP, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERSONAL_HELP, PRODUCTION_SEMAPHORE_HELP
 from widgets.screen_header import ScreenHeader
 
 
@@ -25,6 +25,10 @@ class ProductionSettingsScreen(ttk.Frame):
     PENALTY_TYPES = ["Cambio cliente", "Cambio plataforma", "Cambio formato kg", "Cambio material", "Cambio tipo malla", "Cambio etiqueta", "Cambio confección", "Cambio calibre", "Cambio categoría", "Pedido pequeño", "Arranque línea", "Parada línea", "Limpieza", "Espera fruta", "Espera material", "Otro"]
     PENALTY_SCOPES = ["General", "Malla", "Encajado", "Granel", "Granelera", "Volcado", "Expedición", "Línea específica", "Otro"]
     PENALTY_APPLIES = ["Cada cambio", "Cada pedido", "Cada línea de pedido", "Cada cliente", "Cada plataforma", "Cada jornada", "Cada arranque", "Cada parada", "Otro"]
+    SEMAPHORE_RULE_TYPES = ["Saturación capacidad", "Falta personal", "Exceso pedidos", "Exceso cambios", "Línea no operativa", "Fecha salida crítica", "Pedido previsto", "Cuello de botella", "Stock insuficiente", "Rendimiento bajo", "Otro"]
+    SEMAPHORE_SCOPES = ["General", "Malla", "Encajado", "Granel", "Granelera", "Volcado", "Expedición", "Personal", "Línea específica", "Pedido", "Otro"]
+    SEMAPHORE_METRICS = ["ocupacion_pct", "horas_faltantes", "personas_faltantes", "pedidos_dia", "cambios_formato", "cambios_cliente", "pedidos_pequenos", "kg_pendientes", "palets_pendientes", "dias_hasta_salida", "rendimiento_pct", "lineas_activas", "stock_cobertura_pct", "otro"]
+    SEMAPHORE_OPERATORS = [">=", ">", "<=", "<", "=", "!="]
 
     def __init__(self, master: tk.Misc, on_back) -> None:
         super().__init__(master, padding=10)
@@ -48,6 +52,9 @@ class ProductionSettingsScreen(ttk.Frame):
         self._penalties_tree: ttk.Treeview | None = None
         self._penalties_editor_vars: dict[str, tk.Variable] = {}
         self._new_penalty_counter = 1
+        self._semaphore_tree: ttk.Treeview | None = None
+        self._semaphore_editor_vars: dict[str, tk.Variable] = {}
+        self._new_semaphore_counter = 1
         self._build_ui()
         self._load_general_settings()
         self._load_staff_settings()
@@ -55,6 +62,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._load_lines_settings()
         self._load_performance_settings()
         self._load_penalty_settings()
+        self._load_semaphore_settings()
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
@@ -82,9 +90,8 @@ class ProductionSettingsScreen(ttk.Frame):
         notebook.add(performance_tab, text="Rendimientos")
         penalties_tab = ttk.Frame(notebook, padding=12)
         notebook.add(penalties_tab, text="Penalizaciones")
-        placeholder = ttk.Frame(notebook, padding=12)
-        ttk.Label(placeholder, text="Pestaña preparada para una próxima integración.").pack(anchor="w")
-        notebook.add(placeholder, text="Reglas / semáforo")
+        semaphore_tab = ttk.Frame(notebook, padding=12)
+        notebook.add(semaphore_tab, text="Reglas / semáforo")
 
         self._build_general_tab(general_tab)
         self._build_staff_tab(personal_tab)
@@ -92,6 +99,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._build_lines_tab(lines_tab)
         self._build_performance_tab(performance_tab)
         self._build_penalties_tab(penalties_tab)
+        self._build_semaphore_tab(semaphore_tab)
 
     # General tab (sin cambios funcionales)
     def _build_general_tab(self, parent: ttk.Frame) -> None:
@@ -804,3 +812,98 @@ class ProductionSettingsScreen(ttk.Frame):
 
     def _reset_penalty_defaults(self) -> None:
         self.service.reset_penalty_defaults(); self._load_penalty_settings(); messagebox.showinfo("Configuración productiva", "Valores por defecto de penalizaciones restaurados.", parent=self)
+
+
+    def _build_semaphore_tab(self, parent: ttk.Frame) -> None:
+        parent.grid_columnconfigure(0, weight=1); parent.grid_rowconfigure(1, weight=1)
+        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_semaphore_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        catalog = ttk.LabelFrame(parent, text="Catálogo de reglas operativas", padding=12)
+        catalog.grid(row=1, column=0, sticky="nsew"); catalog.grid_columnconfigure(0, weight=1); catalog.grid_rowconfigure(0, weight=1)
+        cols=("id","codigo","tipo_regla","ambito","metrica","operador","umbral_amarillo","umbral_rojo","accion_sugerida","activa","observaciones")
+        tree=ttk.Treeview(catalog, columns=cols, show="headings", height=8); self._semaphore_tree=tree
+        for c,h,w in [("id","ID",40),("codigo","Código",170),("tipo_regla","Tipo regla",150),("ambito","Ámbito",120),("metrica","Métrica",140),("operador","Operador",70),("umbral_amarillo","Umbral amarillo",120),("umbral_rojo","Umbral rojo",100),("accion_sugerida","Acción sugerida",280),("activa","Activa",60),("observaciones","Observaciones",200)]:
+            tree.heading(c,text=h); tree.column(c,width=w,anchor="w")
+        y=ttk.Scrollbar(catalog, orient="vertical", command=tree.yview); x=ttk.Scrollbar(catalog, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=y.set, xscrollcommand=x.set); tree.grid(row=0,column=0,sticky="nsew"); y.grid(row=0,column=1,sticky="ns"); x.grid(row=1,column=0,sticky="ew")
+        tree.bind("<<TreeviewSelect>>", self._on_semaphore_row_selected)
+        editor = ttk.LabelFrame(parent, text="Editar regla seleccionada", padding=12); editor.grid(row=2,column=0,sticky="ew",pady=(10,0)); editor.grid_columnconfigure(1, weight=1)
+        self._semaphore_editor_vars={"id":tk.StringVar(value=""),"codigo":tk.StringVar(value=""),"tipo_regla":tk.StringVar(value=self.SEMAPHORE_RULE_TYPES[0]),"ambito":tk.StringVar(value=self.SEMAPHORE_SCOPES[0]),"metrica":tk.StringVar(value=self.SEMAPHORE_METRICS[0]),"operador":tk.StringVar(value=self.SEMAPHORE_OPERATORS[0]),"umbral_amarillo":tk.StringVar(value="0"),"umbral_rojo":tk.StringVar(value="0"),"accion_sugerida":tk.StringVar(value=""),"activa":tk.IntVar(value=1),"observaciones":tk.StringVar(value="")}
+        rows=[("codigo","Código"),("tipo_regla","Tipo regla"),("ambito","Ámbito"),("metrica","Métrica"),("operador","Operador"),("umbral_amarillo","Umbral amarillo"),("umbral_rojo","Umbral rojo"),("accion_sugerida","Acción sugerida"),("observaciones","Observaciones")]
+        for i,(k,l) in enumerate(rows):
+            ttk.Label(editor,text=l).grid(row=i,column=0,sticky="w",padx=(0,8),pady=3)
+            if k=="tipo_regla": ttk.Combobox(editor,textvariable=self._semaphore_editor_vars[k],values=self.SEMAPHORE_RULE_TYPES).grid(row=i,column=1,sticky="ew",pady=3)
+            elif k=="ambito": ttk.Combobox(editor,textvariable=self._semaphore_editor_vars[k],values=self.SEMAPHORE_SCOPES).grid(row=i,column=1,sticky="ew",pady=3)
+            elif k=="metrica": ttk.Combobox(editor,textvariable=self._semaphore_editor_vars[k],values=self.SEMAPHORE_METRICS).grid(row=i,column=1,sticky="ew",pady=3)
+            elif k=="operador": ttk.Combobox(editor,textvariable=self._semaphore_editor_vars[k],values=self.SEMAPHORE_OPERATORS,state="readonly").grid(row=i,column=1,sticky="ew",pady=3)
+            else: ttk.Entry(editor,textvariable=self._semaphore_editor_vars[k]).grid(row=i,column=1,sticky="ew",pady=3)
+        ttk.Checkbutton(editor,text="Activa",variable=self._semaphore_editor_vars["activa"]).grid(row=9,column=1,sticky="w",pady=2)
+        btns=ttk.Frame(parent); btns.grid(row=3,column=0,sticky="ew",pady=(12,0))
+        ttk.Button(btns,text="Nueva regla",command=self._add_semaphore_row).pack(side="left",padx=4)
+        ttk.Button(btns,text="Aplicar cambios a selección",command=self._apply_semaphore_row_changes).pack(side="left",padx=4)
+        ttk.Button(btns,text="Guardar reglas",command=self._save_semaphore_settings).pack(side="left",padx=4)
+        ttk.Button(btns,text="Restaurar valores por defecto",command=self._reset_semaphore_defaults).pack(side="left",padx=4)
+        ttk.Button(btns,text="Eliminar regla seleccionada",command=self._delete_semaphore_row).pack(side="left",padx=4)
+
+    def _show_semaphore_help(self) -> None:
+        keys=["codigo","tipo_regla","ambito","metrica","operador","umbral_amarillo","umbral_rojo","accion_sugerida","activa","observaciones"]
+        show_tab_help(self, title="Descripción de campos - Reglas / semáforo", intro="Esta pestaña define los criterios que permitirán convertir los cálculos de producción en alertas claras: verde, amarillo o rojo. Las reglas no calculan por sí solas, pero indican cuándo una situación debe considerarse normal, en riesgo o crítica.", help_items=[PRODUCTION_SEMAPHORE_HELP[k] for k in keys if k in PRODUCTION_SEMAPHORE_HELP])
+
+    def _load_semaphore_settings(self) -> None:
+        self._refresh_semaphore_tree(self.service.get_semaphore_rules())
+
+    def _refresh_semaphore_tree(self, rows: list[dict]) -> None:
+        if not self._semaphore_tree: return
+        self._semaphore_tree.delete(*self._semaphore_tree.get_children())
+        for row in rows: self._semaphore_tree.insert("", "end", values=(row.get("id",""), row.get("codigo",""), row.get("tipo_regla",""), row.get("ambito",""), row.get("metrica",""), row.get("operador",""), row.get("umbral_amarillo",0), row.get("umbral_rojo",0), row.get("accion_sugerida",""), row.get("activa",1), row.get("observaciones","")))
+
+    def _on_semaphore_row_selected(self, _event=None) -> None:
+        if not self._semaphore_tree: return
+        sel=self._semaphore_tree.selection()
+        if not sel: return
+        vals=self._semaphore_tree.item(sel[0],"values")
+        for i,k in enumerate(("id","codigo","tipo_regla","ambito","metrica","operador","umbral_amarillo","umbral_rojo","accion_sugerida","activa","observaciones")): self._semaphore_editor_vars[k].set(vals[i])
+
+    def _validate_semaphore_values(self, values: tuple) -> tuple:
+        codigo,tipo,ambito,metrica,operador=[str(values[i]).strip() for i in (1,2,3,4,5)]
+        if not codigo or not tipo or not ambito or not metrica or not operador: raise ValueError("Código, tipo regla, ámbito, métrica y operador son obligatorios")
+        amarillo=float(str(values[6]).replace(',', '.')); rojo=float(str(values[7]).replace(',', '.'))
+        if operador in (">=",">") and rojo < amarillo: raise ValueError("Para operadores >= o >, umbral rojo debe ser mayor o igual que umbral amarillo")
+        if operador in ("<=","<") and rojo > amarillo: raise ValueError("Para operadores <= o <, umbral rojo debe ser menor o igual que umbral amarillo")
+        return (values[0],codigo,tipo,ambito,metrica,operador,amarillo,rojo,str(values[8]).strip(),1 if str(values[9]).strip() in ("1","True","true") else 0,str(values[10]).strip())
+
+    def _add_semaphore_row(self) -> None:
+        if not self._semaphore_tree: return
+        code=f"NUEVA_REGLA_{self._new_semaphore_counter}"; self._new_semaphore_counter += 1
+        self._semaphore_tree.insert("", "end", values=("", code, "Otro", "General", "otro", ">=", 0, 0, "", 1, ""))
+
+    def _apply_semaphore_row_changes(self) -> None:
+        if not self._semaphore_tree: return
+        sel=self._semaphore_tree.selection()
+        if not sel: messagebox.showerror("Reglas / semáforo", "Seleccione una fila para editar.", parent=self); return
+        try:
+            vals=self._validate_semaphore_values((self._semaphore_editor_vars["id"].get(),self._semaphore_editor_vars["codigo"].get(),self._semaphore_editor_vars["tipo_regla"].get(),self._semaphore_editor_vars["ambito"].get(),self._semaphore_editor_vars["metrica"].get(),self._semaphore_editor_vars["operador"].get(),self._semaphore_editor_vars["umbral_amarillo"].get(),self._semaphore_editor_vars["umbral_rojo"].get(),self._semaphore_editor_vars["accion_sugerida"].get(),self._semaphore_editor_vars["activa"].get(),self._semaphore_editor_vars["observaciones"].get()))
+            self._semaphore_tree.item(sel[0], values=vals)
+        except Exception as exc: messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _delete_semaphore_row(self) -> None:
+        if not self._semaphore_tree: return
+        sel=self._semaphore_tree.selection()
+        if not sel: messagebox.showerror("Reglas / semáforo", "Seleccione una fila para eliminar.", parent=self); return
+        if messagebox.askyesno("Confirmar eliminación", "¿Desea eliminar la regla seleccionada?", parent=self): self._semaphore_tree.delete(sel[0])
+
+    def _collect_semaphore_rows_payload(self) -> list[dict]:
+        if not self._semaphore_tree: return []
+        rows=[]; codes=set()
+        for item_id in self._semaphore_tree.get_children():
+            clean=self._validate_semaphore_values(self._semaphore_tree.item(item_id, "values")); key=clean[1].lower()
+            if key in codes: raise ValueError(f"Código duplicado: {clean[1]}")
+            codes.add(key)
+            rows.append({"codigo":clean[1],"tipo_regla":clean[2],"ambito":clean[3],"metrica":clean[4],"operador":clean[5],"umbral_amarillo":clean[6],"umbral_rojo":clean[7],"accion_sugerida":clean[8],"activa":clean[9],"observaciones":clean[10]})
+        return rows
+
+    def _save_semaphore_settings(self) -> None:
+        try: self.service.save_semaphore_rules(self._collect_semaphore_rows_payload()); self._load_semaphore_settings(); messagebox.showinfo("Configuración productiva", "Reglas de semáforo guardadas correctamente.", parent=self)
+        except Exception as exc: messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _reset_semaphore_defaults(self) -> None:
+        self.service.reset_semaphore_defaults(); self._load_semaphore_settings(); messagebox.showinfo("Configuración productiva", "Valores por defecto de reglas de semáforo restaurados.", parent=self)

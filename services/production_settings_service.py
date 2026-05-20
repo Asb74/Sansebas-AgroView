@@ -66,3 +66,13 @@ class ProductionSettingsService:
 
     def reset_penalty_defaults(self) -> None:
         self.repository.reset_penalty_defaults()
+
+
+    def get_semaphore_rules(self) -> list[dict]:
+        return self.repository.get_semaphore_rules()
+
+    def save_semaphore_rules(self, rows: list[dict]) -> None:
+        self.repository.save_semaphore_rules(rows)
+
+    def reset_semaphore_defaults(self) -> None:
+        self.repository.reset_semaphore_defaults()
