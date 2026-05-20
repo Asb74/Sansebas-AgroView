@@ -8,6 +8,7 @@ from screens.legacy_sync_settings_screen import LegacySyncSettingsScreen
 from screens.map_forfait_screen import MapForfaitScreen
 from screens.pedidos_screen import PedidosScreen
 from screens.planificacion_diaria_screen import PlanificacionDiariaScreen
+from screens.production_settings_screen import ProductionSettingsScreen
 from screens.precios_orientativos_screen import PreciosOrientativosScreen
 from screens.operational_quality_settings_screen import OperationalQualitySettingsScreen
 from screens.ranking_cliente_settings_screen import RankingClienteSettingsScreen
@@ -52,6 +53,7 @@ class MainWindow(tk.Tk):
         herramientas.add_command(label="Planificación diaria", command=self.show_planificacion_diaria)
         herramientas.add_command(label="Actualización tablas legacy", command=self.show_legacy_sync_settings)
         herramientas.add_command(label="Configuración calidad operativa", command=self.show_operational_quality_settings)
+        herramientas.add_command(label="Configuración productiva", command=self.show_production_settings)
         menubar.add_cascade(label="Herramientas", menu=herramientas)
         self.config(menu=menubar)
 
@@ -112,6 +114,9 @@ class MainWindow(tk.Tk):
 
     def show_operational_quality_settings(self) -> None:
         self._show_screen(OperationalQualitySettingsScreen(self.container, on_back=self.show_home))
+
+    def show_production_settings(self) -> None:
+        self._show_screen(ProductionSettingsScreen(self.container, on_back=self.show_home))
 
     def _show_screen(self, screen: ttk.Frame) -> None:
         if self.current_screen is not None:
