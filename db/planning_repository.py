@@ -2142,11 +2142,19 @@ class PlanningRepository:
             for row in conn.execute('SELECT DISTINCT p."Campaña" AS Campana, p."Cultivo" AS Cultivo FROM "Pedidos" p WHERE COALESCE(p."Cancelado", 0) = 0').fetchall():
                 _add(row["Campana"], row["Cultivo"], "pedidos")
 
-            rows_campo = self.fetch_stock_campo(filters)
+            try:
+                rows_campo, _updated, _warning = self.get_stock_campo(filters)
+            except Exception:
+                logger.exception("Error obteniendo stock campo para filtros inteligentes; se continúa sin esta fuente.")
+                rows_campo = []
             for row in rows_campo:
                 _add(row.get("Campaña"), row.get("Cultivo"), "stock_campo")
 
-            rows_loteado = self.fetch_stock_almacen(filters)
+            try:
+                rows_loteado, _updated = self.get_stock_almacen(filters)
+            except Exception:
+                logger.exception("Error obteniendo stock almacén para filtros inteligentes; se continúa sin esta fuente.")
+                rows_loteado = []
             for row in rows_loteado:
                 _add(row.get("Campaña"), row.get("Cultivo"), "loteado")
 
