@@ -379,6 +379,17 @@ class PlanificacionDiariaScreen(ttk.Frame):
         filtros = self._filters_payload()
         cultivos = filtros.get("cultivo", [])
         cultivos_validos = [str(c or "").strip() for c in cultivos if str(c or "").strip() and str(c or "").strip().upper() != "TODOS"]
+        if len(cultivos_validos) == 0:
+            opciones_cultivo = self.service.get_filter_options_contextual("cultivo", filtros)
+            if len(opciones_cultivo) == 1:
+                cultivo_auto = str(opciones_cultivo[0]).strip()
+                self.filter_widgets["cultivo"].set_selected([cultivo_auto])
+                filtros = self._filters_payload()
+                cultivos_validos = [cultivo_auto]
+                logging.getLogger(__name__).info("Simulación cultivo autoseleccionado=%s por opción única", cultivo_auto)
+            elif len(opciones_cultivo) > 1:
+                messagebox.showwarning("Simulación de asignación", "Seleccione un único cultivo para simular.", parent=self)
+                return
         if len(cultivos_validos) != 1:
             messagebox.showwarning("Simulación de asignación", "Seleccione un único cultivo para simular.", parent=self)
             return
@@ -388,6 +399,17 @@ class PlanificacionDiariaScreen(ttk.Frame):
         if len(campanas_validas) != 1:
             messagebox.showwarning("Simulación de asignación", "Seleccione una única campaña para simular.", parent=self)
             return
+        avisos: list[str] = []
+        if not pedidos:
+            avisos.append("No hay pedidos para esta campaña/cultivo.")
+        if not self.stock_campo_rows:
+            avisos.append("No hay stock de campo para esta campaña/cultivo.")
+        if self.stock_almacen_rows:
+            avisos.append("Hay stock de almacén disponible.")
+        if (not pedidos and not self.stock_campo_rows) and self.stock_almacen_rows:
+            avisos.append("Simulación sin datos operativos completos; se permite selección desde maestro.")
+        if avisos:
+            messagebox.showinfo("Simulación de asignación", "\n".join(avisos), parent=self)
 
         empresas = filtros.get("empresa", [])
         empresas_validas = [str(e or "").strip() for e in empresas if str(e or "").strip() and str(e or "").strip().upper() != "TODOS"]

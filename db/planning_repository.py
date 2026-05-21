@@ -2043,6 +2043,8 @@ class PlanningRepository:
             return []
 
         try:
+            if key in {"campana", "cultivo"}:
+                return self._get_campaign_crop_options_from_all_sources(key, filters)
             with sqlite3.connect(pedidos_path) as conn:
                 conn.row_factory = sqlite3.Row
                 db_eepl = self._db_path(DB_EEPPL)
@@ -2104,6 +2106,82 @@ class PlanningRepository:
         except Exception:
             logger.exception("Error obteniendo opciones contextuales de filtro %s con filtros %s", key, filters)
             raise
+
+    def _get_campaign_crop_options_from_all_sources(self, key: str, filters: dict) -> list[str]:
+        pedidos_path = self._db_path(DB_PEDIDOS)
+        eepl_path = self._db_path(DB_EEPPL)
+        if not pedidos_path.exists():
+            return []
+
+        def _clean(v: Any) -> str:
+            return str(v or "").strip()
+
+        def _norm(v: Any) -> str:
+            return _clean(v).upper()
+
+        selected_campanas = set(self._normalize_filter_values(filters.get("campana")))
+        selected_cultivos = set(self._normalize_filter_values(filters.get("cultivo")))
+        pairs: dict[tuple[str, str], set[str]] = {}
+
+        def _add(campana: Any, cultivo: Any, origin: str) -> None:
+            campana_txt = _clean(campana)
+            cultivo_txt = _clean(cultivo)
+            if not campana_txt or not cultivo_txt:
+                return
+            pair_key = (_norm(campana_txt), _norm(cultivo_txt))
+            existing = pairs.get(pair_key)
+            if not existing:
+                pairs[pair_key] = {origin, f"val:{campana_txt}|{cultivo_txt}"}
+            else:
+                existing.add(origin)
+
+        with sqlite3.connect(pedidos_path) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute(f"ATTACH DATABASE '{eepl_path.as_posix()}' AS dbeepl")
+
+            for row in conn.execute('SELECT DISTINCT p."Campaña" AS Campana, p."Cultivo" AS Cultivo FROM "Pedidos" p WHERE COALESCE(p."Cancelado", 0) = 0').fetchall():
+                _add(row["Campana"], row["Cultivo"], "pedidos")
+
+            rows_campo = self.fetch_stock_campo(filters)
+            for row in rows_campo:
+                _add(row.get("Campaña"), row.get("Cultivo"), "stock_campo")
+
+            rows_loteado = self.fetch_stock_almacen(filters)
+            for row in rows_loteado:
+                _add(row.get("Campaña"), row.get("Cultivo"), "loteado")
+
+            master_table = self._find_table(conn, ["CAMPAÑA", "CAMPA\u00d1A", "Campaña", "campaña"])
+            if master_table:
+                cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{master_table}")').fetchall()]
+                camp_col = self._find_column(cols, ["CAMPAÑA", "CAMPA\u00d1A", "Campaña", "CAMPANA", "Campana"])
+                cultivo_col = self._find_column(cols, ["CULTIVO", "Cultivo", "cultivo"])
+                if camp_col and cultivo_col:
+                    for row in conn.execute(f'SELECT DISTINCT "{camp_col}" AS Campana, "{cultivo_col}" AS Cultivo FROM "{master_table}"').fetchall():
+                        _add(row["Campana"], row["Cultivo"], "maestro_campaña")
+
+        filtered_pairs: list[tuple[str, str, set[str], str, str]] = []
+        for (camp_norm, cult_norm), meta in pairs.items():
+            val = next((m for m in meta if m.startswith("val:")), "val:|")
+            raw_camp, raw_cult = val.removeprefix("val:").split("|", 1)
+            if selected_campanas and camp_norm not in selected_campanas:
+                continue
+            if selected_cultivos and cult_norm not in selected_cultivos:
+                continue
+            filtered_pairs.append((camp_norm, cult_norm, {m for m in meta if not m.startswith("val:")}, raw_camp, raw_cult))
+
+        for camp_norm, cult_norm, origins, raw_camp, raw_cult in sorted(filtered_pairs):
+            logger.info(
+                "Filtro inteligente campaña/cultivo origenes=%s campana=%s cultivo=%s",
+                sorted(origins),
+                raw_camp,
+                raw_cult,
+            )
+
+        if key == "campana":
+            values = sorted({raw_camp for _, _, _, raw_camp, _ in filtered_pairs}, key=lambda x: x.upper())
+        else:
+            values = sorted({raw_cult for _, _, _, _, raw_cult in filtered_pairs}, key=lambda x: x.upper())
+        return values
 
     def cargar_catalogos_pedidos_previstos(self, cultivo: str) -> dict[str, Any]:
         cultivo_norm = str(cultivo or "").strip()
