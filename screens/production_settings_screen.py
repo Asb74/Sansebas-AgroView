@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
+from services.production_excel_import_service import ProductionExcelImportService
 from services.production_settings_service import ProductionSettingsService
 from utils.help_dialog import show_tab_help
 from utils.production_help_texts import PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PENALTIES_HELP, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERSONAL_HELP, PRODUCTION_SEMAPHORE_HELP
@@ -34,6 +35,7 @@ class ProductionSettingsScreen(ttk.Frame):
         super().__init__(master, padding=10)
         self.on_back = on_back
         self.service = ProductionSettingsService()
+        self.import_service = ProductionExcelImportService()
 
         self._general_vars: dict[str, tk.Variable] = {}
         self._tipos_volcado_vars: dict[str, tk.IntVar] = {}
@@ -160,6 +162,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._add_readonly(calc, 2, "saturacion_util_objetivo", "Saturación útil objetivo", self._general_vars["saturacion_util_objetivo"])
         btns = ttk.Frame(parent); btns.grid(row=2, column=0, sticky="ew", pady=(12, 0))
         ttk.Button(btns, text="Guardar configuración", command=self._save_general_settings).pack(side="left", padx=4)
+        ttk.Button(btns, text="Importar reglas desde Excel producción", command=self._import_rules_from_excel).pack(side="left", padx=4)
         ttk.Button(btns, text="Restaurar valores por defecto", command=self._reset_defaults).pack(side="left", padx=4)
         ttk.Button(btns, text="Volver", command=self.on_back).pack(side="right", padx=4)
         for key in ("horas_turno", "numero_turnos", "horas_descanso", "saturacion_maxima_pct"):
@@ -359,6 +362,40 @@ class ProductionSettingsScreen(ttk.Frame):
             self.service.save_general_settings(self._collect_payload()); self._recalculate(); messagebox.showinfo("Configuración productiva", "Configuración guardada correctamente.", parent=self)
         except Exception as exc:
             messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _import_rules_from_excel(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Seleccionar Excel de producción",
+            filetypes=[("Excel", "*.xlsx *.xlsm"), ("Todos los archivos", "*.*")],
+            parent=self,
+        )
+        if not path:
+            return
+        replace_existing = messagebox.askyesno(
+            "Importación de reglas",
+            "¿Desea REEMPLAZAR reglas existentes?\n\nSí = Reemplazar.\nNo = Añadir/actualizar sin borrar.",
+            parent=self,
+        )
+        try:
+            result = self.import_service.import_rules_from_excel(path, replace_existing=replace_existing)
+            summary = [
+                f"Hojas detectadas: {', '.join(result.sheets_found) if result.sheets_found else 'ninguna'}",
+                f"Hojas faltantes: {', '.join(result.sheets_missing) if result.sheets_missing else 'ninguna'}",
+                "Registros importados:",
+            ]
+            for key, value in result.imported_counts.items():
+                summary.append(f" - {key}: {value}")
+            if result.warnings:
+                summary.append("")
+                summary.append("Avisos:")
+                summary.extend([f" - {w}" for w in result.warnings])
+            messagebox.showinfo("Importación completada", "\n".join(summary), parent=self)
+            self._load_staff_settings()
+            self._load_performance_settings()
+            self._load_penalty_settings()
+            self._load_semaphore_settings()
+        except Exception as exc:
+            messagebox.showerror("Importación de reglas", f"No se pudo importar el Excel:\n{exc}", parent=self)
 
     def _reset_defaults(self) -> None:
         self.service.reset_general_defaults(); self._load_general_settings(); messagebox.showinfo("Configuración productiva", "Valores por defecto restaurados.", parent=self)

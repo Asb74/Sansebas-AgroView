@@ -99,6 +99,15 @@ DEFAULT_SEMAPHORE_RULES = [
     {"codigo": "RENDIMIENTO_BAJO", "tipo_regla": "Rendimiento bajo", "ambito": "General", "metrica": "rendimiento_pct", "operador": "<", "umbral_amarillo": 90.0, "umbral_rojo": 75.0, "accion_sugerida": "Revisar fruta, personal, máquina, material o exceso de cambios.", "activa": 1, "observaciones": ""},
     {"codigo": "STOCK_COBERTURA_BAJA", "tipo_regla": "Stock insuficiente", "ambito": "General", "metrica": "stock_cobertura_pct", "operador": "<", "umbral_amarillo": 100.0, "umbral_rojo": 80.0, "accion_sugerida": "Programar recolección o ajustar pedidos.", "activa": 1, "observaciones": ""},
 ]
+DEFAULT_UNLOADING_PRIORITY_RULES = [
+    {"criterio": "Mayor cobertura de pedidos", "descripcion": "Priorizar partidas que cubran mayor porcentaje del pedido total.", "peso": 1.0, "activo": 1, "observaciones": ""},
+    {"criterio": "Menor destrío", "descripcion": "Favorecer partidas con menor porcentaje de destrío previsto.", "peso": 1.0, "activo": 1, "observaciones": ""},
+    {"criterio": "Calibre dominante necesario", "descripcion": "Priorizar partidas con calibre dominante alineado con demanda.", "peso": 1.0, "activo": 1, "observaciones": ""},
+    {"criterio": "Variedad demandada", "descripcion": "Favorecer variedades con mayor tensión comercial del día.", "peso": 1.0, "activo": 1, "observaciones": ""},
+    {"criterio": "Fecha salida próxima", "descripcion": "Priorizar partidas de pedidos con salida más inmediata.", "peso": 1.0, "activo": 1, "observaciones": ""},
+    {"criterio": "Kg útiles estimados", "descripcion": "Maximizar kilos útiles tras destrío y mermas.", "peso": 1.0, "activo": 1, "observaciones": ""},
+    {"criterio": "Riesgo de sobrante", "descripcion": "Reducir probabilidad de sobrante no comercializable.", "peso": 1.0, "activo": 1, "observaciones": ""},
+]
 
 DEFAULT_STAFF_AREAS = [
     ("Volcado", "Directo", 0, 0, 0, 1, ""),
@@ -131,6 +140,7 @@ class ProductionSettingsRepository:
         self.ensure_performance_defaults()
         self.ensure_penalties_defaults()
         self.ensure_semaphore_defaults()
+        self.ensure_unloading_priority_defaults()
 
     def ensure_schema(self) -> None:
         with get_connection() as conn:
@@ -757,3 +767,64 @@ class ProductionSettingsRepository:
 
     def reset_semaphore_defaults(self) -> None:
         self.save_semaphore_rules(DEFAULT_SEMAPHORE_RULES)
+
+    def ensure_unloading_priority_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_unloading_priority_rules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    criterio TEXT NOT NULL UNIQUE,
+                    descripcion TEXT,
+                    peso REAL NOT NULL DEFAULT 1.0,
+                    activo INTEGER NOT NULL DEFAULT 1,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+
+    def ensure_unloading_priority_defaults(self) -> None:
+        self.ensure_unloading_priority_schema()
+        with get_connection() as conn:
+            existing = conn.execute("SELECT COUNT(*) AS n FROM production_unloading_priority_rules").fetchone()["n"]
+            if existing == 0:
+                self.save_unloading_priority_rules(DEFAULT_UNLOADING_PRIORITY_RULES, replace_existing=True)
+
+    def get_unloading_priority_rules(self) -> list[dict]:
+        self.ensure_unloading_priority_defaults()
+        with get_connection() as conn:
+            rows = conn.execute("SELECT * FROM production_unloading_priority_rules ORDER BY id").fetchall()
+        return [dict(row) for row in rows]
+
+    def save_unloading_priority_rules(self, rows: list[dict], replace_existing: bool = True) -> None:
+        self.ensure_unloading_priority_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            if replace_existing:
+                conn.execute("DELETE FROM production_unloading_priority_rules")
+            conn.executemany(
+                """
+                INSERT INTO production_unloading_priority_rules (
+                    criterio, descripcion, peso, activo, observaciones, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(criterio) DO UPDATE SET
+                    descripcion=excluded.descripcion,
+                    peso=excluded.peso,
+                    activo=excluded.activo,
+                    observaciones=excluded.observaciones,
+                    updated_at=excluded.updated_at
+                """,
+                [
+                    (
+                        row["criterio"],
+                        row.get("descripcion", ""),
+                        float(row.get("peso", 1.0)),
+                        int(row.get("activo", 1)),
+                        row.get("observaciones", ""),
+                        now,
+                    )
+                    for row in rows
+                ],
+            )
