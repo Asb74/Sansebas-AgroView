@@ -450,6 +450,9 @@ class ProductionSettingsScreen(ttk.Frame):
     def _show_packaging_help(self) -> None:
         show_tab_help(self, title="Descripción de campos - Confecciones", intro="Esta pestaña define el catálogo de confecciones que podrá usar la planificación productiva. Cada confección representa una forma concreta de preparar la fruta: malla, encajado, granel, granelera u otros formatos.", help_items=get_help_items(PRODUCTION_PACKAGING_HELP_KEYS, PRODUCTION_PACKAGING_HELP))
 
+    def _show_base_packaging_help(self) -> None:
+        show_tab_help(self, title="Descripción de campos - Confecciones base", intro="Esta pestaña define el catálogo maestro de confecciones base y su interpretación productiva de referencia. Estos datos sirven como base para mapear y estandarizar confecciones comerciales.", help_items=get_help_items(PRODUCTION_PACKAGING_HELP_KEYS, PRODUCTION_PACKAGING_HELP))
+
     def _show_lines_help(self) -> None:
         show_tab_help(self, title="Descripción de campos - Máquinas / líneas", intro="Esta pestaña define los recursos físicos y operativos disponibles en el almacén: líneas de volcado, máquinas de malla, encajado, granelera, calibrador y puntos de apoyo.", help_items=get_help_items(PRODUCTION_LINES_HELP_KEYS, PRODUCTION_LINES_HELP))
 
@@ -610,6 +613,7 @@ class ProductionSettingsScreen(ttk.Frame):
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
         self._build_tab_toolbar(parent,
+            help_command=self._show_base_packaging_help,
             export_command=lambda: self._export_master_excel("base_packaging", lambda: self.service.get_base_packaging(active_only=False)),
             import_command=lambda: self._import_master_excel("base_packaging", self.service.save_base_packaging, self._load_base_packaging_settings))
 
