@@ -3,6 +3,9 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
+from openpyxl import Workbook, load_workbook
+from openpyxl.utils import get_column_letter
+
 from services.production_settings_service import ProductionSettingsService
 from utils.master_excel_io import export_master_to_excel, import_master_from_excel
 from utils.help_dialog import show_tab_help
@@ -188,7 +191,9 @@ class ProductionSettingsScreen(ttk.Frame):
 
     def _build_staff_tab(self, parent: ttk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1)
-        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_personal_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        self._build_tab_toolbar(parent, help_command=self._show_personal_help,
+            export_command=lambda: self._export_master_excel("personal", self._load_personal_rows_for_excel),
+            import_command=lambda: self._import_master_excel("personal", self._save_personal_rows_from_excel, self._load_staff_settings))
 
         summary = ttk.LabelFrame(parent, text="Resumen de plantilla diaria", padding=12)
         summary.grid(row=1, column=0, sticky="ew")
@@ -248,7 +253,9 @@ class ProductionSettingsScreen(ttk.Frame):
     def _build_packaging_tab(self, parent: ttk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
-        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_packaging_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        self._build_tab_toolbar(parent, help_command=self._show_packaging_help,
+            export_command=lambda: self._export_master_excel("packaging_types", self.service.get_packaging_types),
+            import_command=lambda: self._import_master_excel("packaging_types", self.service.save_packaging_types, self._load_packaging_settings))
 
         catalog = ttk.LabelFrame(parent, text="Catálogo de confecciones", padding=12)
         catalog.grid(row=1, column=0, sticky="nsew")
@@ -597,7 +604,9 @@ class ProductionSettingsScreen(ttk.Frame):
     def _build_lines_tab(self, parent: ttk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
-        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_lines_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        self._build_tab_toolbar(parent, help_command=self._show_lines_help,
+            export_command=lambda: self._export_master_excel("lines", self.service.get_lines),
+            import_command=lambda: self._import_master_excel("lines", self.service.save_lines, self._load_lines_settings))
         catalog = ttk.LabelFrame(parent, text="Catálogo de máquinas y líneas", padding=12)
         catalog.grid(row=1, column=0, sticky="nsew")
         catalog.grid_columnconfigure(0, weight=1); catalog.grid_rowconfigure(0, weight=1)
@@ -634,7 +643,9 @@ class ProductionSettingsScreen(ttk.Frame):
 
     def _build_performance_tab(self, parent: ttk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1); parent.grid_rowconfigure(1, weight=1)
-        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_performance_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        self._build_tab_toolbar(parent, help_command=self._show_performance_help,
+            export_command=lambda: self._export_master_excel("performance_rules", self.service.get_performance_rules),
+            import_command=lambda: self._import_master_excel("performance_rules", self.service.save_performance_rules, self._load_performance_settings))
         catalog = ttk.LabelFrame(parent, text="Catálogo de rendimientos", padding=12)
         catalog.grid(row=1, column=0, sticky="nsew"); catalog.grid_columnconfigure(0, weight=1); catalog.grid_rowconfigure(0, weight=1)
         cols = ("id","codigo","familia","confeccion_formato","tipo_linea","condicion","oph_referencia","oph_minimo","oph_optimo","kg_h_referencia","factor_precalibrado","factor_destrio_alto","dificultad","activo","observaciones")
@@ -734,7 +745,9 @@ class ProductionSettingsScreen(ttk.Frame):
 
     def _build_penalties_tab(self, parent: ttk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1); parent.grid_rowconfigure(1, weight=1)
-        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_penalties_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        self._build_tab_toolbar(parent, help_command=self._show_penalties_help,
+            export_command=lambda: self._export_master_excel("penalty_rules", self.service.get_penalty_rules),
+            import_command=lambda: self._import_master_excel("penalty_rules", self.service.save_penalty_rules, self._load_penalty_settings))
         catalog = ttk.LabelFrame(parent, text="Catálogo de penalizaciones operativas", padding=12)
         catalog.grid(row=1, column=0, sticky="nsew"); catalog.grid_columnconfigure(0, weight=1); catalog.grid_rowconfigure(0, weight=1)
         cols = ("id","codigo","tipo_penalizacion","ambito","minutos_perdida","factor_rendimiento","aplica_por","umbral","activa","observaciones")
@@ -837,7 +850,9 @@ class ProductionSettingsScreen(ttk.Frame):
 
     def _build_semaphore_tab(self, parent: ttk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1); parent.grid_rowconfigure(1, weight=1)
-        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_semaphore_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        self._build_tab_toolbar(parent, help_command=self._show_semaphore_help,
+            export_command=lambda: self._export_master_excel("semaphore_rules", self.service.get_semaphore_rules),
+            import_command=lambda: self._import_master_excel("semaphore_rules", self.service.save_semaphore_rules, self._load_semaphore_settings, self._validate_semaphore_import_rows))
         catalog = ttk.LabelFrame(parent, text="Catálogo de reglas operativas", padding=12)
         catalog.grid(row=1, column=0, sticky="nsew"); catalog.grid_columnconfigure(0, weight=1); catalog.grid_rowconfigure(0, weight=1)
         cols=("id","codigo","tipo_regla","ambito","metrica","operador","umbral_amarillo","umbral_rojo","accion_sugerida","activa","observaciones")
@@ -930,7 +945,9 @@ class ProductionSettingsScreen(ttk.Frame):
         self.service.reset_semaphore_defaults(); self._load_semaphore_settings(); messagebox.showinfo("Configuración productiva", "Valores por defecto de reglas de semáforo restaurados.", parent=self)
 
     def _build_caliber_factors_tab(self, parent: ttk.Frame) -> None:
-        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_caliber_factors_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        self._build_tab_toolbar(parent, help_command=self._show_caliber_factors_help,
+            export_command=lambda: self._export_master_excel("caliber_factors", self.service.get_caliber_performance_factors),
+            import_command=lambda: self._import_master_excel("caliber_factors", self.service.save_caliber_performance_factors, self._load_caliber_factors_settings, self._validate_caliber_import_rows))
         catalog = ttk.LabelFrame(parent, text="Catálogo de factores por calibre", padding=12); catalog.grid(row=1, column=0, sticky="nsew")
         cols = ("id","codigo","confeccion_familia","grupo_calibre","calibres_incluidos","factor_rendimiento","aplica_a","activo","observaciones")
         tree = ttk.Treeview(catalog, columns=cols, show="headings", height=8); self._caliber_tree = tree
@@ -1039,12 +1056,9 @@ class ProductionSettingsScreen(ttk.Frame):
     def _build_packaging_mapping_tab(self, parent: ttk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
-        top_actions = ttk.Frame(parent)
-        top_actions.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        top_actions.grid_columnconfigure(2, weight=1)
-        ttk.Button(top_actions, text="Exportar Excel", command=self._export_packaging_mapping_to_excel).grid(row=0, column=0, sticky="w", padx=(0, 4))
-        ttk.Button(top_actions, text="Importar Excel", command=self._import_packaging_mapping_from_excel).grid(row=0, column=1, sticky="w", padx=(0, 8))
-        ttk.Button(top_actions, text="ⓘ Descripción de campos", command=self._show_packaging_mapping_help).grid(row=0, column=3, sticky="e")
+        self._build_tab_toolbar(parent, help_command=self._show_packaging_mapping_help,
+            export_command=lambda: self._export_master_excel("packaging_mapping", lambda: self.service.get_packaging_mapping(False)),
+            import_command=lambda: self._import_master_excel("packaging_mapping", self.service.save_packaging_mapping, lambda: self._load_packaging_mapping_settings(False), self._validate_mapping_import_rows))
         catalog = ttk.LabelFrame(parent, text="Catálogo de mapeo productivo", padding=8)
         catalog.grid(row=1, column=0, sticky="nsew")
         cols = ("codigo","nombre","grupo","neto","npiezas","familia","subtipo","kg","tipo_malla","linea","activo","revisar","confianza","obs")
@@ -1127,6 +1141,112 @@ class ProductionSettingsScreen(ttk.Frame):
         self.service.reset_packaging_mapping_autodetect()
         self._load_packaging_mapping_settings(False)
 
+
+    def _build_tab_toolbar(self, parent, help_command, export_command=None, import_command=None):
+        bar = ttk.Frame(parent)
+        bar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        bar.grid_columnconfigure(1, weight=1)
+        left = ttk.Frame(bar)
+        left.grid(row=0, column=0, sticky="w")
+        if export_command:
+            ttk.Button(left, text="Exportar Excel", command=export_command).pack(side="left", padx=(0, 4))
+        if import_command:
+            ttk.Button(left, text="Importar Excel", command=import_command).pack(side="left", padx=(0, 8))
+        ttk.Button(bar, text="ⓘ Descripción de campos", command=help_command).grid(row=0, column=2, sticky="e")
+
+    def _export_master_excel(self, master_key: str, rows_loader) -> None:
+        config = PRODUCTION_MASTER_EXCEL_CONFIGS[master_key]
+        rows_data = rows_loader()
+        target = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile=config.get("default_filename", "maestro.xlsx"), filetypes=[("Excel", "*.xlsx")])
+        if not target:
+            return
+        wb = Workbook()
+        if isinstance(rows_data, dict):
+            first=True
+            for sheet_name, payload in rows_data.items():
+                ws = wb.active if first else wb.create_sheet()
+                first=False
+                ws.title = sheet_name
+                columns = payload["columns"]
+                ws.append(columns)
+                for row in payload["rows"]: ws.append([row.get(c, "") for c in columns])
+                ws.freeze_panes = "A2"; ws.auto_filter.ref = ws.dimensions
+                for i, col in enumerate(columns, start=1):
+                    width = max(len(str(col)), max((len(str(v or "")) for v in [r.get(col, "") for r in payload["rows"]]), default=0))
+                    ws.column_dimensions[get_column_letter(i)].width = min(width + 2, 60)
+        else:
+            ws = wb.active; ws.title = config["sheet_name"]; cols = config["columns"]; ws.append(cols)
+            for row in rows_data: ws.append([row.get(c, "") for c in cols])
+            ws.freeze_panes = "A2"; ws.auto_filter.ref = ws.dimensions
+            for i, col in enumerate(cols, start=1): ws.column_dimensions[get_column_letter(i)].width = min(max(len(col), 14) + 2, 60)
+        wb.save(target)
+        messagebox.showinfo("Configuración productiva", f"Excel exportado en:\n{target}", parent=self)
+
+    def _import_master_excel(self, master_key: str, saver, reload_callback, extra_validator=None) -> None:
+        path = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx")])
+        if not path: return
+        config = PRODUCTION_MASTER_EXCEL_CONFIGS[master_key]
+        wb = load_workbook(path, data_only=True)
+        errors=[]
+        def _sheet_to_rows(ws, cfg):
+            headers=[str(h or "").strip() for h in next(ws.iter_rows(min_row=1, max_row=1, values_only=True))]
+            data=[]; seen=set()
+            for row_idx, vals in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                row={headers[i]: vals[i] if i < len(vals) else None for i in range(len(headers))}
+                clean={c: row.get(c, "") for c in cfg["columns"]}
+                for c in cfg.get("numeric_columns", []):
+                    if clean.get(c) not in (None, ""): clean[c]=float(str(clean[c]).replace(",","."))
+                for c in cfg.get("boolean_columns", []): clean[c]=1 if str(clean.get(c,"0")).strip().upper() in {"1","SI","S","TRUE","X","Y","YES"} else 0
+                uk=str(clean.get(cfg["unique_key"], "")).strip().lower()
+                if uk in seen: errors.append(f"{ws.title} fila {row_idx}: clave duplicada {cfg['unique_key']}")
+                seen.add(uk); data.append(clean)
+            return data
+        if master_key == "personal":
+            areas = _sheet_to_rows(wb[config["sheet_name"]], config)
+            s_cfg=config["extra_sheets"]["Resumen personal"]
+            summary_rows = _sheet_to_rows(wb["Resumen personal"], {**s_cfg, "columns": s_cfg["columns"]})
+            if summary_rows: self.service.save_staff_summary(summary_rows[0])
+            rows=areas
+        else:
+            rows = _sheet_to_rows(wb.active if config["sheet_name"] not in wb.sheetnames else wb[config["sheet_name"]], config)
+        if extra_validator: errors.extend(extra_validator(rows))
+        if errors: return messagebox.showerror("Errores de validación", "\n".join(errors[:20]), parent=self)
+        if not messagebox.askyesno("Confirmar importación", f"Se importarán {len(rows)} registros. ¿Continuar?", parent=self): return
+        saver(rows); reload_callback(); messagebox.showinfo("Configuración productiva", f"Importación completada. Registros procesados: {len(rows)}.", parent=self)
+
+    def _load_personal_rows_for_excel(self):
+        return {
+            "Resumen personal": {"columns": PRODUCTION_MASTER_EXCEL_CONFIGS["personal"]["extra_sheets"]["Resumen personal"]["columns"], "rows": [self.service.get_staff_summary()]},
+            "Areas personal": {"columns": PRODUCTION_MASTER_EXCEL_CONFIGS["personal"]["columns"], "rows": self.service.get_staff_areas()},
+        }
+
+    def _save_personal_rows_from_excel(self, rows):
+        self.service.save_staff_areas(rows)
+
+    def _validate_semaphore_import_rows(self, rows):
+        errors=[]
+        for i, row in enumerate(rows, start=2):
+            op=row.get("operador"); y=row.get("umbral_amarillo",0); r=row.get("umbral_rojo",0)
+            if op in (">", ">=") and y > r: errors.append(f"Fila {i}: umbral amarillo no puede ser mayor que rojo para {op}.")
+            if op in ("<", "<=") and y < r: errors.append(f"Fila {i}: umbral amarillo no puede ser menor que rojo para {op}.")
+        return errors
+
+    def _validate_caliber_import_rows(self, rows):
+        errors=[]; seen={}
+        for i,row in enumerate(rows, start=2):
+            row["calibres_incluidos"] = self._normalize_calibres(str(row.get("calibres_incluidos", "")))
+            key=str(row.get("confeccion_familia","")).strip().lower()
+            for cal in row["calibres_incluidos"].split(","):
+                if (key, cal) in seen: errors.append(f"Fila {i}: calibre duplicado '{cal}' en la confección {row.get('confeccion_familia')}")
+                seen[(key,cal)] = i
+        return errors
+
+    def _validate_mapping_import_rows(self, rows):
+        errors=[]
+        for i,row in enumerate(rows, start=2):
+            if not str(row.get("codigo_mconfeccion","")).strip(): errors.append(f"Fila {i}: codigo_mconfeccion obligatorio")
+            if str(row.get("kg_formato",0)) and float(row.get("kg_formato",0)) < 0: errors.append(f"Fila {i}: kg_formato debe ser >= 0")
+        return errors
     def _show_packaging_mapping_help(self) -> None:
         show_tab_help(self, title="Descripción de campos - Mapeo confecciones", intro="Esta pestaña relaciona las confecciones comerciales de MConfecciones con la interpretación productiva que usará el cálculo de capacidad. Permite corregir manualmente casos dudosos, especialmente mallas, subtipo, kg formato y línea productiva.", help_items=[
             ("Código MConfección", "identificador original de MConfecciones."),
