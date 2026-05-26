@@ -1,15 +1,36 @@
 from __future__ import annotations
 
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 
 from services.production_settings_service import ProductionSettingsService
+from utils.excel_master_io import export_dict_rows_to_excel, import_dict_rows_from_excel
 from utils.help_dialog import show_tab_help
 from utils.production_help_texts import PRODUCTION_CALIBER_FACTORS_HELP, PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PENALTIES_HELP, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERSONAL_HELP, PRODUCTION_SEMAPHORE_HELP
 from widgets.screen_header import ScreenHeader
 
 
 class ProductionSettingsScreen(ttk.Frame):
+    PACKAGING_MAPPING_EXCEL_HEADERS = [
+        "codigo_mconfeccion",
+        "nombre_mconfeccion",
+        "descripcion_corta",
+        "grupo_origen",
+        "neto_origen",
+        "npiezas_origen",
+        "activa_origen",
+        "familia_productiva",
+        "subtipo_productivo",
+        "kg_formato",
+        "tipo_malla",
+        "linea_productiva",
+        "requiere_precalibrado",
+        "compatible_box",
+        "activo_produccion",
+        "confianza_autodeteccion",
+        "revisar",
+        "observaciones",
+    ]
     VOLCADO_OPTIONS = ["Compacta", "Línea invierno", "Línea verano", "Tolva", "Manual"]
     STAFF_TYPES = ["Directo", "Indirecto", "Soporte"]
     PACKAGING_FAMILIES = ["Malla", "Encajado", "Granel", "Granelera", "Flowpack", "Otro"]
@@ -1037,7 +1058,12 @@ class ProductionSettingsScreen(ttk.Frame):
     def _build_packaging_mapping_tab(self, parent: ttk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
-        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_packaging_mapping_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        top_actions = ttk.Frame(parent)
+        top_actions.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        top_actions.grid_columnconfigure(2, weight=1)
+        ttk.Button(top_actions, text="Exportar Excel", command=self._export_packaging_mapping_to_excel).grid(row=0, column=0, sticky="w", padx=(0, 4))
+        ttk.Button(top_actions, text="Importar Excel", command=self._import_packaging_mapping_from_excel).grid(row=0, column=1, sticky="w", padx=(0, 8))
+        ttk.Button(top_actions, text="ⓘ Descripción de campos", command=self._show_packaging_mapping_help).grid(row=0, column=3, sticky="e")
         catalog = ttk.LabelFrame(parent, text="Catálogo de mapeo productivo", padding=8)
         catalog.grid(row=1, column=0, sticky="nsew")
         cols = ("codigo","nombre","grupo","neto","npiezas","familia","subtipo","kg","tipo_malla","linea","activo","revisar","confianza","obs")
@@ -1132,3 +1158,108 @@ class ProductionSettingsScreen(ttk.Frame):
             ("Revisar", "marca registros que requieren validación manual."),
             ("Confianza autodetección", "nivel de seguridad de la clasificación automática."),
         ])
+
+    def _export_packaging_mapping_to_excel(self) -> None:
+        try:
+            rows = self.service.get_packaging_mapping(False)
+            export_rows = [{k: row.get(k, "") for k in self.PACKAGING_MAPPING_EXCEL_HEADERS} for row in rows]
+            out_path = export_dict_rows_to_excel(
+                rows=export_rows,
+                headers=self.PACKAGING_MAPPING_EXCEL_HEADERS,
+                default_filename="mapeo_confecciones.xlsx",
+                sheet_name="Mapeo confecciones",
+            )
+            if out_path:
+                messagebox.showinfo("Configuración productiva", f"Excel exportado en:\n{out_path}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Error exportando Excel", str(exc), parent=self)
+
+    def _import_packaging_mapping_from_excel(self) -> None:
+        path = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx")])
+        if not path:
+            return
+        try:
+            required_cols = [
+                "codigo_mconfeccion",
+                "familia_productiva",
+                "subtipo_productivo",
+                "kg_formato",
+                "tipo_malla",
+                "activo_produccion",
+            ]
+            raw_rows = import_dict_rows_from_excel(path=path, required_columns=required_cols)
+            normalized_rows: list[dict] = []
+            errors: list[str] = []
+            for idx, row in enumerate(raw_rows, start=2):
+                code = str(row.get("codigo_mconfeccion") or "").strip()
+                familia = str(row.get("familia_productiva") or "").strip()
+                subtipo = str(row.get("subtipo_productivo") or "").strip()
+                tipo_malla = str(row.get("tipo_malla") or "").strip()
+                kg_raw = row.get("kg_formato")
+                try:
+                    kg_val = self._normalize_decimal_value(kg_raw)
+                except ValueError:
+                    errors.append(f"Fila {idx}: kg_formato no es numérico válido ({kg_raw}).")
+                    continue
+                if not code:
+                    errors.append(f"Fila {idx}: codigo_mconfeccion obligatorio.")
+                if not familia:
+                    errors.append(f"Fila {idx}: familia_productiva obligatoria.")
+                if not subtipo:
+                    errors.append(f"Fila {idx}: subtipo_productivo obligatorio.")
+                if not tipo_malla:
+                    errors.append(f"Fila {idx}: tipo_malla obligatorio.")
+                if kg_val < 0:
+                    errors.append(f"Fila {idx}: kg_formato debe ser >= 0.")
+                clean_row = {k: row.get(k, "") for k in self.PACKAGING_MAPPING_EXCEL_HEADERS}
+                clean_row["codigo_mconfeccion"] = code
+                clean_row["familia_productiva"] = familia
+                clean_row["subtipo_productivo"] = subtipo
+                clean_row["tipo_malla"] = tipo_malla
+                clean_row["kg_formato"] = kg_val
+                clean_row["requiere_precalibrado"] = self._normalize_excel_bool(row.get("requiere_precalibrado"))
+                clean_row["compatible_box"] = self._normalize_excel_bool(row.get("compatible_box"))
+                clean_row["activo_produccion"] = self._normalize_excel_bool(row.get("activo_produccion"))
+                clean_row["revisar"] = self._normalize_excel_bool(row.get("revisar"))
+                clean_row["neto_origen"] = self._normalize_decimal_value(row.get("neto_origen"), default=0.0)
+                clean_row["npiezas_origen"] = self._normalize_decimal_value(row.get("npiezas_origen"), default=0.0)
+                normalized_rows.append(clean_row)
+            if errors:
+                error_preview = "\n".join(errors[:20])
+                more = "\n..." if len(errors) > 20 else ""
+                messagebox.showerror("Errores de validación", f"No se pudo importar el Excel:\n{error_preview}{more}", parent=self)
+                return
+            if not normalized_rows:
+                messagebox.showerror("Importación", "El archivo no contiene registros para importar.", parent=self)
+                return
+            if not messagebox.askyesno("Confirmar importación", f"Se importarán {len(normalized_rows)} registros y se actualizará el mapeo de confecciones. ¿Continuar?", parent=self):
+                return
+            self.service.save_packaging_mapping(normalized_rows)
+            self._load_packaging_mapping_settings(False)
+            messagebox.showinfo("Configuración productiva", f"Importación completada. Registros procesados: {len(normalized_rows)}.", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Error importando Excel", str(exc), parent=self)
+
+    def _normalize_excel_bool(self, value) -> int:
+        if value is None:
+            return 0
+        normalized = str(value).strip().upper()
+        if normalized in {"1", "S", "SI", "SÍ", "TRUE", "X"}:
+            return 1
+        if normalized in {"0", "N", "NO", "FALSE", ""}:
+            return 0
+        return 1 if normalized else 0
+
+    def _normalize_decimal_value(self, value, default: float | None = None) -> float:
+        if value in (None, ""):
+            if default is None:
+                raise ValueError("empty numeric")
+            return float(default)
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value).strip().replace(",", ".")
+        if text == "":
+            if default is None:
+                raise ValueError("empty numeric")
+            return float(default)
+        return float(text)
