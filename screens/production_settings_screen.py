@@ -16,6 +16,9 @@ class ProductionSettingsScreen(ttk.Frame):
     PACKAGING_SUBTYPES = ["Tradicional", "Clip-to-clip", "Girsac", "Bolsa", "Caja cartón", "Caja madera", "Granel", "Granelera", "Otro"]
     PACKAGING_MATERIALS = ["Plástico", "Cartón", "Madera", "Malla", "Mixto", "Sin material", "Otro"]
     PACKAGING_MESH_TYPES = ["No aplica", "Tradicional", "Clip-to-clip", "Girsac", "Bolsa", "Otro"]
+    MAPPING_FAMILIES = ["Malla", "Encajado", "Granel", "Granelera", "Flowpack", "Alvéolo", "Cestas", "Otro"]
+    MAPPING_SUBTYPES = ["Tradicional", "Clip-to-clip", "Girsac", "Flowpack", "Caja", "Alvéolo", "Granel", "Granelera", "Cesta", "Otro"]
+    MAPPING_MESH_TYPES = ["No aplica", "Tradicional", "Clip-to-clip", "Girsac", "Flowpack", "Otro"]
     LINE_TYPES = ["Volcado", "Malla", "Encajado", "Granel", "Granelera", "Calibrador", "Final línea", "Expedición", "Soporte", "Otro"]
     LINE_FAMILIES = ["Entrada fruta", "Producción directa", "Clasificación", "Envasado", "Salida / expedición", "Apoyo"]
     PERFORMANCE_FAMILIES = ["Malla", "Encajado", "Granel", "Granelera", "Volcado", "Calibrador", "Final línea", "Otro"]
@@ -46,6 +49,8 @@ class ProductionSettingsScreen(ttk.Frame):
         self._packaging_tree: ttk.Treeview | None = None
         self._packaging_editor_vars: dict[str, tk.Variable] = {}
         self._lines_tree: ttk.Treeview | None = None
+        self._mapping_tree: ttk.Treeview | None = None
+        self._mapping_editor_vars: dict[str, tk.Variable] = {}
         self._lines_editor_vars: dict[str, tk.Variable] = {}
         self._new_line_counter = 1
         self._new_packaging_counter = 1
@@ -66,6 +71,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._load_staff_settings()
         self._load_packaging_settings()
         self._load_lines_settings()
+        self._load_packaging_mapping_settings()
         self._load_performance_settings()
         self._load_penalty_settings()
         self._load_semaphore_settings()
@@ -93,6 +99,8 @@ class ProductionSettingsScreen(ttk.Frame):
         notebook.add(packaging_tab, text="Confecciones")
         lines_tab = ttk.Frame(notebook, padding=12)
         notebook.add(lines_tab, text="Máquinas / líneas")
+        mapping_tab = ttk.Frame(notebook, padding=12)
+        notebook.add(mapping_tab, text="Mapeo confecciones")
         performance_tab = ttk.Frame(notebook, padding=12)
         notebook.add(performance_tab, text="Rendimientos")
         penalties_tab = ttk.Frame(notebook, padding=12)
@@ -106,6 +114,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._build_staff_tab(personal_tab)
         self._build_packaging_tab(packaging_tab)
         self._build_lines_tab(lines_tab)
+        self._build_packaging_mapping_tab(mapping_tab)
         self._build_performance_tab(performance_tab)
         self._build_penalties_tab(penalties_tab)
         self._build_semaphore_tab(semaphore_tab)
@@ -1024,3 +1033,102 @@ class ProductionSettingsScreen(ttk.Frame):
 
     def _reset_caliber_factors_defaults(self) -> None:
         self.service.reset_caliber_performance_factors_defaults(); self._load_caliber_factors_settings(); messagebox.showinfo("Configuración productiva", "Valores por defecto de factores calibre restaurados.", parent=self)
+
+    def _build_packaging_mapping_tab(self, parent: ttk.Frame) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_packaging_mapping_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        catalog = ttk.LabelFrame(parent, text="Catálogo de mapeo productivo", padding=8)
+        catalog.grid(row=1, column=0, sticky="nsew")
+        cols = ("codigo","nombre","grupo","neto","npiezas","familia","subtipo","kg","tipo_malla","linea","activo","revisar","confianza","obs")
+        tree = ttk.Treeview(catalog, columns=cols, show="headings", height=8)
+        self._mapping_tree = tree
+        headers = ["Código","Nombre","Grupo origen","Neto origen","N. piezas origen","Familia productiva","Subtipo productivo","Kg formato","Tipo malla","Línea productiva","Activo producción","Revisar","Confianza","Observaciones"]
+        for c, h in zip(cols, headers):
+            tree.heading(c, text=h); tree.column(c, width=110, anchor="w")
+        tree.grid(row=0, column=0, sticky="nsew")
+        catalog.grid_columnconfigure(0, weight=1); catalog.grid_rowconfigure(0, weight=1)
+        tree.bind("<<TreeviewSelect>>", self._on_mapping_row_selected)
+
+        editor = ttk.LabelFrame(parent, text="Editar mapeo seleccionado", padding=8)
+        editor.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        editor.grid_columnconfigure(1, weight=1)
+        self._mapping_editor_vars = {k: tk.StringVar(value="") for k in ("codigo_mconfeccion","nombre_mconfeccion","descripcion_corta","grupo_origen","neto_origen","npiezas_origen","familia_productiva","subtipo_productivo","kg_formato","tipo_malla","linea_productiva","observaciones","confianza_autodeteccion")}
+        for k in ("requiere_precalibrado","compatible_box","activo_produccion","revisar"): self._mapping_editor_vars[k] = tk.IntVar(value=0)
+        ro = {"state": "readonly"}
+        ttk.Label(editor,text="Código MConfección").grid(row=0,column=0,sticky="w"); ttk.Entry(editor,textvariable=self._mapping_editor_vars["codigo_mconfeccion"], **ro).grid(row=0,column=1,sticky="ew")
+        ttk.Label(editor,text="Nombre").grid(row=1,column=0,sticky="w"); ttk.Entry(editor,textvariable=self._mapping_editor_vars["nombre_mconfeccion"], **ro).grid(row=1,column=1,sticky="ew")
+        ttk.Label(editor,text="Grupo origen").grid(row=2,column=0,sticky="w"); ttk.Entry(editor,textvariable=self._mapping_editor_vars["grupo_origen"], **ro).grid(row=2,column=1,sticky="ew")
+        ttk.Label(editor,text="Familia productiva").grid(row=3,column=0,sticky="w"); ttk.Combobox(editor,textvariable=self._mapping_editor_vars["familia_productiva"],values=self.MAPPING_FAMILIES,state="readonly").grid(row=3,column=1,sticky="ew")
+        ttk.Label(editor,text="Subtipo productivo").grid(row=4,column=0,sticky="w"); ttk.Combobox(editor,textvariable=self._mapping_editor_vars["subtipo_productivo"],values=self.MAPPING_SUBTYPES).grid(row=4,column=1,sticky="ew")
+        ttk.Label(editor,text="Kg formato").grid(row=5,column=0,sticky="w"); ttk.Entry(editor,textvariable=self._mapping_editor_vars["kg_formato"]).grid(row=5,column=1,sticky="ew")
+        ttk.Label(editor,text="Tipo malla").grid(row=6,column=0,sticky="w"); ttk.Combobox(editor,textvariable=self._mapping_editor_vars["tipo_malla"],values=self.MAPPING_MESH_TYPES,state="readonly").grid(row=6,column=1,sticky="ew")
+        ttk.Label(editor,text="Línea productiva").grid(row=7,column=0,sticky="w"); ttk.Combobox(editor,textvariable=self._mapping_editor_vars["linea_productiva"],values=[r.get("codigo") for r in self.service.get_lines()] or ["MALLAS_TRADICIONAL","MALLAS_CLIP","MALLAS_GIRSAC","ENCAJADO","GRANEL_MANUAL","GRANELERA","OTRO"]).grid(row=7,column=1,sticky="ew")
+        ttk.Checkbutton(editor,text="Requiere pre calibrado",variable=self._mapping_editor_vars["requiere_precalibrado"]).grid(row=8,column=1,sticky="w")
+        ttk.Checkbutton(editor,text="Compatible BOX",variable=self._mapping_editor_vars["compatible_box"]).grid(row=9,column=1,sticky="w")
+        ttk.Checkbutton(editor,text="Activo producción",variable=self._mapping_editor_vars["activo_produccion"]).grid(row=10,column=1,sticky="w")
+        ttk.Checkbutton(editor,text="Revisar",variable=self._mapping_editor_vars["revisar"]).grid(row=11,column=1,sticky="w")
+        ttk.Label(editor,text="Observaciones").grid(row=12,column=0,sticky="w"); ttk.Entry(editor,textvariable=self._mapping_editor_vars["observaciones"]).grid(row=12,column=1,sticky="ew")
+
+        btns = ttk.Frame(parent); btns.grid(row=3,column=0,sticky="ew", pady=(8,0))
+        ttk.Button(btns,text="Autorrellenar desde MConfecciones",command=self._autofill_packaging_mapping).pack(side="left",padx=4)
+        ttk.Button(btns,text="Aplicar cambios a selección",command=self._apply_mapping_row_changes).pack(side="left",padx=4)
+        ttk.Button(btns,text="Guardar mapeo",command=self._save_packaging_mapping).pack(side="left",padx=4)
+        ttk.Button(btns,text="Restaurar autodetección",command=self._reset_packaging_mapping_autodetect).pack(side="left",padx=4)
+        ttk.Button(btns,text="Filtrar pendientes de revisar",command=lambda: self._load_packaging_mapping_settings(True)).pack(side="left",padx=4)
+        ttk.Button(btns,text="Ver todos",command=lambda: self._load_packaging_mapping_settings(False)).pack(side="left",padx=4)
+
+    def _load_packaging_mapping_settings(self, only_review: bool = False) -> None:
+        rows = self.service.get_packaging_mapping(only_review)
+        if not rows:
+            self.service.autofill_packaging_mapping_from_mconfecciones(False)
+            rows = self.service.get_packaging_mapping(only_review)
+        if not self._mapping_tree: return
+        self._mapping_tree.delete(*self._mapping_tree.get_children())
+        for r in rows:
+            self._mapping_tree.insert("", "end", values=(r.get("codigo_mconfeccion",""),r.get("nombre_mconfeccion",""),r.get("grupo_origen",""),r.get("neto_origen",0),r.get("npiezas_origen",0),r.get("familia_productiva",""),r.get("subtipo_productivo",""),r.get("kg_formato",0),r.get("tipo_malla",""),r.get("linea_productiva",""),r.get("activo_produccion",1),r.get("revisar",0),r.get("confianza_autodeteccion",""),r.get("observaciones","")))
+
+    def _on_mapping_row_selected(self, _event=None) -> None:
+        if not self._mapping_tree or not self._mapping_tree.selection(): return
+        vals = self._mapping_tree.item(self._mapping_tree.selection()[0], "values")
+        keys = ["codigo_mconfeccion","nombre_mconfeccion","grupo_origen","neto_origen","npiezas_origen","familia_productiva","subtipo_productivo","kg_formato","tipo_malla","linea_productiva","activo_produccion","revisar","confianza_autodeteccion","observaciones"]
+        for i,k in enumerate(keys): self._mapping_editor_vars[k].set(vals[i])
+
+    def _apply_mapping_row_changes(self) -> None:
+        if not self._mapping_tree or not self._mapping_tree.selection(): return
+        kg = float(self._mapping_editor_vars["kg_formato"].get() or 0)
+        if kg < 0: raise ValueError("Kg formato debe ser >= 0")
+        vals = (self._mapping_editor_vars["codigo_mconfeccion"].get(), self._mapping_editor_vars["nombre_mconfeccion"].get(), self._mapping_editor_vars["grupo_origen"].get(), self._mapping_editor_vars["neto_origen"].get(), self._mapping_editor_vars["npiezas_origen"].get(), self._mapping_editor_vars["familia_productiva"].get(), self._mapping_editor_vars["subtipo_productivo"].get(), kg, self._mapping_editor_vars["tipo_malla"].get(), self._mapping_editor_vars["linea_productiva"].get(), int(self._mapping_editor_vars["activo_produccion"].get()), int(self._mapping_editor_vars["revisar"].get()), self._mapping_editor_vars["confianza_autodeteccion"].get(), self._mapping_editor_vars["observaciones"].get())
+        self._mapping_tree.item(self._mapping_tree.selection()[0], values=vals)
+
+    def _save_packaging_mapping(self) -> None:
+        if not self._mapping_tree: return
+        rows = []
+        for item in self._mapping_tree.get_children():
+            v = self._mapping_tree.item(item, "values")
+            rows.append({"codigo_mconfeccion": v[0], "nombre_mconfeccion": v[1], "grupo_origen": v[2], "neto_origen": v[3], "npiezas_origen": v[4], "familia_productiva": v[5], "subtipo_productivo": v[6], "kg_formato": v[7], "tipo_malla": v[8], "linea_productiva": v[9], "activo_produccion": v[10], "revisar": v[11], "confianza_autodeteccion": v[12], "observaciones": v[13], "requiere_precalibrado": int(self._mapping_editor_vars["requiere_precalibrado"].get()), "compatible_box": int(self._mapping_editor_vars["compatible_box"].get())})
+        self.service.save_packaging_mapping(rows)
+        messagebox.showinfo("Configuración productiva", "Mapeo de confecciones guardado.", parent=self)
+
+    def _autofill_packaging_mapping(self) -> None:
+        overwrite = messagebox.askyesno("Configuración productiva", "¿Sobrescribir también registros ya existentes?")
+        stats = self.service.autofill_packaging_mapping_from_mconfecciones(overwrite)
+        self._load_packaging_mapping_settings(False)
+        messagebox.showinfo("Configuración productiva", f"Autorrelleno completado. Nuevos: {stats['created']}, actualizados: {stats['updated']}", parent=self)
+
+    def _reset_packaging_mapping_autodetect(self) -> None:
+        self.service.reset_packaging_mapping_autodetect()
+        self._load_packaging_mapping_settings(False)
+
+    def _show_packaging_mapping_help(self) -> None:
+        show_tab_help(self, title="Descripción de campos - Mapeo confecciones", intro="Esta pestaña relaciona las confecciones comerciales de MConfecciones con la interpretación productiva que usará el cálculo de capacidad. Permite corregir manualmente casos dudosos, especialmente mallas, subtipo, kg formato y línea productiva.", help_items=[
+            ("Código MConfección", "identificador original de MConfecciones."),
+            ("Grupo origen", "grupo comercial/material original."),
+            ("Familia productiva", "clasificación usada para producción."),
+            ("Subtipo productivo", "detalle operativo como tradicional, clip-to-clip, girsac, granel, caja."),
+            ("Kg formato", "kilos del formato productivo usados para cálculo de rendimiento."),
+            ("Tipo malla", "tipo de malla si aplica."),
+            ("Línea productiva", "línea o máquina principal asociada."),
+            ("Revisar", "marca registros que requieren validación manual."),
+            ("Confianza autodetección", "nivel de seguridad de la clasificación automática."),
+        ])

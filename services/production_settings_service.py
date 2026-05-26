@@ -39,6 +39,14 @@ class ProductionSettingsService:
 
     def reset_packaging_defaults(self) -> None:
         self.repository.reset_packaging_defaults()
+    def autofill_packaging_mapping_from_mconfecciones(self, overwrite: bool = False) -> dict:
+        return self.repository.autofill_packaging_mapping_from_mconfecciones(overwrite)
+    def get_packaging_mapping(self, show_only_review: bool = False) -> list[dict]:
+        return self.repository.get_packaging_mapping(show_only_review)
+    def save_packaging_mapping(self, rows: list[dict]) -> None:
+        self.repository.save_packaging_mapping(rows)
+    def reset_packaging_mapping_autodetect(self) -> None:
+        self.repository.reset_packaging_mapping_autodetect()
 
     def get_lines(self) -> list[dict]:
         return self.repository.get_lines()

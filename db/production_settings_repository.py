@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from datetime import datetime
 import json
+from pathlib import Path
+import re
+import sqlite3
 
+from config import DB_DIR, DB_PEDIDOS
 from db.connection import get_connection
 
 DEFAULT_GENERAL_SETTINGS = {
@@ -601,6 +605,128 @@ class ProductionSettingsRepository:
         self.ensure_packaging_schema()
         with get_connection() as conn:
             conn.execute("DELETE FROM production_packaging_types WHERE id = ?", (packaging_id,))
+
+    def ensure_packaging_mapping_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_packaging_mapping (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    codigo_mconfeccion TEXT NOT NULL UNIQUE,
+                    nombre_mconfeccion TEXT,
+                    descripcion_corta TEXT,
+                    grupo_origen TEXT,
+                    neto_origen REAL,
+                    npiezas_origen REAL,
+                    activa_origen TEXT,
+                    familia_productiva TEXT NOT NULL,
+                    subtipo_productivo TEXT NOT NULL,
+                    kg_formato REAL NOT NULL,
+                    tipo_malla TEXT NOT NULL,
+                    linea_productiva TEXT,
+                    requiere_precalibrado INTEGER NOT NULL,
+                    compatible_box INTEGER NOT NULL,
+                    activo_produccion INTEGER NOT NULL,
+                    confianza_autodeteccion TEXT,
+                    revisar INTEGER NOT NULL,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+
+    def load_mconfecciones_from_dbpedidos(self) -> list[dict]:
+        db_path = Path(DB_DIR) / DB_PEDIDOS
+        if not db_path.exists():
+            return []
+        with sqlite3.connect(db_path.as_posix()) as conn:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute('SELECT CODIGO,NOMBRE,DESCRIPCORTA,NETO,ACTIVA,GRUPO,NPIEZAS FROM MConfecciones').fetchall()
+        return [dict(row) for row in rows]
+
+    def autofill_packaging_mapping_from_mconfecciones(self, overwrite: bool = False) -> dict:
+        self.ensure_packaging_mapping_schema()
+        source_rows = self.load_mconfecciones_from_dbpedidos()
+        existing = {row["codigo_mconfeccion"]: dict(row) for row in self.get_packaging_mapping(False)}
+        created = 0
+        updated = 0
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            for src in source_rows:
+                codigo = str(src.get("CODIGO", "")).strip()
+                if not codigo:
+                    continue
+                payload = self._build_mapping_row(src)
+                payload["updated_at"] = now
+                if codigo not in existing:
+                    created += 1
+                    conn.execute("""INSERT INTO production_packaging_mapping (
+                        codigo_mconfeccion,nombre_mconfeccion,descripcion_corta,grupo_origen,neto_origen,npiezas_origen,activa_origen,familia_productiva,subtipo_productivo,kg_formato,tipo_malla,linea_productiva,requiere_precalibrado,compatible_box,activo_produccion,confianza_autodeteccion,revisar,observaciones,updated_at
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", tuple(payload[k] for k in payload))
+                elif overwrite:
+                    updated += 1
+                    conn.execute("""UPDATE production_packaging_mapping SET
+                        nombre_mconfeccion=?,descripcion_corta=?,grupo_origen=?,neto_origen=?,npiezas_origen=?,activa_origen=?,familia_productiva=?,subtipo_productivo=?,kg_formato=?,tipo_malla=?,linea_productiva=?,requiere_precalibrado=?,compatible_box=?,activo_produccion=?,confianza_autodeteccion=?,revisar=?,observaciones=?,updated_at=?
+                        WHERE codigo_mconfeccion=?""",
+                        tuple(payload[k] for k in payload if k != "codigo_mconfeccion") + (codigo,))
+        return {"source_total": len(source_rows), "created": created, "updated": updated}
+
+    def get_packaging_mapping(self, show_only_review: bool = False) -> list[dict]:
+        self.ensure_packaging_mapping_schema()
+        sql = "SELECT * FROM production_packaging_mapping"
+        if show_only_review:
+            sql += " WHERE revisar = 1"
+        sql += " ORDER BY codigo_mconfeccion"
+        with get_connection() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_packaging_mapping(self, rows: list[dict]) -> None:
+        self.ensure_packaging_mapping_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            for row in rows:
+                conn.execute("""INSERT INTO production_packaging_mapping (
+                    codigo_mconfeccion,nombre_mconfeccion,descripcion_corta,grupo_origen,neto_origen,npiezas_origen,activa_origen,familia_productiva,subtipo_productivo,kg_formato,tipo_malla,linea_productiva,requiere_precalibrado,compatible_box,activo_produccion,confianza_autodeteccion,revisar,observaciones,updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(codigo_mconfeccion) DO UPDATE SET
+                    nombre_mconfeccion=excluded.nombre_mconfeccion,descripcion_corta=excluded.descripcion_corta,grupo_origen=excluded.grupo_origen,neto_origen=excluded.neto_origen,npiezas_origen=excluded.npiezas_origen,activa_origen=excluded.activa_origen,familia_productiva=excluded.familia_productiva,subtipo_productivo=excluded.subtipo_productivo,kg_formato=excluded.kg_formato,tipo_malla=excluded.tipo_malla,linea_productiva=excluded.linea_productiva,requiere_precalibrado=excluded.requiere_precalibrado,compatible_box=excluded.compatible_box,activo_produccion=excluded.activo_produccion,confianza_autodeteccion=excluded.confianza_autodeteccion,revisar=excluded.revisar,observaciones=excluded.observaciones,updated_at=excluded.updated_at""",
+                (row["codigo_mconfeccion"], row.get("nombre_mconfeccion", ""), row.get("descripcion_corta", ""), row.get("grupo_origen", ""), float(row.get("neto_origen", 0) or 0), float(row.get("npiezas_origen", 0) or 0), row.get("activa_origen", ""), row["familia_productiva"], row["subtipo_productivo"], float(row.get("kg_formato", 0) or 0), row["tipo_malla"], row.get("linea_productiva", ""), int(row.get("requiere_precalibrado", 0)), int(row.get("compatible_box", 0)), int(row.get("activo_produccion", 1)), row.get("confianza_autodeteccion", "Media"), int(row.get("revisar", 0)), row.get("observaciones", ""), now))
+
+    def reset_packaging_mapping_autodetect(self) -> None:
+        self.autofill_packaging_mapping_from_mconfecciones(overwrite=True)
+
+    def _build_mapping_row(self, src: dict) -> dict:
+        grupo = str(src.get("GRUPO") or "")
+        nombre = str(src.get("NOMBRE") or "")
+        desc = str(src.get("DESCRIPCORTA") or "")
+        texto = f"{nombre} {desc} {grupo}".upper()
+        familia = "Otro"
+        if "ENCAJADO" in grupo.upper() or "ALVEOLOS" in grupo.upper(): familia = "Encajado"
+        elif "GRANEL" in grupo.upper(): familia = "Granel"
+        elif "MALLA" in grupo.upper() or "MALLAS" in grupo.upper(): familia = "Malla"
+        subtipo = "Otro"
+        if "GIRS" in texto: subtipo = "Girsac"
+        elif "FLOW" in texto: subtipo = "Flowpack"
+        elif "CLIP" in texto: subtipo = "Clip-to-clip"
+        elif "GRANEL" in texto: subtipo = "Granel"
+        elif "ENCAJADO" in texto: subtipo = "Caja"
+        elif "ALV" in texto: subtipo = "Alvéolo"
+        elif familia == "Malla": subtipo = "Tradicional"
+        kg = float(src.get("NETO") or 0)
+        npiezas = float(src.get("NPIEZAS") or 0)
+        match = re.search(r"(\d+(?:[.,]\d+)?)\s*KG", texto)
+        if match: kg = float(match.group(1).replace(",", "."))
+        elif familia == "Malla" and npiezas > 0 and kg > 0: kg = kg / npiezas
+        elif familia not in ("Encajado", "Granel"): kg = 0.0
+        revisar = 1 if kg == 0 or subtipo == "Otro" or familia == "Otro" else 0
+        tipo_malla = "No aplica" if familia != "Malla" else ("Tradicional" if subtipo == "Tradicional" else subtipo if subtipo in ("Girsac", "Clip-to-clip", "Flowpack") else "Tradicional")
+        linea = {"Tradicional": "MALLAS_TRADICIONAL", "Clip-to-clip": "MALLAS_CLIP", "Girsac": "MALLAS_GIRSAC"}.get(subtipo, "ENCAJADO" if familia == "Encajado" else "GRANEL_MANUAL" if familia == "Granel" else "GRANELERA" if familia == "Granelera" else "OTRO")
+        activa = str(src.get("ACTIVA") or "").upper()
+        activo_produccion = 1 if activa not in ("N",) else 0
+        if activa not in ("S", "N"): revisar = 1
+        confianza = "Alta" if revisar == 0 else ("Media" if familia != "Otro" else "Baja")
+        return {"codigo_mconfeccion": str(src.get("CODIGO", "")).strip(), "nombre_mconfeccion": nombre, "descripcion_corta": desc, "grupo_origen": grupo, "neto_origen": float(src.get("NETO") or 0), "npiezas_origen": npiezas, "activa_origen": src.get("ACTIVA", ""), "familia_productiva": familia, "subtipo_productivo": subtipo, "kg_formato": kg, "tipo_malla": tipo_malla, "linea_productiva": linea, "requiere_precalibrado": 1 if "PRECALIBRADO" in texto else 0, "compatible_box": 1 if ("BOX" in texto or familia in ("Granel", "Granelera")) else 0, "activo_produccion": activo_produccion, "confianza_autodeteccion": confianza, "revisar": revisar, "observaciones": ""}
 
 
     def ensure_performance_schema(self) -> None:
