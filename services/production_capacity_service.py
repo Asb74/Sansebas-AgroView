@@ -23,6 +23,7 @@ class ProductionCapacityService:
             "pedidos_reales": pedidos_reales,
             "pedidos_previstos": pedidos_previstos,
             "packaging_mapping": self.prod_repo.get_packaging_mapping(False),
+            "base_packaging": self.prod_repo.get_base_packaging(active_only=True),
             "performance_rules": self.prod_repo.get_performance_rules(),
             "caliber_factors": self.prod_repo.get_caliber_performance_factors(),
             "personnel": self.prod_repo.get_staff_summary(),
@@ -47,13 +48,23 @@ class ProductionCapacityService:
         factor_index = self._factor_map(inputs["caliber_factors"])
         out: list[dict] = []
         incidencias: list[dict] = []
+        base_packaging = {str(r.get("codigo", "")).strip(): r for r in inputs.get("base_packaging", [])}
         for tipo, rows in (("Real", pedidos_reales), ("Previsto", pedidos_previstos)):
             for order in rows:
                 kg = float(order.get("Kg pendiente", order.get("kg_estimados", 0)) or 0)
                 if kg <= 0:
                     continue
-                conf = str(order.get("IdConfeccion", order.get("id_confeccion", ""))).strip()
-                m = mapping.get(conf)
+                m = None
+                if tipo == "Previsto":
+                    codigo_base = str(order.get("codigo_base_packaging", "")).strip()
+                    if codigo_base:
+                        m = base_packaging.get(codigo_base)
+                        if not m:
+                            incidencias.append(self._inc("Confección base inexistente", order, f"No existe confección base {codigo_base}", "Revisar pedido previsto o maestro"))
+                            continue
+                if m is None:
+                    conf = str(order.get("IdConfeccion", order.get("id_confeccion", ""))).strip()
+                    m = mapping.get(conf)
                 if not m:
                     incidencias.append(self._inc("Sin mapeo productivo", order, "No existe production_packaging_mapping", "Crear/revisar mapeo"))
                     continue

@@ -49,6 +49,25 @@ DEFAULT_PACKAGING_TYPES = [
 
 
 
+
+DEFAULT_BASE_PACKAGING = [
+    {"codigo": "MALLA_1KG_TRAD", "descripcion": "Malla 1 kg tradicional", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Tradicional", "kg_formato": 1.0, "tipo_malla": "Tradicional", "linea_productiva": "MALLAS_TRADICIONAL", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_2KG_TRAD", "descripcion": "Malla 2 kg tradicional", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Tradicional", "kg_formato": 2.0, "tipo_malla": "Tradicional", "linea_productiva": "MALLAS_TRADICIONAL", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_2KG_GIRSAC", "descripcion": "Malla 2 kg girsac", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Girsac", "kg_formato": 2.0, "tipo_malla": "Girsac", "linea_productiva": "MALLAS_GIRSAC", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_2KG_CLIP", "descripcion": "Malla 2 kg clip-to-clip", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Clip-to-clip", "kg_formato": 2.0, "tipo_malla": "Clip-to-clip", "linea_productiva": "MALLAS_CLIP", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_3KG_GIRSAC", "descripcion": "Malla 3 kg girsac", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Girsac", "kg_formato": 3.0, "tipo_malla": "Girsac", "linea_productiva": "MALLAS_GIRSAC", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_4KG_TRAD", "descripcion": "Malla 4 kg tradicional", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Tradicional", "kg_formato": 4.0, "tipo_malla": "Tradicional", "linea_productiva": "MALLAS_TRADICIONAL", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "ENCAJADO_5KG", "descripcion": "Encajado 5 kg", "grupo_confeccion": "ENCAJADO", "perfil_confeccion": "EXIGENTE", "familia_productiva": "Encajado", "subtipo_productivo": "Caja", "kg_formato": 5.0, "tipo_malla": "No aplica", "linea_productiva": "ENCAJADO", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "ENCAJADO_10KG", "descripcion": "Encajado 10 kg", "grupo_confeccion": "ENCAJADO", "perfil_confeccion": "EXIGENTE", "familia_productiva": "Encajado", "subtipo_productivo": "Caja", "kg_formato": 10.0, "tipo_malla": "No aplica", "linea_productiva": "ENCAJADO", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "ENCAJADO_15KG", "descripcion": "Encajado 15 kg", "grupo_confeccion": "ENCAJADO", "perfil_confeccion": "EXIGENTE", "familia_productiva": "Encajado", "subtipo_productivo": "Caja", "kg_formato": 15.0, "tipo_malla": "No aplica", "linea_productiva": "ENCAJADO", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "ENCAJADO_20KG", "descripcion": "Encajado 20 kg", "grupo_confeccion": "ENCAJADO", "perfil_confeccion": "EXIGENTE", "familia_productiva": "Encajado", "subtipo_productivo": "Caja", "kg_formato": 20.0, "tipo_malla": "No aplica", "linea_productiva": "ENCAJADO", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "ALVEOLO_4KG", "descripcion": "Alvéolo 4 kg", "grupo_confeccion": "ALVEOLOS", "perfil_confeccion": "EXIGENTE", "familia_productiva": "Encajado", "subtipo_productivo": "Alvéolo", "kg_formato": 4.0, "tipo_malla": "No aplica", "linea_productiva": "ENCAJADO", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "ALVEOLO_8KG", "descripcion": "Alvéolo 8 kg", "grupo_confeccion": "ALVEOLOS", "perfil_confeccion": "EXIGENTE", "familia_productiva": "Encajado", "subtipo_productivo": "Alvéolo", "kg_formato": 8.0, "tipo_malla": "No aplica", "linea_productiva": "ENCAJADO", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "GRANEL_10KG", "descripcion": "Granel 10 kg", "grupo_confeccion": "GRANEL", "perfil_confeccion": "EXIGENTE", "familia_productiva": "Granel", "subtipo_productivo": "Granel", "kg_formato": 10.0, "tipo_malla": "No aplica", "linea_productiva": "GRANEL_MANUAL", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "GRANEL_15KG", "descripcion": "Granel 15 kg", "grupo_confeccion": "GRANEL", "perfil_confeccion": "EXIGENTE", "familia_productiva": "Granel", "subtipo_productivo": "Granel", "kg_formato": 15.0, "tipo_malla": "No aplica", "linea_productiva": "GRANEL_MANUAL", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "GRANELERA", "descripcion": "Granelera", "grupo_confeccion": "GRANELERA", "perfil_confeccion": "EXIGENTE", "familia_productiva": "Granelera", "subtipo_productivo": "Granelera", "kg_formato": 0.0, "tipo_malla": "No aplica", "linea_productiva": "GRANELERA", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+]
+
 DEFAULT_PRODUCTION_LINES = [
     {"codigo": "VOLCADO_COMPACTA", "nombre": "Compacta", "tipo_linea": "Volcado", "familia_principal": "Entrada fruta", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 14000.0, "personal_minimo": 4, "personal_optimo": 5, "permite_precalibrado": 1, "permite_box": 1, "observaciones": "Volcado base de campaña con alimentación por BOX opcional."},
     {"codigo": "VOLCADO_INVIERNO", "nombre": "Línea invierno", "tipo_linea": "Volcado", "familia_principal": "Entrada fruta", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 12000.0, "personal_minimo": 3, "personal_optimo": 4, "permite_precalibrado": 1, "permite_box": 1, "observaciones": "Apoyo habitual en días de carga media/alta."},
@@ -155,6 +174,7 @@ class ProductionSettingsRepository:
         self.ensure_staff_defaults()
         self.ensure_lines_defaults()
         self.ensure_packaging_defaults()
+        self.ensure_base_packaging_defaults()
         self.ensure_performance_defaults()
         self.ensure_penalties_defaults()
         self.ensure_semaphore_defaults()
@@ -571,6 +591,7 @@ class ProductionSettingsRepository:
 
     def get_packaging_types(self) -> list[dict]:
         self.ensure_packaging_defaults()
+        self.ensure_base_packaging_defaults()
         self.ensure_performance_defaults()
         with get_connection() as conn:
             rows = conn.execute("SELECT * FROM production_packaging_types ORDER BY id").fetchall()
@@ -600,6 +621,73 @@ class ProductionSettingsRepository:
 
     def reset_packaging_defaults(self) -> None:
         self.save_packaging_types(DEFAULT_PACKAGING_TYPES)
+
+    def ensure_base_packaging_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_base_packaging (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    codigo TEXT NOT NULL UNIQUE,
+                    descripcion TEXT NOT NULL,
+                    grupo_confeccion TEXT NOT NULL,
+                    perfil_confeccion TEXT NOT NULL,
+                    familia_productiva TEXT NOT NULL,
+                    subtipo_productivo TEXT NOT NULL,
+                    kg_formato REAL NOT NULL,
+                    tipo_malla TEXT NOT NULL,
+                    linea_productiva TEXT NOT NULL,
+                    requiere_precalibrado INTEGER NOT NULL,
+                    compatible_box INTEGER NOT NULL,
+                    activo INTEGER NOT NULL,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+
+    def ensure_base_packaging_defaults(self) -> None:
+        self.ensure_base_packaging_schema()
+        with get_connection() as conn:
+            existing = conn.execute("SELECT COUNT(*) AS n FROM production_base_packaging").fetchone()["n"]
+            if existing == 0:
+                self.save_base_packaging(DEFAULT_BASE_PACKAGING)
+
+    def get_base_packaging(self, active_only: bool = False) -> list[dict]:
+        self.ensure_base_packaging_defaults()
+        sql = "SELECT * FROM production_base_packaging"
+        if active_only:
+            sql += " WHERE activo = 1"
+        sql += " ORDER BY id"
+        with get_connection() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_base_packaging(self, rows: list[dict]) -> None:
+        self.ensure_base_packaging_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_base_packaging")
+            conn.executemany(
+                """
+                INSERT INTO production_base_packaging (
+                    codigo, descripcion, grupo_confeccion, perfil_confeccion,
+                    familia_productiva, subtipo_productivo, kg_formato, tipo_malla,
+                    linea_productiva, requiere_precalibrado, compatible_box,
+                    activo, observaciones, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [(
+                    row["codigo"], row["descripcion"], row["grupo_confeccion"], row["perfil_confeccion"],
+                    row["familia_productiva"], row["subtipo_productivo"], float(row["kg_formato"]), row["tipo_malla"],
+                    row["linea_productiva"], int(row.get("requiere_precalibrado", 0)), int(row.get("compatible_box", 0)),
+                    int(row.get("activo", 1)), row.get("observaciones", ""), now,
+                ) for row in rows]
+            )
+
+    def reset_base_packaging_defaults(self) -> None:
+        self.save_base_packaging(DEFAULT_BASE_PACKAGING)
 
     def delete_packaging_type(self, packaging_id: int) -> None:
         self.ensure_packaging_schema()

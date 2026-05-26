@@ -11,6 +11,7 @@ import unicodedata
 
 from services.operational_quality_service import OperationalQualityService
 from services.planning_service import PlanningService
+from services.production_settings_service import ProductionSettingsService
 from db.planning_repository import PlanningRepository
 from widgets.data_table import DataTable
 from widgets.date_picker import DatePickerPopup
@@ -69,6 +70,7 @@ PRIORIDADES_PEDIDOS_PATH = Path("runtime_config/prioridades_pedidos.json")
 COMPATIBILIDADES_OPERATIVAS_PATH = Path("runtime_config/compatibilidades_operativas.json")
 PEDIDOS_PREVISTOS_PATH = Path("runtime_config/pedidos_previstos.json")
 _planning_service = PlanningService()
+_production_settings_service = ProductionSettingsService()
 SIMULACION_PERMITIR_SOLAPE_PARCIAL = True
 SIMULACION_USAR_FACTOR_CALIBRE_AGRUPADO = True
 SIMULACION_USAR_STOCK_COMPLETO_CALIBRE_ADMITIDO = False
@@ -2798,6 +2800,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         "grupo_varietal": [],
     }
     variedad_meta = dict(catalogos_previstos.get("variedad_meta", {}))
+    base_packaging_rows = _production_settings_service.get_base_packaging(active_only=True)
+    base_packaging_by_desc = {str(r.get("descripcion", "")).strip(): r for r in base_packaging_rows if str(r.get("descripcion", "")).strip()}
+    base_packaging_by_code = {str(r.get("codigo", "")).strip(): r for r in base_packaging_rows if str(r.get("codigo", "")).strip()}
 
     form_previstos = ttk.LabelFrame(previstos_tab, text="Pedido previsto")
     form_previstos.pack(fill="x", pady=(0, 6))
@@ -2811,6 +2816,8 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         "categoria": tk.StringVar(),
         "grupo_confeccion": tk.StringVar(),
         "perfil_confeccion": tk.StringVar(),
+        "confeccion_prevista": tk.StringVar(),
+        "codigo_base_packaging": tk.StringVar(),
         "kg_estimados": tk.StringVar(),
         "palets_estimados": tk.StringVar(),
         "estado": tk.StringVar(value="BORRADOR"),
@@ -2829,6 +2836,8 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         c = 3 * (idx % 3)
         ttk.Label(form_previstos, text=lbl).grid(row=r, column=c + 3, sticky="w", padx=6, pady=2)
         ttk.Combobox(form_previstos, textvariable=form_vars[key], values=list(valores_base[key]), width=22).grid(row=r, column=c + 4, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Confección prevista").grid(row=2, column=0, sticky="w", padx=6, pady=2)
+    ttk.Combobox(form_previstos, textvariable=form_vars["confeccion_prevista"], values=sorted(base_packaging_by_desc.keys()), width=30).grid(row=2, column=1, columnspan=2, sticky="w", padx=6, pady=2)
     ttk.Label(form_previstos, text="Grupo varietal").grid(row=3, column=0, sticky="w", padx=6, pady=2)
     ttk.Entry(form_previstos, textvariable=form_vars["grupo_varietal"], state="readonly", width=22).grid(row=3, column=1, sticky="w", padx=6, pady=2)
     ttk.Label(form_previstos, text="Perfil confección").grid(row=3, column=3, sticky="w", padx=6, pady=2)
@@ -2844,7 +2853,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
 
     prev_buttons = ttk.Frame(form_previstos)
     prev_buttons.grid(row=5, column=0, columnspan=7, sticky="w", padx=6, pady=(4, 6))
-    prev_cols = ["Estado", "Fecha salida", "Cliente", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg estimados", "Palets estimados", "Observaciones"]
+    prev_cols = ["Estado", "Fecha salida", "Cliente", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Confección prevista", "Grupo confección", "Perfil confección", "Kg estimados", "Palets estimados", "Observaciones"]
     prev_tbl = DataTable(previstos_tab, prev_cols)
     prev_tbl.pack(fill="both", expand=True)
     prev_tbl.tree.tag_configure("estado_borrador", background="#EEF1F4")
@@ -2911,6 +2920,19 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             messagebox.showerror("Pedidos previstos", "Campos obligatorios: Fecha salida, Variedad, Calibre, Grupo confección y Kg estimados > 0.")
             return
         rec = {k: v.get().strip() for k, v in form_vars.items()}
+        base_sel = base_packaging_by_desc.get(rec.get("confeccion_prevista", "")) or base_packaging_by_code.get(rec.get("codigo_base_packaging", ""))
+        if base_sel:
+            rec["codigo_base_packaging"] = str(base_sel.get("codigo", "")).strip()
+            rec["descripcion_base_packaging"] = str(base_sel.get("descripcion", "")).strip()
+            rec["kg_formato"] = float(base_sel.get("kg_formato", 0) or 0)
+            rec["familia_productiva"] = str(base_sel.get("familia_productiva", "")).strip()
+            rec["subtipo_productivo"] = str(base_sel.get("subtipo_productivo", "")).strip()
+            rec["tipo_malla"] = str(base_sel.get("tipo_malla", "")).strip()
+            rec["linea_productiva"] = str(base_sel.get("linea_productiva", "")).strip()
+            if not rec.get("grupo_confeccion"):
+                rec["grupo_confeccion"] = str(base_sel.get("grupo_confeccion", "")).strip()
+            if not rec.get("perfil_confeccion"):
+                rec["perfil_confeccion"] = str(base_sel.get("perfil_confeccion", "")).strip()
         rec["kg_estimados"] = kg_estimados
         rec["palets_estimados"] = palets_estimados
         if editing_index["value"] is None:
