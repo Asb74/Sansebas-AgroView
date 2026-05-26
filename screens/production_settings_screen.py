@@ -10,7 +10,7 @@ from services.production_settings_service import ProductionSettingsService
 from utils.master_excel_io import export_master_to_excel, import_master_from_excel
 from utils.help_dialog import show_tab_help
 from utils.production_master_excel_configs import PRODUCTION_MASTER_EXCEL_CONFIGS
-from utils.production_help_texts import PRODUCTION_CALIBER_FACTORS_HELP, PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PENALTIES_HELP, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERSONAL_HELP, PRODUCTION_SEMAPHORE_HELP
+from utils.production_help_texts import PRODUCTION_CALIBER_FACTORS_HELP, PRODUCTION_CALIBER_FACTORS_HELP_KEYS, PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_LINES_HELP_KEYS, PRODUCTION_PACKAGING_HELP, PRODUCTION_PACKAGING_HELP_KEYS, PRODUCTION_PACKAGING_MAPPING_HELP, PRODUCTION_PACKAGING_MAPPING_HELP_KEYS, PRODUCTION_PENALTIES_HELP, PRODUCTION_PENALTIES_HELP_KEYS, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERFORMANCE_HELP_KEYS, PRODUCTION_PERSONAL_HELP, PRODUCTION_PERSONAL_HELP_KEYS, PRODUCTION_SEMAPHORE_HELP, PRODUCTION_SEMAPHORE_HELP_KEYS, get_help_items
 from widgets.screen_header import ScreenHeader
 
 
@@ -301,8 +301,7 @@ class ProductionSettingsScreen(ttk.Frame):
         show_tab_help(self, title="Descripción de campos - General del día", intro="Esta pestaña define los parámetros básicos de trabajo que se usarán para calcular la capacidad productiva diaria del almacén.", help_items=[PRODUCTION_FIELD_HELP[k] for k in keys if k in PRODUCTION_FIELD_HELP])
 
     def _show_personal_help(self) -> None:
-        keys = ["personal_total", "personal_directo", "personal_indirecto", "horas_por_persona", "ausencias_previstas", "area", "tipo_personal", "disponible", "minimo_operativo", "optimo", "activo", "observaciones"]
-        show_tab_help(self, title="Descripción de campos - Personal", intro="Esta pestaña define la plantilla disponible y los mínimos operativos por área de trabajo. Estos datos se usarán posteriormente para estimar si los pedidos previstos pueden producirse con el personal disponible.", help_items=[PRODUCTION_PERSONAL_HELP[k] for k in keys if k in PRODUCTION_PERSONAL_HELP])
+        show_tab_help(self, title="Descripción de campos - Personal", intro="Esta pestaña define la plantilla disponible y los mínimos operativos por área de trabajo. Estos datos se usarán posteriormente para estimar si los pedidos previstos pueden producirse con el personal disponible.", help_items=get_help_items(PRODUCTION_PERSONAL_HELP_KEYS, PRODUCTION_PERSONAL_HELP))
 
     def _load_general_settings(self) -> None:
         data = self.service.get_general_settings()
@@ -443,12 +442,10 @@ class ProductionSettingsScreen(ttk.Frame):
 
 
     def _show_packaging_help(self) -> None:
-        keys = ["codigo", "descripcion", "familia", "subtipo", "kg_formato", "material", "tipo_malla", "requiere_precalibrado", "compatible_box", "activo", "observaciones"]
-        show_tab_help(self, title="Descripción de campos - Confecciones", intro="Esta pestaña define el catálogo de confecciones que podrá usar la planificación productiva. Cada confección representa una forma concreta de preparar la fruta: malla, encajado, granel, granelera u otros formatos.", help_items=[PRODUCTION_PACKAGING_HELP[k] for k in keys if k in PRODUCTION_PACKAGING_HELP])
+        show_tab_help(self, title="Descripción de campos - Confecciones", intro="Esta pestaña define el catálogo de confecciones que podrá usar la planificación productiva. Cada confección representa una forma concreta de preparar la fruta: malla, encajado, granel, granelera u otros formatos.", help_items=get_help_items(PRODUCTION_PACKAGING_HELP_KEYS, PRODUCTION_PACKAGING_HELP))
 
     def _show_lines_help(self) -> None:
-        keys = ["codigo", "nombre", "tipo_linea", "familia_principal", "numero_maquinas", "activa", "capacidad_kg_h_referencia", "personal_minimo", "personal_optimo", "permite_precalibrado", "permite_box", "observaciones"]
-        show_tab_help(self, title="Descripción de campos - Máquinas / líneas", intro="Esta pestaña define los recursos físicos y operativos disponibles en el almacén: líneas de volcado, máquinas de malla, encajado, granelera, calibrador y puntos de apoyo.", help_items=[PRODUCTION_LINES_HELP[k] for k in keys if k in PRODUCTION_LINES_HELP])
+        show_tab_help(self, title="Descripción de campos - Máquinas / líneas", intro="Esta pestaña define los recursos físicos y operativos disponibles en el almacén: líneas de volcado, máquinas de malla, encajado, granelera, calibrador y puntos de apoyo.", help_items=get_help_items(PRODUCTION_LINES_HELP_KEYS, PRODUCTION_LINES_HELP))
 
     def _load_lines_settings(self) -> None:
         self._refresh_lines_tree(self.service.get_lines())
@@ -676,8 +673,7 @@ class ProductionSettingsScreen(ttk.Frame):
         ttk.Button(btns,text="Eliminar rendimiento seleccionado",command=self._delete_performance_row).pack(side="left",padx=4)
 
     def _show_performance_help(self) -> None:
-        keys=["codigo","familia","confeccion_formato","tipo_linea","condicion","oph_referencia","oph_minimo","oph_optimo","kg_h_referencia","factor_precalibrado","factor_destrio_alto","dificultad","activo","observaciones"]
-        show_tab_help(self, title="Descripción de campos - Rendimientos", intro="Esta pestaña define los rendimientos productivos de referencia que se usarán posteriormente para estimar horas necesarias, capacidad diaria y plantilla recomendada.", help_items=[PRODUCTION_PERFORMANCE_HELP[k] for k in keys if k in PRODUCTION_PERFORMANCE_HELP])
+        show_tab_help(self, title="Descripción de campos - Rendimientos", intro="Esta pestaña define los rendimientos productivos de referencia que se usarán posteriormente para estimar horas necesarias, capacidad diaria y plantilla recomendada.", help_items=get_help_items(PRODUCTION_PERFORMANCE_HELP_KEYS, PRODUCTION_PERFORMANCE_HELP))
 
 
     def _load_performance_settings(self) -> None:
@@ -780,8 +776,7 @@ class ProductionSettingsScreen(ttk.Frame):
         ttk.Button(btns,text="Eliminar penalización seleccionada",command=self._delete_penalty_row).pack(side="left",padx=4)
 
     def _show_penalties_help(self) -> None:
-        keys=["codigo","tipo_penalizacion","ambito","minutos_perdida","factor_rendimiento","aplica_por","umbral","activa","observaciones"]
-        show_tab_help(self, title="Descripción de campos - Penalizaciones", intro="Esta pestaña define pérdidas de tiempo y ajustes de rendimiento asociados a cambios, paradas o fragmentación del trabajo. Estas reglas permitirán estimar una capacidad más realista que el simple cálculo por kilos u OPH.", help_items=[PRODUCTION_PENALTIES_HELP[k] for k in keys if k in PRODUCTION_PENALTIES_HELP])
+        show_tab_help(self, title="Descripción de campos - Penalizaciones", intro="Esta pestaña define pérdidas de tiempo y ajustes de rendimiento asociados a cambios, paradas o fragmentación del trabajo. Estas reglas permitirán estimar una capacidad más realista que el simple cálculo por kilos u OPH.", help_items=get_help_items(PRODUCTION_PENALTIES_HELP_KEYS, PRODUCTION_PENALTIES_HELP))
 
     def _load_penalty_settings(self) -> None:
         self._refresh_penalties_tree(self.service.get_penalty_rules())
@@ -881,8 +876,7 @@ class ProductionSettingsScreen(ttk.Frame):
         ttk.Button(btns,text="Eliminar regla seleccionada",command=self._delete_semaphore_row).pack(side="left",padx=4)
 
     def _show_semaphore_help(self) -> None:
-        keys=["codigo","tipo_regla","ambito","metrica","operador","umbral_amarillo","umbral_rojo","accion_sugerida","activa","observaciones"]
-        show_tab_help(self, title="Descripción de campos - Reglas / semáforo", intro="Esta pestaña define los criterios que permitirán convertir los cálculos de producción en alertas claras: verde, amarillo o rojo. Las reglas no calculan por sí solas, pero indican cuándo una situación debe considerarse normal, en riesgo o crítica.", help_items=[PRODUCTION_SEMAPHORE_HELP[k] for k in keys if k in PRODUCTION_SEMAPHORE_HELP])
+        show_tab_help(self, title="Descripción de campos - Reglas / semáforo", intro="Esta pestaña define los criterios que permitirán convertir los cálculos de producción en alertas claras: verde, amarillo o rojo. Las reglas no calculan por sí solas, pero indican cuándo una situación debe considerarse normal, en riesgo o crítica.", help_items=get_help_items(PRODUCTION_SEMAPHORE_HELP_KEYS, PRODUCTION_SEMAPHORE_HELP))
 
     def _load_semaphore_settings(self) -> None:
         self._refresh_semaphore_tree(self.service.get_semaphore_rules())
@@ -972,8 +966,7 @@ class ProductionSettingsScreen(ttk.Frame):
         ttk.Button(btns,text="Eliminar factor seleccionado",command=self._delete_caliber_factor_row).pack(side="left",padx=4)
 
     def _show_caliber_factors_help(self) -> None:
-        keys=["codigo","confeccion_familia","grupo_calibre","calibres_incluidos","factor_rendimiento","aplica_a","activo","observaciones"]
-        show_tab_help(self, title="Descripción de campos - Factores calibre", intro="Esta pestaña permite ajustar el rendimiento productivo según el calibre y la confección. El efecto del calibre no es igual en mallas, encajado o granel, por eso estas reglas son configurables.", help_items=[PRODUCTION_CALIBER_FACTORS_HELP[k] for k in keys if k in PRODUCTION_CALIBER_FACTORS_HELP])
+        show_tab_help(self, title="Descripción de campos - Factores calibre", intro="Esta pestaña permite ajustar el rendimiento productivo según el calibre y la confección. El efecto del calibre no es igual en mallas, encajado o granel, por eso estas reglas son configurables.", help_items=get_help_items(PRODUCTION_CALIBER_FACTORS_HELP_KEYS, PRODUCTION_CALIBER_FACTORS_HELP))
 
     def _load_caliber_factors_settings(self) -> None:
         if not self._caliber_tree: return
@@ -1157,6 +1150,12 @@ class ProductionSettingsScreen(ttk.Frame):
     def _export_master_excel(self, master_key: str, rows_loader) -> None:
         config = PRODUCTION_MASTER_EXCEL_CONFIGS[master_key]
         rows_data = rows_loader()
+        help_items = self._get_master_help_items(master_key)
+        if not isinstance(rows_data, dict):
+            out_path = export_master_to_excel(rows=rows_data, config=config, help_items=help_items)
+            if out_path:
+                messagebox.showinfo("Configuración productiva", f"Excel exportado en:\n{out_path}", parent=self)
+            return
         target = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile=config.get("default_filename", "maestro.xlsx"), filetypes=[("Excel", "*.xlsx")])
         if not target:
             return
@@ -1248,22 +1247,25 @@ class ProductionSettingsScreen(ttk.Frame):
             if str(row.get("kg_formato",0)) and float(row.get("kg_formato",0)) < 0: errors.append(f"Fila {i}: kg_formato debe ser >= 0")
         return errors
     def _show_packaging_mapping_help(self) -> None:
-        show_tab_help(self, title="Descripción de campos - Mapeo confecciones", intro="Esta pestaña relaciona las confecciones comerciales de MConfecciones con la interpretación productiva que usará el cálculo de capacidad. Permite corregir manualmente casos dudosos, especialmente mallas, subtipo, kg formato y línea productiva.", help_items=[
-            ("Código MConfección", "identificador original de MConfecciones."),
-            ("Grupo origen", "grupo comercial/material original."),
-            ("Familia productiva", "clasificación usada para producción."),
-            ("Subtipo productivo", "detalle operativo como tradicional, clip-to-clip, girsac, granel, caja."),
-            ("Kg formato", "kilos del formato productivo usados para cálculo de rendimiento."),
-            ("Tipo malla", "tipo de malla si aplica."),
-            ("Línea productiva", "línea o máquina principal asociada."),
-            ("Revisar", "marca registros que requieren validación manual."),
-            ("Confianza autodetección", "nivel de seguridad de la clasificación automática."),
-        ])
+        show_tab_help(self, title="Descripción de campos - Mapeo confecciones", intro="Esta pestaña relaciona las confecciones comerciales de MConfecciones con la interpretación productiva que usará el cálculo de capacidad. Permite corregir manualmente casos dudosos, especialmente mallas, subtipo, kg formato y línea productiva.", help_items=get_help_items(PRODUCTION_PACKAGING_MAPPING_HELP_KEYS, PRODUCTION_PACKAGING_MAPPING_HELP))
+
+    def _get_master_help_items(self, master_key: str) -> list[dict]:
+        by_key = {
+            "personal": get_help_items(PRODUCTION_PERSONAL_HELP_KEYS, PRODUCTION_PERSONAL_HELP),
+            "packaging_types": get_help_items(PRODUCTION_PACKAGING_HELP_KEYS, PRODUCTION_PACKAGING_HELP),
+            "packaging_mapping": get_help_items(PRODUCTION_PACKAGING_MAPPING_HELP_KEYS, PRODUCTION_PACKAGING_MAPPING_HELP),
+            "lines": get_help_items(PRODUCTION_LINES_HELP_KEYS, PRODUCTION_LINES_HELP),
+            "performance_rules": get_help_items(PRODUCTION_PERFORMANCE_HELP_KEYS, PRODUCTION_PERFORMANCE_HELP),
+            "penalty_rules": get_help_items(PRODUCTION_PENALTIES_HELP_KEYS, PRODUCTION_PENALTIES_HELP),
+            "semaphore_rules": get_help_items(PRODUCTION_SEMAPHORE_HELP_KEYS, PRODUCTION_SEMAPHORE_HELP),
+            "caliber_factors": get_help_items(PRODUCTION_CALIBER_FACTORS_HELP_KEYS, PRODUCTION_CALIBER_FACTORS_HELP),
+        }
+        return by_key.get(master_key, [])
 
     def _export_packaging_mapping_to_excel(self) -> None:
         try:
             rows = self.service.get_packaging_mapping(False)
-            out_path = export_master_to_excel(rows=rows, config=PRODUCTION_MASTER_EXCEL_CONFIGS["packaging_mapping"])
+            out_path = export_master_to_excel(rows=rows, config=PRODUCTION_MASTER_EXCEL_CONFIGS["packaging_mapping"], help_items=self._get_master_help_items("packaging_mapping"))
             if out_path:
                 messagebox.showinfo("Configuración productiva", f"Excel exportado en:\n{out_path}", parent=self)
         except Exception as exc:
