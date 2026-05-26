@@ -5,7 +5,7 @@ from tkinter import messagebox, ttk
 
 from services.production_settings_service import ProductionSettingsService
 from utils.help_dialog import show_tab_help
-from utils.production_help_texts import PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PENALTIES_HELP, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERSONAL_HELP, PRODUCTION_SEMAPHORE_HELP
+from utils.production_help_texts import PRODUCTION_CALIBER_FACTORS_HELP, PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_PACKAGING_HELP, PRODUCTION_PENALTIES_HELP, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERSONAL_HELP, PRODUCTION_SEMAPHORE_HELP
 from widgets.screen_header import ScreenHeader
 
 
@@ -29,6 +29,9 @@ class ProductionSettingsScreen(ttk.Frame):
     SEMAPHORE_SCOPES = ["General", "Malla", "Encajado", "Granel", "Granelera", "Volcado", "Expedición", "Personal", "Línea específica", "Pedido", "Otro"]
     SEMAPHORE_METRICS = ["ocupacion_pct", "horas_faltantes", "personas_faltantes", "pedidos_dia", "cambios_formato", "cambios_cliente", "pedidos_pequenos", "kg_pendientes", "palets_pendientes", "dias_hasta_salida", "rendimiento_pct", "lineas_activas", "stock_cobertura_pct", "otro"]
     SEMAPHORE_OPERATORS = [">=", ">", "<=", "<", "=", "!="]
+    CALIBER_FAMILIES = ["Malla", "Malla 1 kg", "Malla 1.5 kg", "Malla 2 kg", "Malla 3 kg", "Malla 4 kg", "Encajado", "Granel", "Granelera", "Otro"]
+    CALIBER_GROUPS = ["Pequeño", "Medio", "Grande", "Personalizado"]
+    CALIBER_APPLIES = ["OPH", "Kg/h", "Ambos"]
 
     def __init__(self, master: tk.Misc, on_back) -> None:
         super().__init__(master, padding=10)
@@ -55,6 +58,9 @@ class ProductionSettingsScreen(ttk.Frame):
         self._semaphore_tree: ttk.Treeview | None = None
         self._semaphore_editor_vars: dict[str, tk.Variable] = {}
         self._new_semaphore_counter = 1
+        self._caliber_tree: ttk.Treeview | None = None
+        self._caliber_editor_vars: dict[str, tk.Variable] = {}
+        self._new_caliber_counter = 1
         self._build_ui()
         self._load_general_settings()
         self._load_staff_settings()
@@ -63,6 +69,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._load_performance_settings()
         self._load_penalty_settings()
         self._load_semaphore_settings()
+        self._load_caliber_factors_settings()
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
@@ -92,6 +99,8 @@ class ProductionSettingsScreen(ttk.Frame):
         notebook.add(penalties_tab, text="Penalizaciones")
         semaphore_tab = ttk.Frame(notebook, padding=12)
         notebook.add(semaphore_tab, text="Reglas / semáforo")
+        caliber_tab = ttk.Frame(notebook, padding=12)
+        notebook.add(caliber_tab, text="Factores calibre")
 
         self._build_general_tab(general_tab)
         self._build_staff_tab(personal_tab)
@@ -100,6 +109,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._build_performance_tab(performance_tab)
         self._build_penalties_tab(penalties_tab)
         self._build_semaphore_tab(semaphore_tab)
+        self._build_caliber_factors_tab(caliber_tab)
 
     # General tab (sin cambios funcionales)
     def _build_general_tab(self, parent: ttk.Frame) -> None:
@@ -907,3 +917,110 @@ class ProductionSettingsScreen(ttk.Frame):
 
     def _reset_semaphore_defaults(self) -> None:
         self.service.reset_semaphore_defaults(); self._load_semaphore_settings(); messagebox.showinfo("Configuración productiva", "Valores por defecto de reglas de semáforo restaurados.", parent=self)
+
+    def _build_caliber_factors_tab(self, parent: ttk.Frame) -> None:
+        ttk.Button(parent, text="ⓘ Descripción de campos", command=self._show_caliber_factors_help).grid(row=0, column=0, sticky="e", pady=(0, 8))
+        catalog = ttk.LabelFrame(parent, text="Catálogo de factores por calibre", padding=12); catalog.grid(row=1, column=0, sticky="nsew")
+        cols = ("id","codigo","confeccion_familia","grupo_calibre","calibres_incluidos","factor_rendimiento","aplica_a","activo","observaciones")
+        tree = ttk.Treeview(catalog, columns=cols, show="headings", height=8); self._caliber_tree = tree
+        for c,h,w in [("id","ID",40),("codigo","Código",160),("confeccion_familia","Confección / familia",150),("grupo_calibre","Grupo calibre",110),("calibres_incluidos","Calibres incluidos",130),("factor_rendimiento","Factor rendimiento",120),("aplica_a","Aplica a",90),("activo","Activo",60),("observaciones","Observaciones",250)]: tree.heading(c,text=h); tree.column(c,width=w,anchor="w")
+        tree.grid(row=0, column=0, sticky="nsew"); catalog.grid_columnconfigure(0, weight=1); catalog.grid_rowconfigure(0, weight=1); tree.bind("<<TreeviewSelect>>", self._on_caliber_factor_selected)
+
+        editor = ttk.LabelFrame(parent, text="Editar factor seleccionado", padding=12); editor.grid(row=2, column=0, sticky="ew", pady=(10, 0)); editor.grid_columnconfigure(1, weight=1)
+        self._caliber_editor_vars = {"id": tk.StringVar(value=""), "codigo": tk.StringVar(value=""), "confeccion_familia": tk.StringVar(value=self.CALIBER_FAMILIES[0]), "grupo_calibre": tk.StringVar(value=self.CALIBER_GROUPS[0]), "calibres_incluidos": tk.StringVar(value=""), "factor_rendimiento": tk.StringVar(value="1.00"), "aplica_a": tk.StringVar(value=self.CALIBER_APPLIES[2]), "activo": tk.IntVar(value=1), "observaciones": tk.StringVar(value="")}
+        ttk.Label(editor,text="Código").grid(row=0,column=0,sticky="w",padx=(0,8),pady=3); ttk.Entry(editor,textvariable=self._caliber_editor_vars["codigo"]).grid(row=0,column=1,sticky="ew",pady=3)
+        ttk.Label(editor,text="Confección / familia").grid(row=1,column=0,sticky="w",padx=(0,8),pady=3); ttk.Combobox(editor,textvariable=self._caliber_editor_vars["confeccion_familia"],values=self.CALIBER_FAMILIES).grid(row=1,column=1,sticky="ew",pady=3)
+        ttk.Label(editor,text="Grupo calibre").grid(row=2,column=0,sticky="w",padx=(0,8),pady=3); ttk.Combobox(editor,textvariable=self._caliber_editor_vars["grupo_calibre"],values=self.CALIBER_GROUPS).grid(row=2,column=1,sticky="ew",pady=3)
+        ttk.Label(editor,text="Calibres incluidos").grid(row=3,column=0,sticky="w",padx=(0,8),pady=3); ttk.Entry(editor,textvariable=self._caliber_editor_vars["calibres_incluidos"]).grid(row=3,column=1,sticky="ew",pady=3)
+        ttk.Label(editor,text="Factor rendimiento").grid(row=4,column=0,sticky="w",padx=(0,8),pady=3); ttk.Entry(editor,textvariable=self._caliber_editor_vars["factor_rendimiento"]).grid(row=4,column=1,sticky="ew",pady=3)
+        ttk.Label(editor,text="Aplica a").grid(row=5,column=0,sticky="w",padx=(0,8),pady=3); ttk.Combobox(editor,textvariable=self._caliber_editor_vars["aplica_a"],values=self.CALIBER_APPLIES).grid(row=5,column=1,sticky="ew",pady=3)
+        ttk.Checkbutton(editor,text="Activo",variable=self._caliber_editor_vars["activo"]).grid(row=6,column=1,sticky="w",pady=2)
+        ttk.Label(editor,text="Observaciones").grid(row=7,column=0,sticky="w",padx=(0,8),pady=3); ttk.Entry(editor,textvariable=self._caliber_editor_vars["observaciones"]).grid(row=7,column=1,sticky="ew",pady=3)
+        ttk.Button(editor,text="Aplicar cambios a selección",command=self._apply_caliber_factor_changes).grid(row=8,column=1,sticky="e",pady=(6,0))
+        btns = ttk.Frame(parent); btns.grid(row=3,column=0,sticky="ew",pady=(10,0))
+        ttk.Button(btns,text="Nuevo factor",command=self._add_caliber_factor_row).pack(side="left",padx=4)
+        ttk.Button(btns,text="Guardar factores",command=self._save_caliber_factors_settings).pack(side="left",padx=4)
+        ttk.Button(btns,text="Restaurar valores por defecto",command=self._reset_caliber_factors_defaults).pack(side="left",padx=4)
+        ttk.Button(btns,text="Eliminar factor seleccionado",command=self._delete_caliber_factor_row).pack(side="left",padx=4)
+
+    def _show_caliber_factors_help(self) -> None:
+        keys=["codigo","confeccion_familia","grupo_calibre","calibres_incluidos","factor_rendimiento","aplica_a","activo","observaciones"]
+        show_tab_help(self, title="Descripción de campos - Factores calibre", intro="Esta pestaña permite ajustar el rendimiento productivo según el calibre y la confección. El efecto del calibre no es igual en mallas, encajado o granel, por eso estas reglas son configurables.", help_items=[PRODUCTION_CALIBER_FACTORS_HELP[k] for k in keys if k in PRODUCTION_CALIBER_FACTORS_HELP])
+
+    def _load_caliber_factors_settings(self) -> None:
+        if not self._caliber_tree: return
+        self._caliber_tree.delete(*self._caliber_tree.get_children())
+        for row in self.service.get_caliber_performance_factors(): self._caliber_tree.insert("", "end", values=(row.get("id",""), row.get("codigo",""), row.get("confeccion_familia",""), row.get("grupo_calibre",""), row.get("calibres_incluidos",""), row.get("factor_rendimiento",1), row.get("aplica_a","Ambos"), row.get("activo",1), row.get("observaciones","")))
+
+    def _on_caliber_factor_selected(self, _event=None) -> None:
+        if not self._caliber_tree: return
+        selected=self._caliber_tree.selection()
+        if not selected: return
+        vals=self._caliber_tree.item(selected[0],"values")
+        for i,k in enumerate(("id","codigo","confeccion_familia","grupo_calibre","calibres_incluidos","factor_rendimiento","aplica_a","activo","observaciones")): self._caliber_editor_vars[k].set(vals[i])
+
+    def _normalize_calibres(self, raw: str) -> str:
+        parts=[p.strip() for p in raw.replace("/",", ").replace(" ",", ").split(",") if p.strip()]
+        unique=[]
+        for p in parts:
+            if p not in unique: unique.append(p)
+        return ",".join(unique)
+
+    def _validate_caliber_factor_values(self, values: tuple) -> tuple:
+        row_id,codigo,familia,grupo,calibres,factor,aplica,activo,obs=values
+        codigo=(codigo or "").strip(); familia=(familia or "").strip(); grupo=(grupo or "").strip(); aplica=(aplica or "").strip()
+        if not codigo: raise ValueError("El código es obligatorio")
+        if not familia: raise ValueError("La confección / familia es obligatoria")
+        if not grupo: raise ValueError("El grupo calibre es obligatorio")
+        calibres_norm=self._normalize_calibres(calibres or "")
+        if not calibres_norm: raise ValueError("Calibres incluidos es obligatorio")
+        if len(calibres_norm.split(",")) != len(set(calibres_norm.split(","))): raise ValueError("No se permiten calibres duplicados en la misma regla")
+        factor_val=float(factor)
+        if factor_val <= 0 or factor_val > 2: raise ValueError("Factor rendimiento debe ser > 0 y <= 2")
+        if not aplica: raise ValueError("Aplica a es obligatorio")
+        return row_id,codigo,familia,grupo,calibres_norm,round(factor_val,4),aplica,1 if int(activo) else 0,(obs or "").strip()
+
+    def _add_caliber_factor_row(self) -> None:
+        if not self._caliber_tree: return
+        code=f"NUEVO_FACTOR_CALIBRE_{self._new_caliber_counter}"; self._new_caliber_counter += 1
+        self._caliber_tree.insert("", "end", values=("", code, "Encajado", "Medio", "4,5", 1.00, "Ambos", 1, ""))
+
+    def _apply_caliber_factor_changes(self) -> None:
+        if not self._caliber_tree: return
+        selected=self._caliber_tree.selection()
+        if not selected: return messagebox.showwarning("Configuración productiva", "Seleccione una fila para aplicar cambios.", parent=self)
+        try:
+            vals=self._validate_caliber_factor_values((self._caliber_editor_vars["id"].get(), self._caliber_editor_vars["codigo"].get(), self._caliber_editor_vars["confeccion_familia"].get(), self._caliber_editor_vars["grupo_calibre"].get(), self._caliber_editor_vars["calibres_incluidos"].get(), self._caliber_editor_vars["factor_rendimiento"].get(), self._caliber_editor_vars["aplica_a"].get(), self._caliber_editor_vars["activo"].get(), self._caliber_editor_vars["observaciones"].get()))
+            self._caliber_tree.item(selected[0], values=vals)
+        except ValueError as exc: messagebox.showerror("Validación", str(exc), parent=self)
+
+    def _delete_caliber_factor_row(self) -> None:
+        if not self._caliber_tree: return
+        selected=self._caliber_tree.selection()
+        if not selected: return
+        if messagebox.askyesno("Confirmar eliminación", "¿Desea eliminar el factor seleccionado?", parent=self): self._caliber_tree.delete(selected[0])
+
+    def _collect_caliber_rows_payload(self) -> list[dict]:
+        if not self._caliber_tree: return []
+        rows=[]; codes=set(); overlaps=[]
+        conf_map={}
+        for item_id in self._caliber_tree.get_children():
+            clean=self._validate_caliber_factor_values(self._caliber_tree.item(item_id,"values")); key=clean[1].lower()
+            if key in codes: raise ValueError(f"Código duplicado: {clean[1]}")
+            codes.add(key)
+            calibres=clean[4].split(",")
+            if clean[7]:
+                ckey=clean[2].lower(); conf_map.setdefault(ckey,{})
+                for c in calibres:
+                    if c in conf_map[ckey] and conf_map[ckey][c] != clean[3]: overlaps.append(f"{clean[2]}: calibre {c} en {conf_map[ckey][c]} y {clean[3]}")
+                    conf_map[ckey][c]=clean[3]
+            rows.append({"codigo": clean[1], "confeccion_familia": clean[2], "grupo_calibre": clean[3], "calibres_incluidos": clean[4], "factor_rendimiento": clean[5], "aplica_a": clean[6], "activo": clean[7], "observaciones": clean[8]})
+        if overlaps and not messagebox.askyesno("Solapamiento de calibres", "Se detectaron calibres en más de un grupo activo para la misma confección/familia:\n\n- " + "\n- ".join(overlaps) + "\n\n¿Desea continuar y guardar igualmente?", parent=self): raise ValueError("Guardado cancelado por solapamiento de calibres.")
+        return rows
+
+    def _save_caliber_factors_settings(self) -> None:
+        try: self.service.save_caliber_performance_factors(self._collect_caliber_rows_payload()); self._load_caliber_factors_settings(); messagebox.showinfo("Configuración productiva", "Factores de calibre guardados correctamente.", parent=self)
+        except ValueError as exc: messagebox.showerror("Validación", str(exc), parent=self)
+
+    def _reset_caliber_factors_defaults(self) -> None:
+        self.service.reset_caliber_performance_factors_defaults(); self._load_caliber_factors_settings(); messagebox.showinfo("Configuración productiva", "Valores por defecto de factores calibre restaurados.", parent=self)
