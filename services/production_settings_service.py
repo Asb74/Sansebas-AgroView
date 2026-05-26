@@ -76,3 +76,12 @@ class ProductionSettingsService:
 
     def reset_semaphore_defaults(self) -> None:
         self.repository.reset_semaphore_defaults()
+
+    def get_caliber_performance_factors(self) -> list[dict]:
+        return self.repository.get_caliber_performance_factors()
+
+    def save_caliber_performance_factors(self, rows: list[dict]) -> None:
+        self.repository.save_caliber_performance_factors(rows)
+
+    def reset_caliber_performance_factors_defaults(self) -> None:
+        self.repository.reset_caliber_performance_factors_defaults()

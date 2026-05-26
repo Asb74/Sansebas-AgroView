@@ -196,3 +196,14 @@ PRODUCTION_SEMAPHORE_HELP = {
     "activa": {"title": "Activa", "description": "Indica si la regla debe aplicarse.", "example": "Desactivar reglas en fase de prueba.", "impact": "Permite probar o ajustar criterios sin borrar información."},
     "observaciones": {"title": "Observaciones", "description": "Notas internas sobre el criterio o cuándo debe revisarse.", "example": "Revisar en campaña alta.", "impact": "Ayuda a mantener coherencia en el uso de reglas."},
 }
+
+PRODUCTION_CALIBER_FACTORS_HELP = {
+    "codigo": {"title": "Código", "description": "Identificador interno único de la regla.", "example": "MALLA_1KG_GRANDE.", "impact": "Permite aplicar la regla de forma estable en los cálculos."},
+    "confeccion_familia": {"title": "Confección / familia", "description": "Tipo de confección donde aplica el factor.", "example": "Encajado, Granel o Malla 1 kg.", "impact": "El calibre afecta de forma distinta según la confección."},
+    "grupo_calibre": {"title": "Grupo calibre", "description": "Clasificación operativa del calibre.", "example": "Pequeño, Medio, Grande.", "impact": "Permite agrupar calibres para simplificar reglas."},
+    "calibres_incluidos": {"title": "Calibres incluidos", "description": "Lista editable de calibres que forman parte del grupo.", "example": "6,7,8.", "impact": "Permite modificar qué se considera pequeño, medio o grande."},
+    "factor_rendimiento": {"title": "Factor rendimiento", "description": "Multiplicador que ajusta el rendimiento base.", "example": "0.85 reduce un 15%; 1.10 mejora un 10%.", "impact": "Se aplicará sobre OPH o Kg/h en la futura simulación productiva."},
+    "aplica_a": {"title": "Aplica a", "description": "Indica si el factor afecta a OPH, Kg/h o ambos.", "example": "OPH, Kg/h o Ambos.", "impact": "Permite adaptar el ajuste al tipo de rendimiento usado."},
+    "activo": {"title": "Activo", "description": "Indica si la regla se usará.", "example": "Desactivar temporalmente una regla para pruebas.", "impact": "Permite probar reglas sin borrarlas."},
+    "observaciones": {"title": "Observaciones", "description": "Notas internas.", "example": "Calibre grande penaliza malla 1 kg.", "impact": "Ayuda a explicar por qué existe la regla."},
+}

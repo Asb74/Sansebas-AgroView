@@ -99,6 +99,20 @@ DEFAULT_SEMAPHORE_RULES = [
     {"codigo": "RENDIMIENTO_BAJO", "tipo_regla": "Rendimiento bajo", "ambito": "General", "metrica": "rendimiento_pct", "operador": "<", "umbral_amarillo": 90.0, "umbral_rojo": 75.0, "accion_sugerida": "Revisar fruta, personal, máquina, material o exceso de cambios.", "activa": 1, "observaciones": ""},
     {"codigo": "STOCK_COBERTURA_BAJA", "tipo_regla": "Stock insuficiente", "ambito": "General", "metrica": "stock_cobertura_pct", "operador": "<", "umbral_amarillo": 100.0, "umbral_rojo": 80.0, "accion_sugerida": "Programar recolección o ajustar pedidos.", "activa": 1, "observaciones": ""},
 ]
+DEFAULT_CALIBER_PERFORMANCE_FACTORS = [
+    {"codigo": "ENCAJADO_PEQUENO", "confeccion_familia": "Encajado", "grupo_calibre": "Pequeño", "calibres_incluidos": "6,7,8", "factor_rendimiento": 0.85, "aplica_a": "Ambos", "activo": 1, "observaciones": "En encajado los calibres pequeños ralentizan por mayor número de piezas."},
+    {"codigo": "ENCAJADO_MEDIO", "confeccion_familia": "Encajado", "grupo_calibre": "Medio", "calibres_incluidos": "4,5", "factor_rendimiento": 1.00, "aplica_a": "Ambos", "activo": 1, "observaciones": "Calibre medio como referencia normal."},
+    {"codigo": "ENCAJADO_GRANDE", "confeccion_familia": "Encajado", "grupo_calibre": "Grande", "calibres_incluidos": "0,1,2,3", "factor_rendimiento": 1.10, "aplica_a": "Ambos", "activo": 1, "observaciones": "En encajado los calibres grandes suelen aumentar velocidad por menor número de piezas."},
+    {"codigo": "GRANEL_PEQUENO", "confeccion_familia": "Granel", "grupo_calibre": "Pequeño", "calibres_incluidos": "6,7,8", "factor_rendimiento": 0.90, "aplica_a": "Ambos", "activo": 1, "observaciones": ""},
+    {"codigo": "GRANEL_MEDIO", "confeccion_familia": "Granel", "grupo_calibre": "Medio", "calibres_incluidos": "4,5", "factor_rendimiento": 1.00, "aplica_a": "Ambos", "activo": 1, "observaciones": ""},
+    {"codigo": "GRANEL_GRANDE", "confeccion_familia": "Granel", "grupo_calibre": "Grande", "calibres_incluidos": "0,1,2,3", "factor_rendimiento": 1.12, "aplica_a": "Ambos", "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_1KG_PEQUENO", "confeccion_familia": "Malla 1 kg", "grupo_calibre": "Pequeño", "calibres_incluidos": "6,7,8", "factor_rendimiento": 1.05, "aplica_a": "Ambos", "activo": 1, "observaciones": "En malla pequeña, calibres pequeños/medios suelen ajustar mejor."},
+    {"codigo": "MALLA_1KG_MEDIO", "confeccion_familia": "Malla 1 kg", "grupo_calibre": "Medio", "calibres_incluidos": "4,5", "factor_rendimiento": 1.00, "aplica_a": "Ambos", "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_1KG_GRANDE", "confeccion_familia": "Malla 1 kg", "grupo_calibre": "Grande", "calibres_incluidos": "0,1,2,3", "factor_rendimiento": 0.80, "aplica_a": "Ambos", "activo": 1, "observaciones": "En malla 1 kg los calibres grandes complican pesadora y ajuste."},
+    {"codigo": "MALLA_2KG_PEQUENO", "confeccion_familia": "Malla 2 kg", "grupo_calibre": "Pequeño", "calibres_incluidos": "6,7,8", "factor_rendimiento": 1.05, "aplica_a": "Ambos", "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_2KG_MEDIO", "confeccion_familia": "Malla 2 kg", "grupo_calibre": "Medio", "calibres_incluidos": "4,5", "factor_rendimiento": 1.00, "aplica_a": "Ambos", "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_2KG_GRANDE", "confeccion_familia": "Malla 2 kg", "grupo_calibre": "Grande", "calibres_incluidos": "0,1,2,3", "factor_rendimiento": 0.90, "aplica_a": "Ambos", "activo": 1, "observaciones": ""},
+]
 DEFAULT_UNLOADING_PRIORITY_RULES = [
     {"criterio": "Mayor cobertura de pedidos", "descripcion": "Priorizar partidas que cubran mayor porcentaje del pedido total.", "peso": 1.0, "activo": 1, "observaciones": ""},
     {"criterio": "Menor destrío", "descripcion": "Favorecer partidas con menor porcentaje de destrío previsto.", "peso": 1.0, "activo": 1, "observaciones": ""},
@@ -140,6 +154,7 @@ class ProductionSettingsRepository:
         self.ensure_performance_defaults()
         self.ensure_penalties_defaults()
         self.ensure_semaphore_defaults()
+        self.ensure_caliber_factors_defaults()
         self.ensure_unloading_priority_defaults()
 
     def ensure_schema(self) -> None:
@@ -767,6 +782,62 @@ class ProductionSettingsRepository:
 
     def reset_semaphore_defaults(self) -> None:
         self.save_semaphore_rules(DEFAULT_SEMAPHORE_RULES)
+
+    def ensure_caliber_factors_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_caliber_performance_factors (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    codigo TEXT NOT NULL UNIQUE,
+                    confeccion_familia TEXT NOT NULL,
+                    grupo_calibre TEXT NOT NULL,
+                    calibres_incluidos TEXT NOT NULL,
+                    factor_rendimiento REAL NOT NULL,
+                    aplica_a TEXT NOT NULL,
+                    activo INTEGER NOT NULL,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+
+    def ensure_caliber_factors_defaults(self) -> None:
+        self.ensure_caliber_factors_schema()
+        with get_connection() as conn:
+            existing = conn.execute("SELECT COUNT(*) AS n FROM production_caliber_performance_factors").fetchone()["n"]
+            if existing == 0:
+                self.save_caliber_performance_factors(DEFAULT_CALIBER_PERFORMANCE_FACTORS)
+
+    def get_caliber_performance_factors(self) -> list[dict]:
+        self.ensure_caliber_factors_defaults()
+        with get_connection() as conn:
+            rows = conn.execute("SELECT * FROM production_caliber_performance_factors ORDER BY id").fetchall()
+        return [dict(r) for r in rows]
+
+    def save_caliber_performance_factors(self, rows: list[dict]) -> None:
+        self.ensure_caliber_factors_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_caliber_performance_factors")
+            conn.executemany(
+                """
+                INSERT INTO production_caliber_performance_factors (
+                    codigo, confeccion_familia, grupo_calibre, calibres_incluidos,
+                    factor_rendimiento, aplica_a, activo, observaciones, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        row["codigo"], row["confeccion_familia"], row["grupo_calibre"], row["calibres_incluidos"],
+                        float(row["factor_rendimiento"]), row["aplica_a"], int(row["activo"]), row.get("observaciones", ""), now,
+                    )
+                    for row in rows
+                ],
+            )
+
+    def reset_caliber_performance_factors_defaults(self) -> None:
+        self.save_caliber_performance_factors(DEFAULT_CALIBER_PERFORMANCE_FACTORS)
 
     def ensure_unloading_priority_schema(self) -> None:
         with get_connection() as conn:
