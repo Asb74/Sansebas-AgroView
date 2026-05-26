@@ -53,6 +53,8 @@ class ProductionSettingsScreen(ttk.Frame):
         self._staff_tree: ttk.Treeview | None = None
         self._packaging_tree: ttk.Treeview | None = None
         self._packaging_editor_vars: dict[str, tk.Variable] = {}
+        self._base_packaging_tree: ttk.Treeview | None = None
+        self._base_packaging_editor_vars: dict[str, tk.Variable] = {}
         self._lines_tree: ttk.Treeview | None = None
         self._mapping_tree: ttk.Treeview | None = None
         self._mapping_editor_vars: dict[str, tk.Variable] = {}
@@ -75,6 +77,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._load_general_settings()
         self._load_staff_settings()
         self._load_packaging_settings()
+        self._load_base_packaging_settings()
         self._load_lines_settings()
         self._load_packaging_mapping_settings()
         self._load_performance_settings()
@@ -104,6 +107,8 @@ class ProductionSettingsScreen(ttk.Frame):
         notebook.add(packaging_tab, text="Confecciones")
         lines_tab = ttk.Frame(notebook, padding=12)
         notebook.add(lines_tab, text="Máquinas / líneas")
+        base_packaging_tab = ttk.Frame(notebook, padding=12)
+        notebook.add(base_packaging_tab, text="Confecciones base")
         mapping_tab = ttk.Frame(notebook, padding=12)
         notebook.add(mapping_tab, text="Mapeo confecciones")
         performance_tab = ttk.Frame(notebook, padding=12)
@@ -119,6 +124,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._build_staff_tab(personal_tab)
         self._build_packaging_tab(packaging_tab)
         self._build_lines_tab(lines_tab)
+        self._build_base_packaging_tab(base_packaging_tab)
         self._build_packaging_mapping_tab(mapping_tab)
         self._build_performance_tab(performance_tab)
         self._build_penalties_tab(penalties_tab)
@@ -597,6 +603,127 @@ class ProductionSettingsScreen(ttk.Frame):
         self.service.reset_packaging_defaults()
         self._load_packaging_settings()
         messagebox.showinfo("Configuración productiva", "Valores por defecto de confecciones restaurados.", parent=self)
+
+
+
+    def _build_base_packaging_tab(self, parent: ttk.Frame) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+        self._build_tab_toolbar(parent,
+            export_command=lambda: self._export_master_excel("base_packaging", lambda: self.service.get_base_packaging(active_only=False)),
+            import_command=lambda: self._import_master_excel("base_packaging", self.service.save_base_packaging, self._load_base_packaging_settings))
+
+        catalog = ttk.LabelFrame(parent, text="Catálogo de confecciones base", padding=12)
+        catalog.grid(row=1, column=0, sticky="nsew")
+        catalog.grid_columnconfigure(0, weight=1); catalog.grid_rowconfigure(0, weight=1)
+        cols = ("id", "codigo", "descripcion", "grupo_confeccion", "perfil_confeccion", "familia_productiva", "subtipo_productivo", "kg_formato", "tipo_malla", "linea_productiva", "requiere_precalibrado", "compatible_box", "activo", "observaciones")
+        tree = ttk.Treeview(catalog, columns=cols, show="headings", height=9)
+        self._base_packaging_tree = tree
+        headers = [("id", "ID", 40), ("codigo", "Código", 160), ("descripcion", "Descripción", 180), ("grupo_confeccion", "Grupo confección", 120), ("perfil_confeccion", "Perfil confección", 120), ("familia_productiva", "Familia productiva", 120), ("subtipo_productivo", "Subtipo productivo", 130), ("kg_formato", "Kg formato", 80), ("tipo_malla", "Tipo malla", 100), ("linea_productiva", "Línea productiva", 140), ("requiere_precalibrado", "Req. pre calib.", 110), ("compatible_box", "Compatible BOX", 110), ("activo", "Activo", 60), ("observaciones", "Observaciones", 180)]
+        for c,h,w in headers:
+            tree.heading(c, text=h); tree.column(c, width=w, anchor="w")
+        yscroll = ttk.Scrollbar(catalog, orient="vertical", command=tree.yview)
+        xscroll = ttk.Scrollbar(catalog, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew"); yscroll.grid(row=0, column=1, sticky="ns"); xscroll.grid(row=1, column=0, sticky="ew")
+        tree.bind("<<TreeviewSelect>>", self._on_base_packaging_row_selected)
+
+        editor = ttk.LabelFrame(parent, text="Editar confección base seleccionada", padding=12)
+        editor.grid(row=2, column=0, sticky="ew", pady=(10, 0)); editor.grid_columnconfigure(1, weight=1)
+        self._base_packaging_editor_vars = {k: tk.StringVar(value="") for k in ("id", "codigo", "descripcion", "grupo_confeccion", "perfil_confeccion", "familia_productiva", "subtipo_productivo", "kg_formato", "tipo_malla", "linea_productiva", "observaciones")}
+        self._base_packaging_editor_vars["requiere_precalibrado"] = tk.IntVar(value=0)
+        self._base_packaging_editor_vars["compatible_box"] = tk.IntVar(value=0)
+        self._base_packaging_editor_vars["activo"] = tk.IntVar(value=1)
+        for r,(k,l) in enumerate((("codigo","Código"),("descripcion","Descripción"),("grupo_confeccion","Grupo confección"),("perfil_confeccion","Perfil confección"),("familia_productiva","Familia productiva"),("subtipo_productivo","Subtipo productivo"),("kg_formato","Kg formato"),("tipo_malla","Tipo malla"),("linea_productiva","Línea productiva"),("observaciones","Observaciones"))):
+            ttk.Label(editor, text=l).grid(row=r, column=0, sticky="w", padx=(0,8), pady=4)
+            ttk.Entry(editor, textvariable=self._base_packaging_editor_vars[k]).grid(row=r, column=1, sticky="ew", pady=4)
+        ttk.Checkbutton(editor, text="Requiere pre calibrado", variable=self._base_packaging_editor_vars["requiere_precalibrado"]).grid(row=10,column=1,sticky="w",pady=2)
+        ttk.Checkbutton(editor, text="Compatible BOX", variable=self._base_packaging_editor_vars["compatible_box"]).grid(row=11,column=1,sticky="w",pady=2)
+        ttk.Checkbutton(editor, text="Activo", variable=self._base_packaging_editor_vars["activo"]).grid(row=12,column=1,sticky="w",pady=2)
+
+        btns = ttk.Frame(parent); btns.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        ttk.Button(btns, text="Nueva confección base", command=self._add_base_packaging_row).pack(side="left", padx=4)
+        ttk.Button(btns, text="Aplicar cambios a selección", command=self._apply_base_packaging_row_changes).pack(side="left", padx=4)
+        ttk.Button(btns, text="Guardar confecciones base", command=self._save_base_packaging_settings).pack(side="left", padx=4)
+        ttk.Button(btns, text="Restaurar valores por defecto", command=self._reset_base_packaging_defaults).pack(side="left", padx=4)
+        ttk.Button(btns, text="Eliminar confección base seleccionada", command=self._delete_base_packaging_row).pack(side="left", padx=4)
+
+
+
+    def _load_base_packaging_settings(self) -> None:
+        self._refresh_base_packaging_tree(self.service.get_base_packaging(active_only=False))
+
+    def _refresh_base_packaging_tree(self, rows: list[dict]) -> None:
+        if not self._base_packaging_tree:
+            return
+        self._base_packaging_tree.delete(*self._base_packaging_tree.get_children())
+        for row in rows:
+            self._base_packaging_tree.insert("", "end", values=(row.get("id", ""), row.get("codigo", ""), row.get("descripcion", ""), row.get("grupo_confeccion", ""), row.get("perfil_confeccion", ""), row.get("familia_productiva", ""), row.get("subtipo_productivo", ""), row.get("kg_formato", 0), row.get("tipo_malla", ""), row.get("linea_productiva", ""), row.get("requiere_precalibrado", 0), row.get("compatible_box", 0), row.get("activo", 1), row.get("observaciones", "")))
+
+    def _on_base_packaging_row_selected(self, _event=None) -> None:
+        if not self._base_packaging_tree: return
+        selected = self._base_packaging_tree.selection()
+        if not selected: return
+        vals = self._base_packaging_tree.item(selected[0], "values")
+        for i, key in enumerate(("id", "codigo", "descripcion", "grupo_confeccion", "perfil_confeccion", "familia_productiva", "subtipo_productivo", "kg_formato", "tipo_malla", "linea_productiva", "requiere_precalibrado", "compatible_box", "activo", "observaciones")):
+            self._base_packaging_editor_vars[key].set(vals[i])
+
+    def _validate_base_packaging_values(self, values: tuple) -> tuple:
+        codigo = str(values[1]).strip(); descripcion = str(values[2]).strip()
+        if not codigo: raise ValueError("El código es obligatorio")
+        if not descripcion: raise ValueError("La descripción es obligatoria")
+        kg = float(str(values[7]).replace(",", "."))
+        if kg < 0: raise ValueError("Kg formato debe ser >= 0")
+        return (values[0], codigo, descripcion, str(values[3]).strip(), str(values[4]).strip(), str(values[5]).strip(), str(values[6]).strip(), kg, str(values[8]).strip(), str(values[9]).strip(), 1 if str(values[10]).strip() in ("1","True","true") else 0, 1 if str(values[11]).strip() in ("1","True","true") else 0, 1 if str(values[12]).strip() in ("1","True","true") else 0, str(values[13]).strip())
+
+    def _apply_base_packaging_row_changes(self) -> None:
+        if not self._base_packaging_tree: return
+        selected = self._base_packaging_tree.selection()
+        if not selected:
+            messagebox.showerror("Confecciones base", "Seleccione una fila para editar.", parent=self); return
+        try:
+            values = self._validate_base_packaging_values((self._base_packaging_editor_vars["id"].get(), self._base_packaging_editor_vars["codigo"].get(), self._base_packaging_editor_vars["descripcion"].get(), self._base_packaging_editor_vars["grupo_confeccion"].get(), self._base_packaging_editor_vars["perfil_confeccion"].get(), self._base_packaging_editor_vars["familia_productiva"].get(), self._base_packaging_editor_vars["subtipo_productivo"].get(), self._base_packaging_editor_vars["kg_formato"].get(), self._base_packaging_editor_vars["tipo_malla"].get(), self._base_packaging_editor_vars["linea_productiva"].get(), self._base_packaging_editor_vars["requiere_precalibrado"].get(), self._base_packaging_editor_vars["compatible_box"].get(), self._base_packaging_editor_vars["activo"].get(), self._base_packaging_editor_vars["observaciones"].get()))
+            self._base_packaging_tree.item(selected[0], values=values)
+        except Exception as exc:
+            messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _add_base_packaging_row(self) -> None:
+        if not self._base_packaging_tree: return
+        code = f"NUEVA_BASE_{self._new_packaging_counter}"
+        self._new_packaging_counter += 1
+        self._base_packaging_tree.insert("", "end", values=("", code, "Nueva confección base", "", "", "", "", 0, "", "", 0, 0, 1, ""))
+
+    def _delete_base_packaging_row(self) -> None:
+        if not self._base_packaging_tree: return
+        selected = self._base_packaging_tree.selection()
+        if not selected:
+            messagebox.showerror("Confecciones base", "Seleccione una fila para eliminar.", parent=self); return
+        if messagebox.askyesno("Confirmar eliminación", "¿Desea eliminar la confección base seleccionada?", parent=self):
+            self._base_packaging_tree.delete(selected[0])
+
+    def _collect_base_packaging_rows_payload(self) -> list[dict]:
+        if not self._base_packaging_tree: return []
+        rows = []; codes = set()
+        for item_id in self._base_packaging_tree.get_children():
+            clean = self._validate_base_packaging_values(self._base_packaging_tree.item(item_id, "values"))
+            key = clean[1].lower()
+            if key in codes: raise ValueError(f"Código duplicado: {clean[1]}")
+            codes.add(key)
+            rows.append({"codigo": clean[1], "descripcion": clean[2], "grupo_confeccion": clean[3], "perfil_confeccion": clean[4], "familia_productiva": clean[5], "subtipo_productivo": clean[6], "kg_formato": clean[7], "tipo_malla": clean[8], "linea_productiva": clean[9], "requiere_precalibrado": clean[10], "compatible_box": clean[11], "activo": clean[12], "observaciones": clean[13]})
+        return rows
+
+    def _save_base_packaging_settings(self) -> None:
+        try:
+            self.service.save_base_packaging(self._collect_base_packaging_rows_payload())
+            self._load_base_packaging_settings()
+            messagebox.showinfo("Configuración productiva", "Confecciones base guardadas correctamente.", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _reset_base_packaging_defaults(self) -> None:
+        self.service.reset_base_packaging_defaults()
+        self._load_base_packaging_settings()
+        messagebox.showinfo("Configuración productiva", "Valores por defecto de confecciones base restaurados.", parent=self)
 
     def _build_lines_tab(self, parent: ttk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1)
