@@ -27,6 +27,13 @@ PRODUCTION_MASTER_EXCEL_CONFIGS = {
         "required_columns": ["codigo", "descripcion", "familia", "subtipo", "kg_formato", "activo"],
         "numeric_columns": ["kg_formato"], "boolean_columns": ["requiere_precalibrado", "compatible_box", "activo"], "unique_key": "codigo", "delete_missing_default": False,
     },
+
+    "base_packaging": {
+        "key": "base_packaging", "sheet_name": "Confecciones base", "default_filename": "confecciones_base.xlsx",
+        "columns": ["id", "codigo", "descripcion", "grupo_confeccion", "perfil_confeccion", "familia_productiva", "subtipo_productivo", "kg_formato", "tipo_malla", "linea_productiva", "requiere_precalibrado", "compatible_box", "activo", "observaciones"],
+        "required_columns": ["codigo", "descripcion", "grupo_confeccion", "perfil_confeccion", "familia_productiva", "subtipo_productivo", "kg_formato", "tipo_malla", "linea_productiva", "activo"],
+        "numeric_columns": ["kg_formato"], "boolean_columns": ["requiere_precalibrado", "compatible_box", "activo"], "unique_key": "codigo", "delete_missing_default": False,
+    },
     "lines": {
         "key": "lines", "sheet_name": "Maquinas lineas", "default_filename": "maquinas_lineas.xlsx",
         "columns": ["id", "codigo", "nombre", "tipo_linea", "familia_principal", "numero_maquinas", "activa", "capacidad_kg_h_referencia", "personal_minimo", "personal_optimo", "permite_precalibrado", "permite_box", "observaciones"],
