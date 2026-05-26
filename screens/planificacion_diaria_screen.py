@@ -12,6 +12,7 @@ from widgets.date_picker import DatePickerPopup
 from widgets.multi_select_filter import MultiSelectFilter
 from services.simulacion_asignacion import abrir_simulacion_asignacion
 from screens.operational_quality_settings_screen import OperationalQualitySettingsScreen
+from services.production_capacity_service import ProductionCapacityService
 
 
 class PlanificacionDiariaScreen(ttk.Frame):
@@ -25,6 +26,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.on_back = on_back
         self.service = PlanningService()
         self.runtime_db_service = RuntimeDatabaseService()
+        self.capacity_service = ProductionCapacityService()
         self.fecha_desde_var = tk.StringVar()
         self.fecha_hasta_var = tk.StringVar()
         self.filter_widgets: dict[str, MultiSelectFilter] = {}
@@ -97,7 +99,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.pedidos_tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(self.pedidos_tab, text="Pedidos pendientes")
         self.balance_tab = ttk.Frame(self.tabs, padding=8)
+        self.capacidad_tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(self.balance_tab, text="Balance")
+        self.tabs.add(self.capacidad_tab, text="Capacidad productiva")
         self.tabs.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self.kpi_campo = tk.StringVar(value="Kg campo total: 0 | Nº partidas: 0 | Nº variedades: 0")
@@ -169,6 +173,15 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.balance_table.tree.tag_configure("tipo_industria", foreground="#6a1b9a")
         self.balance_table.tree.tag_configure("estado_faltante", foreground="#b71c1c")
         self.balance_table.tree.tag_configure("estado_sobrante", foreground="#1b5e20")
+
+        self.kpi_capacidad = tk.StringVar(value="Capacidad productiva: sin calcular")
+        ttk.Label(self.capacidad_tab, textvariable=self.kpi_capacidad, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
+        self.capacidad_family_table = DataTable(self.capacidad_tab, ["Familia", "Kg reales", "Kg previstos", "Kg total", "Horas necesarias", "Horas disponibles", "Ocupación %", "Rendimiento medio", "Personal estimado", "Estado"])
+        self.capacidad_family_table.pack(fill="both", expand=True, pady=(0, 6))
+        self.capacidad_line_table = DataTable(self.capacidad_tab, ["Línea productiva", "Kg", "Horas necesarias", "Horas disponibles línea", "Ocupación %", "Pedidos", "Cambios formato estimados", "Estado"])
+        self.capacidad_line_table.pack(fill="both", expand=True, pady=(0, 6))
+        self.capacidad_inc_table = DataTable(self.capacidad_tab, ["Tipo incidencia", "Pedido", "Cliente", "Confección", "Línea productiva", "Motivo", "Acción sugerida"])
+        self.capacidad_inc_table.pack(fill="both", expand=True)
 
     def _build_date_field(self, parent: ttk.Frame, row: int, col: int, var: tk.StringVar) -> None:
         frame = ttk.Frame(parent)
@@ -244,6 +257,25 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 self.balance_rows = []
                 logging.getLogger(__name__).warning("No se pudo cargar balance: %s", exc)
                 messagebox.showwarning("Balance", f"No se pudo cargar balance: {exc}")
+        elif tab_activa == "Capacidad productiva":
+            try:
+                cap = self.capacity_service.build_capacity_simulation(payload, self.pedidos_modo_var.get())
+                s = cap["summary"]
+                self.kpi_capacidad.set(
+                    f"Kg reales pendientes: {s['Kg reales pendientes']:,.2f} | Kg previstos: {s['Kg previstos']:,.2f} | "
+                    f"Kg total simulación: {s['Kg total simulación']:,.2f} | Horas necesarias estimadas: {s['Horas necesarias estimadas']:,.2f} | "
+                    f"Horas disponibles: {s['Horas disponibles']:,.2f} | Ocupación %: {s['Ocupación %']:,.2f}% | "
+                    f"Personal total/directo/indirecto: {s['Personal disponible total']}/{s['Personal directo disponible']}/{s['Personal indirecto disponible']} | "
+                    f"Estado capacidad: {s['Estado capacidad']}"
+                )
+                self.capacidad_family_table.set_rows(cap["family_rows"])
+                self.capacidad_line_table.set_rows(cap["line_rows"])
+                self.capacidad_inc_table.set_rows(cap["incidencias"])
+            except Exception as exc:
+                self.capacidad_family_table.set_rows([])
+                self.capacidad_line_table.set_rows([])
+                self.capacidad_inc_table.set_rows([])
+                messagebox.showwarning("Capacidad productiva", f"No se pudo calcular capacidad productiva: {exc}")
         self.campo_table.set_rows(self.stock_campo_rows)
         self.almacen_table.set_rows(self.stock_almacen_rows)
         self.pedidos_table.set_rows(self.pedidos_pendientes_rows)
