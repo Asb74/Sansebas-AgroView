@@ -4,6 +4,7 @@ from pathlib import Path
 from tkinter import filedialog
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 
@@ -35,7 +36,38 @@ def validate_required_columns(headers: list[str], required_columns: list[str]) -
         raise ValueError(f"Faltan columnas obligatorias: {', '.join(missing)}")
 
 
-def export_master_to_excel(rows: list[dict], config: dict) -> str | None:
+def _adjust_column_widths(ws, max_width: int = 60) -> None:
+    for col_idx, _ in enumerate(ws[1], start=1):
+        max_len = 0
+        for row_idx in range(1, ws.max_row + 1):
+            max_len = max(max_len, len(str(ws.cell(row=row_idx, column=col_idx).value or "")))
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, max_width)
+
+
+def _write_help_sheet(wb: Workbook, master_title: str, help_items: list[dict] | None) -> None:
+    ws = wb.create_sheet("Descripcion campos")
+    ws["A1"] = master_title
+    ws["A1"].font = Font(bold=True)
+    if not help_items:
+        ws["A3"] = "No hay descripción de campos configurada para este maestro."
+        return
+    headers = ["Campo", "Descripción", "Ejemplo", "Impacto operativo"]
+    ws.append([])
+    ws.append(headers)
+    for cell in ws[3]:
+        cell.font = Font(bold=True)
+    for item in help_items:
+        ws.append([item.get("title", ""), item.get("description", ""), item.get("example", ""), item.get("impact", "")])
+    ws.auto_filter.ref = f"A3:D{ws.max_row}"
+    ws.freeze_panes = "A4"
+    wrap = Alignment(wrap_text=True, vertical="top")
+    for row in ws.iter_rows(min_row=4, max_row=ws.max_row, min_col=1, max_col=4):
+        for cell in row:
+            cell.alignment = wrap
+    _adjust_column_widths(ws)
+
+
+def export_master_to_excel(rows: list[dict], config: dict, help_items: list[dict] | None = None) -> str | None:
     target = filedialog.asksaveasfilename(
         defaultextension=".xlsx",
         initialfile=config.get("default_filename", "maestro_productivo.xlsx"),
@@ -55,11 +87,8 @@ def export_master_to_excel(rows: list[dict], config: dict) -> str | None:
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
 
-    for col_idx, header in enumerate(columns, start=1):
-        max_len = len(str(header))
-        for cell in ws.iter_cols(min_col=col_idx, max_col=col_idx, min_row=2, max_row=ws.max_row):
-            max_len = max(max_len, len(str(cell[0].value or "")))
-        ws.column_dimensions[get_column_letter(col_idx)].width = min(max_len + 2, 60)
+    _adjust_column_widths(ws)
+    _write_help_sheet(wb, config.get("sheet_name", "Maestro"), help_items)
 
     output_path = Path(target)
     wb.save(output_path)
@@ -68,7 +97,8 @@ def export_master_to_excel(rows: list[dict], config: dict) -> str | None:
 
 def import_master_from_excel(path: str, config: dict) -> tuple[list[dict], list[str]]:
     wb = load_workbook(path, data_only=True)
-    ws = wb.active
+    sheet_name = config.get("sheet_name")
+    ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
     rows_iter = ws.iter_rows(values_only=True)
     header_row = next(rows_iter, None)
     if not header_row:

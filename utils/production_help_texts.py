@@ -207,3 +207,28 @@ PRODUCTION_CALIBER_FACTORS_HELP = {
     "activo": {"title": "Activo", "description": "Indica si la regla se usará.", "example": "Desactivar temporalmente una regla para pruebas.", "impact": "Permite probar reglas sin borrarlas."},
     "observaciones": {"title": "Observaciones", "description": "Notas internas.", "example": "Calibre grande penaliza malla 1 kg.", "impact": "Ayuda a explicar por qué existe la regla."},
 }
+
+PRODUCTION_PERSONAL_HELP_KEYS = ["personal_total", "personal_directo", "personal_indirecto", "horas_por_persona", "ausencias_previstas", "area", "tipo_personal", "disponible", "minimo_operativo", "optimo", "activo", "observaciones"]
+PRODUCTION_PACKAGING_HELP_KEYS = ["codigo", "descripcion", "familia", "subtipo", "kg_formato", "material", "tipo_malla", "requiere_precalibrado", "compatible_box", "activo", "observaciones"]
+PRODUCTION_LINES_HELP_KEYS = ["codigo", "nombre", "tipo_linea", "familia_principal", "numero_maquinas", "activa", "capacidad_kg_h_referencia", "personal_minimo", "personal_optimo", "permite_precalibrado", "permite_box", "observaciones"]
+PRODUCTION_PERFORMANCE_HELP_KEYS = ["codigo", "familia", "confeccion_formato", "tipo_linea", "condicion", "oph_referencia", "oph_minimo", "oph_optimo", "kg_h_referencia", "factor_precalibrado", "factor_destrio_alto", "dificultad", "activo", "observaciones"]
+PRODUCTION_PENALTIES_HELP_KEYS = ["codigo", "tipo_penalizacion", "ambito", "minutos_perdida", "factor_rendimiento", "aplica_por", "umbral", "activa", "observaciones"]
+PRODUCTION_SEMAPHORE_HELP_KEYS = ["codigo", "tipo_regla", "ambito", "metrica", "operador", "umbral_amarillo", "umbral_rojo", "accion_sugerida", "activa", "observaciones"]
+PRODUCTION_CALIBER_FACTORS_HELP_KEYS = ["codigo", "confeccion_familia", "grupo_calibre", "calibres_incluidos", "factor_rendimiento", "aplica_a", "activo", "observaciones"]
+
+PRODUCTION_PACKAGING_MAPPING_HELP = {
+    "codigo_mconfeccion": {"title": "Código MConfección", "description": "Identificador original de MConfecciones.", "example": "MCF-002134.", "impact": "Permite enlazar sin ambigüedad la confección comercial con su interpretación productiva."},
+    "grupo_origen": {"title": "Grupo origen", "description": "Grupo comercial/material original que llega desde MConfecciones.", "example": "Malla clip, Caja cartón.", "impact": "Ayuda a entender el contexto de origen y a validar la clasificación automática."},
+    "familia_productiva": {"title": "Familia productiva", "description": "Clasificación usada por producción para cálculos operativos.", "example": "Malla, Encajado, Granel.", "impact": "Determina qué reglas de rendimiento, líneas y penalizaciones aplican."},
+    "subtipo_productivo": {"title": "Subtipo productivo", "description": "Detalle operativo dentro de la familia.", "example": "Tradicional, Clip-to-clip, Girsac.", "impact": "Mejora la precisión de rendimiento y reduce errores de planificación."},
+    "kg_formato": {"title": "Kg formato", "description": "Kilos del formato productivo usados para el cálculo.", "example": "2 para malla 2 kg, 10 para caja 10 kg.", "impact": "Permite convertir demanda en unidades y estimar capacidad real."},
+    "tipo_malla": {"title": "Tipo malla", "description": "Tipo de malla cuando el formato es de malla.", "example": "Tradicional, clip-to-clip, girsac.", "impact": "Influye en compatibilidades y rendimiento de máquinas."},
+    "linea_productiva": {"title": "Línea productiva", "description": "Línea o máquina principal asociada a la confección mapeada.", "example": "MALLAS_CLIP.", "impact": "Conecta el maestro comercial con la capacidad física disponible."},
+    "revisar": {"title": "Revisar", "description": "Marca registros que requieren validación manual.", "example": "1 cuando la autodetección no es fiable.", "impact": "Evita errores en planificación por clasificaciones dudosas."},
+    "confianza_autodeteccion": {"title": "Confianza autodetección", "description": "Nivel de seguridad de la clasificación automática.", "example": "Alta, Media, Baja.", "impact": "Prioriza revisiones y mejora la calidad del mapeo."},
+}
+PRODUCTION_PACKAGING_MAPPING_HELP_KEYS = ["codigo_mconfeccion", "grupo_origen", "familia_productiva", "subtipo_productivo", "kg_formato", "tipo_malla", "linea_productiva", "revisar", "confianza_autodeteccion"]
+
+
+def get_help_items(keys: list[str], source: dict[str, dict]) -> list[dict]:
+    return [source[key] for key in keys if key in source]
