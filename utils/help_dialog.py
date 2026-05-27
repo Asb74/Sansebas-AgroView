@@ -16,7 +16,7 @@ def show_help(parent: tk.Misc, title: str, description: str, example: str = "", 
     messagebox.showinfo(title, "\n".join(text_parts), parent=parent)
 
 
-def show_tab_help(parent: tk.Misc, title: str, intro: str, help_items: list[dict]) -> None:
+def show_tab_help(parent: tk.Misc, title: str, intro: str, help_items: list[dict], heading: str | None = None) -> None:
     dialog = tk.Toplevel(parent)
     dialog.title(title)
     dialog.geometry("720x520")
@@ -28,7 +28,8 @@ def show_tab_help(parent: tk.Misc, title: str, intro: str, help_items: list[dict
     root.grid_rowconfigure(1, weight=1)
     root.grid_columnconfigure(0, weight=1)
 
-    ttk.Label(root, text="General del día", font=("TkDefaultFont", 14, "bold")).grid(
+    resolved_heading = heading or title.replace("Descripción de campos - ", "", 1).strip()
+    ttk.Label(root, text=resolved_heading or "Descripción de campos", font=("TkDefaultFont", 14, "bold")).grid(
         row=0, column=0, sticky="w", pady=(0, 8)
     )
 
