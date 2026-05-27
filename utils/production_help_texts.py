@@ -232,3 +232,19 @@ PRODUCTION_PACKAGING_MAPPING_HELP_KEYS = ["codigo_mconfeccion", "grupo_origen", 
 
 def get_help_items(keys: list[str], source: dict[str, dict]) -> list[dict]:
     return [source[key] for key in keys if key in source]
+
+
+PRODUCTION_RESOURCES_HELP = {
+    "recurso_fisico": {"title": "Recurso físico", "description": "Elemento real de planta que participa en el flujo productivo.", "example": "COMPACTA, AWETTA o PESADORA_1.", "impact": "Define capacidad y restricciones operativas reales."},
+    "capacidad_kg_h": {"title": "Capacidad kg/h", "description": "Capacidad estimada del recurso en kilos por hora.", "example": "10.000 kg/h en un recurso de entrada.", "impact": "Base para estimar cuellos de botella."},
+    "capacidad_por": {"title": "Capacidad por", "description": "Unidad sobre la que se interpreta la capacidad.", "example": "Recurso o unidad.", "impact": "Evita interpretar mal la capacidad total."},
+    "numero_unidades": {"title": "Nº unidades", "description": "Número de equipos o posiciones equivalentes de ese recurso.", "example": "4 pesadoras en paralelo.", "impact": "Multiplica la capacidad disponible simultánea."},
+    "compatibilidad": {"title": "Compatibilidad", "description": "Regla que indica con qué recurso o condición puede trabajar otro recurso.", "example": "CALIBRADOR_PRINCIPAL compatible con COMPACTA.", "impact": "Restringe combinaciones de planificación no válidas."},
+    "alimentacion": {"title": "Alimentación", "description": "Relación origen-destino de flujo entre recursos.", "example": "TOLVA -> CALIBRADOR_PRINCIPAL.", "impact": "Define rutas físicas posibles para mover fruta."},
+    "max_destinos_simultaneos": {"title": "Máximo destinos simultáneos", "description": "Cantidad de destinos que un origen puede alimentar a la vez.", "example": "1 o 2 destinos simultáneos.", "impact": "Limita el reparto simultáneo de caudal."},
+    "requiere_precalibrado": {"title": "Requiere precalibrado", "description": "Indica si esa conexión necesita fruta precalibrada.", "example": "Activado en flujos sensibles al calibre.", "impact": "Condiciona si el flujo es viable según contexto."},
+    "disponibilidad_operativa": {"title": "Disponibilidad operativa", "description": "Estado de disponibilidad de un recurso en un contexto concreto.", "example": "AWETTA no disponible en cultivo X.", "impact": "Permite excluir recursos por campaña, cultivo o incidencia."},
+    "awetta_disponible": {"title": "Awetta disponible", "description": "Marca explícita para controlar si AWETTA está utilizable por contexto.", "example": "AWETTA disponible=0 en contexto limón.", "impact": "Evita planificar procesos que dependen de AWETTA cuando no aplica."},
+}
+
+PRODUCTION_RESOURCES_HELP_KEYS = ["recurso_fisico", "capacidad_kg_h", "capacidad_por", "numero_unidades", "compatibilidad", "alimentacion", "max_destinos_simultaneos", "requiere_precalibrado", "disponibilidad_operativa", "awetta_disponible"]

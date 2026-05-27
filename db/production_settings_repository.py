@@ -1251,3 +1251,20 @@ class ProductionSettingsRepository:
             conn.execute("DELETE FROM production_resource_availability")
             for row in rows:
                 conn.execute("INSERT INTO production_resource_availability (recurso_codigo,contexto,disponible,motivo,prioridad,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (row["recurso_codigo"], row["contexto"], int(row.get("disponible", 1)), row.get("motivo", ""), int(row.get("prioridad", 1)), row.get("observaciones", ""), now))
+
+
+    def reset_resources_flows_defaults(self) -> None:
+        self.ensure_physical_resources_schema()
+        self.ensure_resource_compatibilities_schema()
+        self.ensure_resource_feeds_schema()
+        self.ensure_resource_availability_schema()
+        with self.db.get_connection() as conn:
+            conn.execute("DELETE FROM production_physical_resources")
+            conn.execute("DELETE FROM production_resource_compatibilities")
+            conn.execute("DELETE FROM production_resource_feeds")
+            conn.execute("DELETE FROM production_resource_availability")
+            conn.commit()
+        self.ensure_physical_resources_defaults()
+        self.ensure_resource_compatibilities_defaults()
+        self.ensure_resource_feeds_defaults()
+        self.ensure_resource_availability_defaults()

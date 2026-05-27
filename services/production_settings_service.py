@@ -126,3 +126,6 @@ class ProductionSettingsService:
 
     def save_resource_availability(self, rows: list[dict]) -> None:
         self.repository.save_resource_availability(rows)
+
+    def reset_resources_flows_defaults(self) -> None:
+        self.repository.reset_resources_flows_defaults()
