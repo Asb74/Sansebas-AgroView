@@ -10,7 +10,7 @@ from services.production_settings_service import ProductionSettingsService
 from utils.master_excel_io import export_master_to_excel, import_master_from_excel
 from utils.help_dialog import show_tab_help
 from utils.production_master_excel_configs import PRODUCTION_MASTER_EXCEL_CONFIGS
-from utils.production_help_texts import PRODUCTION_CALIBER_FACTORS_HELP, PRODUCTION_CALIBER_FACTORS_HELP_KEYS, PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_LINES_HELP_KEYS, PRODUCTION_PACKAGING_HELP, PRODUCTION_PACKAGING_HELP_KEYS, PRODUCTION_PACKAGING_MAPPING_HELP, PRODUCTION_PACKAGING_MAPPING_HELP_KEYS, PRODUCTION_PENALTIES_HELP, PRODUCTION_PENALTIES_HELP_KEYS, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERFORMANCE_HELP_KEYS, PRODUCTION_PERSONAL_HELP, PRODUCTION_PERSONAL_HELP_KEYS, PRODUCTION_SEMAPHORE_HELP, PRODUCTION_SEMAPHORE_HELP_KEYS, get_help_items
+from utils.production_help_texts import PRODUCTION_CALIBER_FACTORS_HELP, PRODUCTION_CALIBER_FACTORS_HELP_KEYS, PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_LINES_HELP_KEYS, PRODUCTION_PACKAGING_HELP, PRODUCTION_PACKAGING_HELP_KEYS, PRODUCTION_PACKAGING_MAPPING_HELP, PRODUCTION_PACKAGING_MAPPING_HELP_KEYS, PRODUCTION_PENALTIES_HELP, PRODUCTION_PENALTIES_HELP_KEYS, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERFORMANCE_HELP_KEYS, PRODUCTION_PERSONAL_HELP, PRODUCTION_PERSONAL_HELP_KEYS, PRODUCTION_SEMAPHORE_HELP, PRODUCTION_SEMAPHORE_HELP_KEYS, PRODUCTION_RESOURCES_HELP, PRODUCTION_RESOURCES_HELP_KEYS, get_help_items
 from widgets.screen_header import ScreenHeader
 
 
@@ -71,6 +71,10 @@ class ProductionSettingsScreen(ttk.Frame):
         self._semaphore_editor_vars: dict[str, tk.Variable] = {}
         self._new_semaphore_counter = 1
         self._caliber_tree: ttk.Treeview | None = None
+        self._physical_resources_tree: ttk.Treeview | None = None
+        self._resource_compatibilities_tree: ttk.Treeview | None = None
+        self._resource_feeds_tree: ttk.Treeview | None = None
+        self._resource_availability_tree: ttk.Treeview | None = None
         self._caliber_editor_vars: dict[str, tk.Variable] = {}
         self._new_caliber_counter = 1
         self._build_ui()
@@ -79,6 +83,10 @@ class ProductionSettingsScreen(ttk.Frame):
         self._load_packaging_settings()
         self._load_base_packaging_settings()
         self._load_lines_settings()
+        self._load_physical_resources_settings()
+        self._load_resource_compatibilities_settings()
+        self._load_resource_feeds_settings()
+        self._load_resource_availability_settings()
         self._load_packaging_mapping_settings()
         self._load_performance_settings()
         self._load_penalty_settings()
@@ -109,6 +117,8 @@ class ProductionSettingsScreen(ttk.Frame):
         notebook.add(lines_tab, text="Máquinas / líneas")
         base_packaging_tab = ttk.Frame(notebook, padding=12)
         notebook.add(base_packaging_tab, text="Confecciones base")
+        resources_tab = ttk.Frame(notebook, padding=12)
+        notebook.add(resources_tab, text="Recursos y flujos")
         mapping_tab = ttk.Frame(notebook, padding=12)
         notebook.add(mapping_tab, text="Mapeo confecciones")
         performance_tab = ttk.Frame(notebook, padding=12)
@@ -125,6 +135,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._build_packaging_tab(packaging_tab)
         self._build_lines_tab(lines_tab)
         self._build_base_packaging_tab(base_packaging_tab)
+        self._build_resources_flows_tab(resources_tab)
         self._build_packaging_mapping_tab(mapping_tab)
         self._build_performance_tab(performance_tab)
         self._build_penalties_tab(penalties_tab)
@@ -1266,6 +1277,107 @@ class ProductionSettingsScreen(ttk.Frame):
         self._load_packaging_mapping_settings(False)
 
 
+    def _build_resources_flows_tab(self, parent: ttk.Frame) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        self._build_tab_toolbar(parent, help_command=self._show_resources_flows_help)
+
+        def _build_block(row, title, columns, headers, widths, tree_attr):
+            frame = ttk.LabelFrame(parent, text=title, padding=8)
+            frame.grid(row=row, column=0, sticky="nsew", pady=(8 if row > 1 else 0, 0))
+            frame.grid_columnconfigure(0, weight=1); frame.grid_rowconfigure(0, weight=1)
+            tree = ttk.Treeview(frame, columns=columns, show="headings", height=5)
+            for col in columns:
+                tree.heading(col, text=headers[col]); tree.column(col, width=widths.get(col, 110), anchor="w")
+            ys = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+            xs = ttk.Scrollbar(frame, orient="horizontal", command=tree.xview)
+            tree.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
+            tree.grid(row=0, column=0, sticky="nsew"); ys.grid(row=0, column=1, sticky="ns"); xs.grid(row=1, column=0, sticky="ew")
+            setattr(self, tree_attr, tree)
+
+        _build_block(1, "Recursos físicos", ("id","codigo","nombre","tipo_recurso","familia_operativa","capacidad_kg_h","capacidad_por","numero_unidades","personal_minimo","personal_optimo","activo","observaciones"),
+            {"id":"ID","codigo":"Código","nombre":"Nombre","tipo_recurso":"Tipo recurso","familia_operativa":"Familia operativa","capacidad_kg_h":"Capacidad kg/h","capacidad_por":"Capacidad por","numero_unidades":"Nº unidades","personal_minimo":"Personal mínimo","personal_optimo":"Personal óptimo","activo":"Activo","observaciones":"Observaciones"},
+            {"id":40,"codigo":140,"nombre":170,"tipo_recurso":120,"familia_operativa":140,"capacidad_kg_h":110,"capacidad_por":110,"numero_unidades":95,"personal_minimo":95,"personal_optimo":95,"activo":70,"observaciones":220},"_physical_resources_tree")
+        _build_block(2, "Compatibilidades", ("id","recurso_codigo","compatible_con","valor","activo","observaciones"),
+            {"id":"ID","recurso_codigo":"Recurso código","compatible_con":"Compatible con","valor":"Valor","activo":"Activo","observaciones":"Observaciones"},
+            {"id":40,"recurso_codigo":170,"compatible_con":160,"valor":140,"activo":70,"observaciones":280},"_resource_compatibilities_tree")
+        _build_block(3, "Alimentación / conexiones", ("id","origen_codigo","destino_codigo","max_destinos_simultaneos","requiere_precalibrado","activo","observaciones"),
+            {"id":"ID","origen_codigo":"Origen código","destino_codigo":"Destino código","max_destinos_simultaneos":"Máx destinos simultáneos","requiere_precalibrado":"Requiere precalibrado","activo":"Activo","observaciones":"Observaciones"},
+            {"id":40,"origen_codigo":160,"destino_codigo":160,"max_destinos_simultaneos":140,"requiere_precalibrado":150,"activo":70,"observaciones":260},"_resource_feeds_tree")
+        _build_block(4, "Disponibilidad operativa", ("id","recurso_codigo","contexto","disponible","motivo","prioridad","observaciones"),
+            {"id":"ID","recurso_codigo":"Recurso código","contexto":"Contexto","disponible":"Disponible","motivo":"Motivo","prioridad":"Prioridad","observaciones":"Observaciones"},
+            {"id":40,"recurso_codigo":170,"contexto":180,"disponible":80,"motivo":170,"prioridad":80,"observaciones":230},"_resource_availability_tree")
+
+        btns = ttk.Frame(parent); btns.grid(row=5, column=0, sticky="ew", pady=(10, 0))
+        ttk.Button(btns, text="Guardar recursos", command=self._save_physical_resources_settings).pack(side="left", padx=4)
+        ttk.Button(btns, text="Guardar compatibilidades", command=self._save_resource_compatibilities_settings).pack(side="left", padx=4)
+        ttk.Button(btns, text="Guardar alimentación", command=self._save_resource_feeds_settings).pack(side="left", padx=4)
+        ttk.Button(btns, text="Guardar disponibilidad", command=self._save_resource_availability_settings).pack(side="left", padx=4)
+        ttk.Button(btns, text="Restaurar valores por defecto", command=self._reset_resources_flows_defaults).pack(side="left", padx=4)
+
+    def _show_resources_flows_help(self) -> None:
+        show_tab_help(self, title="Descripción de campos - Recursos y flujos", intro="Esta pestaña define recursos físicos, compatibilidades, conexiones de alimentación y disponibilidad operativa por contexto.", help_items=get_help_items(PRODUCTION_RESOURCES_HELP_KEYS, PRODUCTION_RESOURCES_HELP))
+
+    def _load_physical_resources_settings(self) -> None: self._refresh_physical_resources_tree(self.service.get_physical_resources())
+    def _load_resource_compatibilities_settings(self) -> None: self._refresh_resource_compatibilities_tree(self.service.get_resource_compatibilities())
+    def _load_resource_feeds_settings(self) -> None: self._refresh_resource_feeds_tree(self.service.get_resource_feeds())
+    def _load_resource_availability_settings(self) -> None: self._refresh_resource_availability_tree(self.service.get_resource_availability())
+
+    def _refresh_physical_resources_tree(self, rows: list[dict]) -> None:
+        if not self._physical_resources_tree: return
+        self._physical_resources_tree.delete(*self._physical_resources_tree.get_children())
+        for r in rows: self._physical_resources_tree.insert("", "end", values=tuple(r.get(k, "") for k in ("id","codigo","nombre","tipo_recurso","familia_operativa","capacidad_kg_h","capacidad_por","numero_unidades","personal_minimo","personal_optimo","activo","observaciones")))
+    def _refresh_resource_compatibilities_tree(self, rows: list[dict]) -> None:
+        if not self._resource_compatibilities_tree: return
+        self._resource_compatibilities_tree.delete(*self._resource_compatibilities_tree.get_children())
+        for r in rows: self._resource_compatibilities_tree.insert("", "end", values=tuple(r.get(k, "") for k in ("id","recurso_codigo","compatible_con","valor","activo","observaciones")))
+    def _refresh_resource_feeds_tree(self, rows: list[dict]) -> None:
+        if not self._resource_feeds_tree: return
+        self._resource_feeds_tree.delete(*self._resource_feeds_tree.get_children())
+        for r in rows: self._resource_feeds_tree.insert("", "end", values=tuple(r.get(k, "") for k in ("id","origen_codigo","destino_codigo","max_destinos_simultaneos","requiere_precalibrado","activo","observaciones")))
+    def _refresh_resource_availability_tree(self, rows: list[dict]) -> None:
+        if not self._resource_availability_tree: return
+        self._resource_availability_tree.delete(*self._resource_availability_tree.get_children())
+        for r in rows: self._resource_availability_tree.insert("", "end", values=tuple(r.get(k, "") for k in ("id","recurso_codigo","contexto","disponible","motivo","prioridad","observaciones")))
+
+    def _collect_physical_resources_rows_payload(self) -> list[dict]:
+        rows=[]
+        if not self._physical_resources_tree: return rows
+        for it in self._physical_resources_tree.get_children():
+            v=self._physical_resources_tree.item(it,"values"); rows.append({"codigo":v[1],"nombre":v[2],"tipo_recurso":v[3],"familia_operativa":v[4],"capacidad_kg_h":v[5],"capacidad_por":v[6],"numero_unidades":v[7],"personal_minimo":v[8],"personal_optimo":v[9],"activo":v[10],"observaciones":v[11]})
+        return rows
+    def _collect_resource_compatibilities_rows_payload(self) -> list[dict]:
+        rows=[]
+        if not self._resource_compatibilities_tree: return rows
+        for it in self._resource_compatibilities_tree.get_children():
+            v=self._resource_compatibilities_tree.item(it,"values"); rows.append({"recurso_codigo":v[1],"compatible_con":v[2],"valor":v[3],"activo":v[4],"observaciones":v[5]})
+        return rows
+    def _collect_resource_feeds_rows_payload(self) -> list[dict]:
+        rows=[]
+        if not self._resource_feeds_tree: return rows
+        for it in self._resource_feeds_tree.get_children():
+            v=self._resource_feeds_tree.item(it,"values"); rows.append({"origen_codigo":v[1],"destino_codigo":v[2],"max_destinos_simultaneos":v[3],"requiere_precalibrado":v[4],"activo":v[5],"observaciones":v[6]})
+        return rows
+    def _collect_resource_availability_rows_payload(self) -> list[dict]:
+        rows=[]
+        if not self._resource_availability_tree: return rows
+        for it in self._resource_availability_tree.get_children():
+            v=self._resource_availability_tree.item(it,"values"); rows.append({"recurso_codigo":v[1],"contexto":v[2],"disponible":v[3],"motivo":v[4],"prioridad":v[5],"observaciones":v[6]})
+        return rows
+
+    def _save_physical_resources_settings(self) -> None:
+        self.service.save_physical_resources(self._collect_physical_resources_rows_payload()); self._load_physical_resources_settings(); messagebox.showinfo("Configuración productiva", "Recursos guardados correctamente.", parent=self)
+    def _save_resource_compatibilities_settings(self) -> None:
+        self.service.save_resource_compatibilities(self._collect_resource_compatibilities_rows_payload()); self._load_resource_compatibilities_settings(); messagebox.showinfo("Configuración productiva", "Compatibilidades guardadas correctamente.", parent=self)
+    def _save_resource_feeds_settings(self) -> None:
+        self.service.save_resource_feeds(self._collect_resource_feeds_rows_payload()); self._load_resource_feeds_settings(); messagebox.showinfo("Configuración productiva", "Alimentación guardada correctamente.", parent=self)
+    def _save_resource_availability_settings(self) -> None:
+        self.service.save_resource_availability(self._collect_resource_availability_rows_payload()); self._load_resource_availability_settings(); messagebox.showinfo("Configuración productiva", "Disponibilidad guardada correctamente.", parent=self)
+
+    def _reset_resources_flows_defaults(self) -> None:
+        self.service.reset_resources_flows_defaults()
+        self._load_physical_resources_settings(); self._load_resource_compatibilities_settings(); self._load_resource_feeds_settings(); self._load_resource_availability_settings()
+        messagebox.showinfo("Configuración productiva", "Valores por defecto de recursos y flujos restaurados.", parent=self)
+
     def _build_tab_toolbar(self, parent, help_command, export_command=None, import_command=None):
         bar = ttk.Frame(parent)
         bar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
@@ -1390,6 +1502,10 @@ class ProductionSettingsScreen(ttk.Frame):
             "penalty_rules": get_help_items(PRODUCTION_PENALTIES_HELP_KEYS, PRODUCTION_PENALTIES_HELP),
             "semaphore_rules": get_help_items(PRODUCTION_SEMAPHORE_HELP_KEYS, PRODUCTION_SEMAPHORE_HELP),
             "caliber_factors": get_help_items(PRODUCTION_CALIBER_FACTORS_HELP_KEYS, PRODUCTION_CALIBER_FACTORS_HELP),
+            "physical_resources": get_help_items(PRODUCTION_RESOURCES_HELP_KEYS, PRODUCTION_RESOURCES_HELP),
+            "resource_compatibilities": get_help_items(PRODUCTION_RESOURCES_HELP_KEYS, PRODUCTION_RESOURCES_HELP),
+            "resource_feeds": get_help_items(PRODUCTION_RESOURCES_HELP_KEYS, PRODUCTION_RESOURCES_HELP),
+            "resource_availability": get_help_items(PRODUCTION_RESOURCES_HELP_KEYS, PRODUCTION_RESOURCES_HELP),
         }
         return by_key.get(master_key, [])
 

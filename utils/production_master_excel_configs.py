@@ -64,6 +64,30 @@ PRODUCTION_MASTER_EXCEL_CONFIGS = {
         "required_columns": ["codigo", "tipo_regla", "ambito", "metrica", "operador", "umbral_amarillo", "umbral_rojo", "activa"],
         "numeric_columns": ["umbral_amarillo", "umbral_rojo"], "boolean_columns": ["activa"], "unique_key": "codigo", "delete_missing_default": False,
     },
+    "physical_resources": {
+        "key": "physical_resources", "sheet_name": "Recursos fisicos", "default_filename": "recursos_fisicos.xlsx",
+        "columns": ["id", "codigo", "nombre", "tipo_recurso", "familia_operativa", "capacidad_kg_h", "capacidad_por", "numero_unidades", "personal_minimo", "personal_optimo", "activo", "observaciones"],
+        "required_columns": ["codigo", "nombre", "tipo_recurso", "familia_operativa", "capacidad_kg_h", "activo"],
+        "numeric_columns": ["capacidad_kg_h", "numero_unidades", "personal_minimo", "personal_optimo"], "boolean_columns": ["activo"], "unique_key": "codigo", "delete_missing_default": False,
+    },
+    "resource_compatibilities": {
+        "key": "resource_compatibilities", "sheet_name": "Compatibilidades", "default_filename": "compatibilidades_recursos.xlsx",
+        "columns": ["id", "recurso_codigo", "compatible_con", "valor", "activo", "observaciones"],
+        "required_columns": ["recurso_codigo", "compatible_con", "valor", "activo"],
+        "numeric_columns": [], "boolean_columns": ["activo"], "unique_key": "recurso_codigo", "delete_missing_default": False,
+    },
+    "resource_feeds": {
+        "key": "resource_feeds", "sheet_name": "Alimentacion", "default_filename": "alimentacion_recursos.xlsx",
+        "columns": ["id", "origen_codigo", "destino_codigo", "max_destinos_simultaneos", "requiere_precalibrado", "activo", "observaciones"],
+        "required_columns": ["origen_codigo", "destino_codigo", "max_destinos_simultaneos", "activo"],
+        "numeric_columns": ["max_destinos_simultaneos"], "boolean_columns": ["requiere_precalibrado", "activo"], "unique_key": "origen_codigo", "delete_missing_default": False,
+    },
+    "resource_availability": {
+        "key": "resource_availability", "sheet_name": "Disponibilidad", "default_filename": "disponibilidad_recursos.xlsx",
+        "columns": ["id", "recurso_codigo", "contexto", "disponible", "motivo", "prioridad", "observaciones"],
+        "required_columns": ["recurso_codigo", "contexto", "disponible", "prioridad"],
+        "numeric_columns": ["prioridad"], "boolean_columns": ["disponible"], "unique_key": "recurso_codigo", "delete_missing_default": False,
+    },
     "caliber_factors": {
         "key": "caliber_factors", "sheet_name": "Factores calibre", "default_filename": "factores_calibre.xlsx",
         "columns": ["id", "codigo", "confeccion_familia", "grupo_calibre", "calibres_incluidos", "factor_rendimiento", "aplica_a", "activo", "observaciones"],
