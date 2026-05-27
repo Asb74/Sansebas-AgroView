@@ -74,19 +74,23 @@ PRODUCTION_MASTER_EXCEL_CONFIGS = {
         "key": "resource_compatibilities", "sheet_name": "Compatibilidades", "default_filename": "compatibilidades_recursos.xlsx",
         "columns": ["id", "recurso_codigo", "compatible_con", "valor", "activo", "observaciones"],
         "required_columns": ["recurso_codigo", "compatible_con", "valor", "activo"],
-        "numeric_columns": [], "boolean_columns": ["activo"], "unique_key": "recurso_codigo", "delete_missing_default": False,
+        "numeric_columns": [], "boolean_columns": ["activo"], "unique_key": "recurso_codigo|compatible_con|valor", "delete_missing_default": False,
     },
     "resource_feeds": {
         "key": "resource_feeds", "sheet_name": "Alimentacion", "default_filename": "alimentacion_recursos.xlsx",
         "columns": ["id", "origen_codigo", "destino_codigo", "max_destinos_simultaneos", "requiere_precalibrado", "activo", "observaciones"],
         "required_columns": ["origen_codigo", "destino_codigo", "max_destinos_simultaneos", "activo"],
-        "numeric_columns": ["max_destinos_simultaneos"], "boolean_columns": ["requiere_precalibrado", "activo"], "unique_key": "origen_codigo", "delete_missing_default": False,
+        "numeric_columns": ["max_destinos_simultaneos"], "boolean_columns": ["requiere_precalibrado", "activo"], "unique_key": "origen_codigo|destino_codigo", "delete_missing_default": False,
     },
     "resource_availability": {
         "key": "resource_availability", "sheet_name": "Disponibilidad", "default_filename": "disponibilidad_recursos.xlsx",
         "columns": ["id", "recurso_codigo", "contexto", "disponible", "motivo", "prioridad", "observaciones"],
         "required_columns": ["recurso_codigo", "contexto", "disponible", "prioridad"],
-        "numeric_columns": ["prioridad"], "boolean_columns": ["disponible"], "unique_key": "recurso_codigo", "delete_missing_default": False,
+        "numeric_columns": ["prioridad"], "boolean_columns": ["disponible"], "unique_key": "recurso_codigo|contexto", "delete_missing_default": False,
+    },
+    "resources_flows": {
+        "key": "resources_flows", "sheet_name": "Recursos físicos", "default_filename": "recursos_flujos.xlsx",
+        "composite_sheets": ["Recursos físicos", "Compatibilidades", "Alimentación", "Disponibilidad"],
     },
     "caliber_factors": {
         "key": "caliber_factors", "sheet_name": "Factores calibre", "default_filename": "factores_calibre.xlsx",
