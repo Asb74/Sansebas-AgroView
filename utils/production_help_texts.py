@@ -235,16 +235,28 @@ def get_help_items(keys: list[str], source: dict[str, dict]) -> list[dict]:
 
 
 PRODUCTION_RESOURCES_HELP = {
-    "recurso_fisico": {"title": "Recurso físico", "description": "Elemento real de planta que participa en el flujo productivo.", "example": "COMPACTA, AWETTA o PESADORA_1.", "impact": "Define capacidad y restricciones operativas reales."},
-    "capacidad_kg_h": {"title": "Capacidad kg/h", "description": "Capacidad estimada del recurso en kilos por hora.", "example": "10.000 kg/h en un recurso de entrada.", "impact": "Base para estimar cuellos de botella."},
-    "capacidad_por": {"title": "Capacidad por", "description": "Unidad sobre la que se interpreta la capacidad.", "example": "Recurso o unidad.", "impact": "Evita interpretar mal la capacidad total."},
-    "numero_unidades": {"title": "Nº unidades", "description": "Número de equipos o posiciones equivalentes de ese recurso.", "example": "4 pesadoras en paralelo.", "impact": "Multiplica la capacidad disponible simultánea."},
-    "compatibilidad": {"title": "Compatibilidad", "description": "Regla que indica con qué recurso o condición puede trabajar otro recurso.", "example": "CALIBRADOR_PRINCIPAL compatible con COMPACTA.", "impact": "Restringe combinaciones de planificación no válidas."},
-    "alimentacion": {"title": "Alimentación", "description": "Relación origen-destino de flujo entre recursos.", "example": "TOLVA -> CALIBRADOR_PRINCIPAL.", "impact": "Define rutas físicas posibles para mover fruta."},
-    "max_destinos_simultaneos": {"title": "Máximo destinos simultáneos", "description": "Cantidad de destinos que un origen puede alimentar a la vez.", "example": "1 o 2 destinos simultáneos.", "impact": "Limita el reparto simultáneo de caudal."},
-    "requiere_precalibrado": {"title": "Requiere precalibrado", "description": "Indica si esa conexión necesita fruta precalibrada.", "example": "Activado en flujos sensibles al calibre.", "impact": "Condiciona si el flujo es viable según contexto."},
-    "disponibilidad_operativa": {"title": "Disponibilidad operativa", "description": "Estado de disponibilidad de un recurso en un contexto concreto.", "example": "AWETTA no disponible en cultivo X.", "impact": "Permite excluir recursos por campaña, cultivo o incidencia."},
-    "awetta_disponible": {"title": "Awetta disponible", "description": "Marca explícita para controlar si AWETTA está utilizable por contexto.", "example": "AWETTA disponible=0 en contexto limón.", "impact": "Evita planificar procesos que dependen de AWETTA cuando no aplica."},
+    "codigo": {"title": "Código", "description": "Identificador único del recurso físico.", "example": "CALIBRADOR_01.", "impact": "Permite enlazar recursos con compatibilidades, flujos y disponibilidad sin ambigüedades."},
+    "nombre": {"title": "Nombre", "description": "Nombre descriptivo del recurso en planta.", "example": "Calibrador principal.", "impact": "Facilita la lectura operativa y la validación en planificación."},
+    "tipo_recurso": {"title": "Tipo recurso", "description": "Clasificación funcional del recurso.", "example": "Calibrador, pesadora, malla, encajado.", "impact": "Ayuda a aplicar reglas y filtros por tipo de equipo."},
+    "familia_operativa": {"title": "Familia operativa", "description": "Agrupación operativa para análisis y reglas.", "example": "Entrada, calibrado, confección.", "impact": "Permite modelar capacidades por bloques de proceso."},
+    "capacidad_kg_h": {"title": "Capacidad kg/h", "description": "Capacidad estimada en kilos por hora.", "example": "12000.", "impact": "Base para detectar cuellos de botella y calcular capacidad."},
+    "capacidad_por": {"title": "Capacidad por", "description": "Unidad de interpretación de la capacidad.", "example": "Recurso o unidad.", "impact": "Evita errores al multiplicar capacidad por número de unidades."},
+    "numero_unidades": {"title": "Número unidades", "description": "Cantidad de equipos equivalentes disponibles.", "example": "3 pesadoras en paralelo.", "impact": "Ajusta la capacidad total simultánea del recurso."},
+    "personal_minimo": {"title": "Personal mínimo", "description": "Dotación mínima necesaria para operar.", "example": "2.", "impact": "Restringe el uso del recurso cuando falta personal."},
+    "personal_optimo": {"title": "Personal óptimo", "description": "Dotación recomendada para rendimiento objetivo.", "example": "3.", "impact": "Mejora la estimación realista de productividad."},
+    "activo": {"title": "Activo", "description": "Indica si el registro está habilitado para planificación.", "example": "1 activo, 0 inactivo.", "impact": "Permite desactivar recursos o reglas sin borrarlos."},
+    "recurso_codigo": {"title": "Recurso código", "description": "Código del recurso al que aplica la regla.", "example": "PESADORA_01.", "impact": "Conecta compatibilidades y disponibilidad con el recurso correcto."},
+    "compatible_con": {"title": "Compatible con", "description": "Recurso o condición con la que existe compatibilidad.", "example": "CALIBRADOR_01.", "impact": "Evita planificar combinaciones no válidas."},
+    "valor": {"title": "Valor", "description": "Valor de la compatibilidad o etiqueta aplicada.", "example": "SI, BOX, MALLA.", "impact": "Define la condición concreta usada por el planificador."},
+    "origen_codigo": {"title": "Origen código", "description": "Recurso origen del flujo.", "example": "TOLVA_01.", "impact": "Determina desde dónde puede salir producto."},
+    "destino_codigo": {"title": "Destino código", "description": "Recurso destino del flujo.", "example": "CALIBRADOR_01.", "impact": "Define rutas físicas permitidas de proceso."},
+    "max_destinos_simultaneos": {"title": "Máx. destinos simultáneos", "description": "Número máximo de destinos alimentables a la vez.", "example": "1 o 2.", "impact": "Limita el reparto simultáneo de caudal."},
+    "requiere_precalibrado": {"title": "Requiere precalibrado", "description": "Indica si el flujo exige fruta precalibrada.", "example": "1 cuando la conexión solo admite precalibrado.", "impact": "Condiciona viabilidad del flujo según contexto operativo."},
+    "contexto": {"title": "Contexto", "description": "Escenario donde aplica la disponibilidad.", "example": "Naranja, Limón, campaña específica.", "impact": "Permite activar o bloquear recursos según situación."},
+    "disponible": {"title": "Disponible", "description": "Marca si el recurso está disponible en ese contexto.", "example": "1 disponible, 0 no disponible.", "impact": "Evita asignaciones a recursos no utilizables."},
+    "motivo": {"title": "Motivo", "description": "Razón de indisponibilidad o condición operativa.", "example": "Mantenimiento preventivo.", "impact": "Aporta trazabilidad y contexto a las restricciones."},
+    "prioridad": {"title": "Prioridad", "description": "Prioridad relativa de aplicación de la disponibilidad.", "example": "0 alta prioridad, 10 menor prioridad.", "impact": "Resuelve conflictos cuando hay múltiples reglas."},
+    "observaciones": {"title": "Observaciones", "description": "Notas adicionales para operación o mantenimiento.", "example": "Solo turno mañana.", "impact": "Conserva conocimiento operativo útil para planificación."},
 }
 
-PRODUCTION_RESOURCES_HELP_KEYS = ["recurso_fisico", "capacidad_kg_h", "capacidad_por", "numero_unidades", "compatibilidad", "alimentacion", "max_destinos_simultaneos", "requiere_precalibrado", "disponibilidad_operativa", "awetta_disponible"]
+PRODUCTION_RESOURCES_HELP_KEYS = ["codigo", "nombre", "tipo_recurso", "familia_operativa", "capacidad_kg_h", "capacidad_por", "numero_unidades", "personal_minimo", "personal_optimo", "activo", "recurso_codigo", "compatible_con", "valor", "origen_codigo", "destino_codigo", "max_destinos_simultaneos", "requiere_precalibrado", "contexto", "disponible", "motivo", "prioridad", "observaciones"]
