@@ -1283,15 +1283,26 @@ class ProductionSettingsScreen(ttk.Frame):
 
     def _build_resources_flows_tab(self, parent: ttk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
         self._build_tab_toolbar(parent, help_command=self._show_resources_flows_help,
             export_command=self._export_resources_flows_excel,
             import_command=self._import_resources_flows_excel)
 
-        def _build_block(row, title, columns, headers, widths, tree_attr, on_select):
-            frame = ttk.LabelFrame(parent, text=title, padding=8)
-            frame.grid(row=row, column=0, sticky="nsew", pady=(8 if row > 1 else 0, 0))
-            frame.grid_columnconfigure(0, weight=1); frame.grid_rowconfigure(0, weight=1)
-            tree = ttk.Treeview(frame, columns=columns, show="headings", height=5)
+        inner = ttk.Notebook(parent)
+        inner.grid(row=1, column=0, sticky="nsew")
+
+        def _build_block(tab_title, columns, headers, widths, tree_attr, on_select):
+            tab = ttk.Frame(inner, padding=8)
+            tab.grid_columnconfigure(0, weight=1)
+            tab.grid_rowconfigure(0, weight=1)
+            inner.add(tab, text=tab_title)
+
+            frame = ttk.LabelFrame(tab, text=tab_title, padding=8)
+            frame.grid(row=0, column=0, sticky="nsew")
+            frame.grid_columnconfigure(0, weight=1)
+            frame.grid_rowconfigure(0, weight=1)
+
+            tree = ttk.Treeview(frame, columns=columns, show="headings", height=12)
             for col in columns:
                 tree.heading(col, text=headers[col]); tree.column(col, width=widths.get(col, 110), anchor="w")
             ys = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
@@ -1302,35 +1313,35 @@ class ProductionSettingsScreen(ttk.Frame):
             setattr(self, tree_attr, tree)
             return frame
 
-        physical = _build_block(1, "Recursos físicos", ("id","codigo","nombre","tipo_recurso","familia_operativa","capacidad_kg_h","capacidad_por","numero_unidades","personal_minimo","personal_optimo","activo","observaciones"),
+        physical = _build_block("Recursos físicos", ("id","codigo","nombre","tipo_recurso","familia_operativa","capacidad_kg_h","capacidad_por","numero_unidades","personal_minimo","personal_optimo","activo","observaciones"),
             {"id":"ID","codigo":"Código","nombre":"Nombre","tipo_recurso":"Tipo recurso","familia_operativa":"Familia operativa","capacidad_kg_h":"Capacidad kg/h","capacidad_por":"Capacidad por","numero_unidades":"Nº unidades","personal_minimo":"Personal mínimo","personal_optimo":"Personal óptimo","activo":"Activo","observaciones":"Observaciones"},
             {"id":40,"codigo":140,"nombre":170,"tipo_recurso":120,"familia_operativa":140,"capacidad_kg_h":110,"capacidad_por":110,"numero_unidades":95,"personal_minimo":95,"personal_optimo":95,"activo":70,"observaciones":220},"_physical_resources_tree", self._on_physical_resource_selected)
         self._physical_resources_editor_vars = {k: tk.StringVar(value="") for k in ("codigo","nombre","tipo_recurso","familia_operativa","capacidad_kg_h","capacidad_por","numero_unidades","personal_minimo","personal_optimo","observaciones")}; self._physical_resources_editor_vars["activo"] = tk.IntVar(value=1)
         self._build_resources_editor(physical, self._physical_resources_editor_vars, [("codigo","Código"),("nombre","Nombre"),("tipo_recurso","Tipo recurso"),("familia_operativa","Familia operativa"),("capacidad_kg_h","Capacidad kg/h"),("capacidad_por","Capacidad por"),("numero_unidades","Nº unidades"),("personal_minimo","Personal mínimo"),("personal_optimo","Personal óptimo"),("observaciones","Observaciones")],
             [("Nuevo recurso", self._new_physical_resource_row),("Aplicar cambios", self._apply_physical_resource_changes),("Eliminar recurso", self._delete_physical_resource_row),("Guardar recursos", self._save_physical_resources_settings)])
 
-        comp = _build_block(2, "Compatibilidades", ("id","recurso_codigo","compatible_con","valor","activo","observaciones"),
+        comp = _build_block("Compatibilidades", ("id","recurso_codigo","compatible_con","valor","activo","observaciones"),
             {"id":"ID","recurso_codigo":"Recurso código","compatible_con":"Compatible con","valor":"Valor","activo":"Activo","observaciones":"Observaciones"},
             {"id":40,"recurso_codigo":170,"compatible_con":160,"valor":140,"activo":70,"observaciones":280},"_resource_compatibilities_tree", self._on_resource_compatibility_selected)
         self._resource_compatibilities_editor_vars = {k: tk.StringVar(value="") for k in ("recurso_codigo","compatible_con","valor","observaciones")}; self._resource_compatibilities_editor_vars["activo"] = tk.IntVar(value=1)
         self._build_resources_editor(comp, self._resource_compatibilities_editor_vars, [("recurso_codigo","Recurso código"),("compatible_con","Compatible con"),("valor","Valor"),("observaciones","Observaciones")],
             [("Nueva compatibilidad", self._new_resource_compatibility_row),("Aplicar cambios", self._apply_resource_compatibility_changes),("Eliminar compatibilidad", self._delete_resource_compatibility_row),("Guardar compatibilidades", self._save_resource_compatibilities_settings)])
 
-        feed = _build_block(3, "Alimentación / conexiones", ("id","origen_codigo","destino_codigo","max_destinos_simultaneos","requiere_precalibrado","activo","observaciones"),
+        feed = _build_block("Alimentación / conexiones", ("id","origen_codigo","destino_codigo","max_destinos_simultaneos","requiere_precalibrado","activo","observaciones"),
             {"id":"ID","origen_codigo":"Origen código","destino_codigo":"Destino código","max_destinos_simultaneos":"Máx destinos simultáneos","requiere_precalibrado":"Requiere precalibrado","activo":"Activo","observaciones":"Observaciones"},
             {"id":40,"origen_codigo":160,"destino_codigo":160,"max_destinos_simultaneos":140,"requiere_precalibrado":150,"activo":70,"observaciones":260},"_resource_feeds_tree", self._on_resource_feed_selected)
         self._resource_feeds_editor_vars = {k: tk.StringVar(value="") for k in ("origen_codigo","destino_codigo","max_destinos_simultaneos","observaciones")}; self._resource_feeds_editor_vars["requiere_precalibrado"] = tk.IntVar(value=0); self._resource_feeds_editor_vars["activo"] = tk.IntVar(value=1)
         self._build_resources_editor(feed, self._resource_feeds_editor_vars, [("origen_codigo","Origen código"),("destino_codigo","Destino código"),("max_destinos_simultaneos","Máx destinos simultáneos"),("observaciones","Observaciones")],
             [("Nueva conexión", self._new_resource_feed_row),("Aplicar cambios", self._apply_resource_feed_changes),("Eliminar conexión", self._delete_resource_feed_row),("Guardar alimentación", self._save_resource_feeds_settings)], include_precalibrado=True)
 
-        avail = _build_block(4, "Disponibilidad operativa", ("id","recurso_codigo","contexto","disponible","motivo","prioridad","observaciones"),
+        avail = _build_block("Disponibilidad operativa", ("id","recurso_codigo","contexto","disponible","motivo","prioridad","observaciones"),
             {"id":"ID","recurso_codigo":"Recurso código","contexto":"Contexto","disponible":"Disponible","motivo":"Motivo","prioridad":"Prioridad","observaciones":"Observaciones"},
             {"id":40,"recurso_codigo":170,"contexto":180,"disponible":80,"motivo":170,"prioridad":80,"observaciones":230},"_resource_availability_tree", self._on_resource_availability_selected)
         self._resource_availability_editor_vars = {k: tk.StringVar(value="") for k in ("recurso_codigo","contexto","motivo","prioridad","observaciones")}; self._resource_availability_editor_vars["disponible"] = tk.IntVar(value=1)
         self._build_resources_editor(avail, self._resource_availability_editor_vars, [("recurso_codigo","Recurso código"),("contexto","Contexto"),("motivo","Motivo"),("prioridad","Prioridad"),("observaciones","Observaciones")],
             [("Nueva disponibilidad", self._new_resource_availability_row),("Aplicar cambios", self._apply_resource_availability_changes),("Eliminar disponibilidad", self._delete_resource_availability_row),("Guardar disponibilidad", self._save_resource_availability_settings)], include_disponible=True)
 
-        ttk.Button(parent, text="Restaurar valores por defecto", command=self._reset_resources_flows_defaults).grid(row=5, column=0, sticky="w", pady=(10, 0))
+        ttk.Button(parent, text="Restaurar valores por defecto", command=self._reset_resources_flows_defaults).grid(row=2, column=0, sticky="w", pady=(10, 0))
 
     def _show_resources_flows_help(self) -> None:
         show_tab_help(self, title="Descripción de campos - Recursos y flujos", intro="Define recursos físicos (Compacta, calibrador principal, pesadoras, Awetta), compatibilidades entre recursos, conexiones de alimentación y disponibilidad operativa por contexto.", help_items=get_help_items(PRODUCTION_RESOURCES_HELP_KEYS, PRODUCTION_RESOURCES_HELP))
@@ -1466,11 +1477,13 @@ class ProductionSettingsScreen(ttk.Frame):
         messagebox.showinfo("Configuración productiva", "Valores por defecto de recursos y flujos restaurados.", parent=self)
 
     def _export_resources_flows_excel(self) -> None:
+        help_rows = [{"campo": i.get("label", ""), "descripcion": i.get("description", "")} for i in get_help_items(PRODUCTION_RESOURCES_HELP_KEYS, PRODUCTION_RESOURCES_HELP)]
         self._export_master_excel("resources_flows", lambda: {
             "Recursos físicos": {"columns": PRODUCTION_MASTER_EXCEL_CONFIGS["physical_resources"]["columns"], "rows": self.service.get_physical_resources()},
             "Compatibilidades": {"columns": PRODUCTION_MASTER_EXCEL_CONFIGS["resource_compatibilities"]["columns"], "rows": self.service.get_resource_compatibilities()},
             "Alimentación": {"columns": PRODUCTION_MASTER_EXCEL_CONFIGS["resource_feeds"]["columns"], "rows": self.service.get_resource_feeds()},
             "Disponibilidad": {"columns": PRODUCTION_MASTER_EXCEL_CONFIGS["resource_availability"]["columns"], "rows": self.service.get_resource_availability()},
+            "Descripcion campos": {"columns": ["campo", "descripcion"], "rows": help_rows},
         })
 
     def _import_resources_flows_excel(self) -> None:
@@ -1478,20 +1491,41 @@ class ProductionSettingsScreen(ttk.Frame):
         if not path: return
         wb = load_workbook(path, data_only=True)
         cfg = PRODUCTION_MASTER_EXCEL_CONFIGS
+
         def read(sheet, config):
             if sheet not in wb.sheetnames: return []
-            ws = wb[sheet]; headers=[str(h or "").strip() for h in next(ws.iter_rows(min_row=1, max_row=1, values_only=True))]
+            ws = wb[sheet]
+            headers=[str(h or "").strip() for h in next(ws.iter_rows(min_row=1, max_row=1, values_only=True))]
             rows=[]
             for vals in ws.iter_rows(min_row=2, values_only=True):
                 row={headers[i]: vals[i] if i < len(vals) else None for i in range(len(headers))}
                 rows.append({c: row.get(c, "") for c in config["columns"]})
             return rows
-        physical=read("Recursos físicos", cfg["physical_resources"]); comp=read("Compatibilidades", cfg["resource_compatibilities"]); feeds=read("Alimentación", cfg["resource_feeds"]); avail=read("Disponibilidad", cfg["resource_availability"])
-        if not messagebox.askyesno("Confirmar importación", "Se importarán recursos y flujos sin borrar ausentes. ¿Continuar?", parent=self): return
-        self.service.save_physical_resources((self.service.get_physical_resources() + physical))
-        self.service.save_resource_compatibilities((self.service.get_resource_compatibilities() + comp))
-        self.service.save_resource_feeds((self.service.get_resource_feeds() + feeds))
-        self.service.save_resource_availability((self.service.get_resource_availability() + avail))
+
+        def merge_rows(existing, imported, key_builder):
+            merged = {key_builder(row): row for row in existing if key_builder(row)}
+            for row in imported:
+                key = key_builder(row)
+                if key:
+                    merged[key] = row
+            return list(merged.values())
+
+        physical = read("Recursos físicos", cfg["physical_resources"])
+        comp = read("Compatibilidades", cfg["resource_compatibilities"])
+        feeds = read("Alimentación", cfg["resource_feeds"])
+        avail = read("Disponibilidad", cfg["resource_availability"])
+
+        if not messagebox.askyesno("Confirmar importación", "Se importarán recursos y flujos actualizando por clave y sin borrar ausentes. ¿Continuar?", parent=self): return
+
+        merged_physical = merge_rows(self.service.get_physical_resources(), physical, lambda r: str(r.get("codigo", "")).strip().lower())
+        merged_comp = merge_rows(self.service.get_resource_compatibilities(), comp, lambda r: "|".join([str(r.get("recurso_codigo", "")).strip().lower(), str(r.get("compatible_con", "")).strip().lower(), str(r.get("valor", "")).strip().lower()]))
+        merged_feeds = merge_rows(self.service.get_resource_feeds(), feeds, lambda r: "|".join([str(r.get("origen_codigo", "")).strip().lower(), str(r.get("destino_codigo", "")).strip().lower()]))
+        merged_avail = merge_rows(self.service.get_resource_availability(), avail, lambda r: "|".join([str(r.get("recurso_codigo", "")).strip().lower(), str(r.get("contexto", "")).strip().lower()]))
+
+        self.service.save_physical_resources(merged_physical)
+        self.service.save_resource_compatibilities(merged_comp)
+        self.service.save_resource_feeds(merged_feeds)
+        self.service.save_resource_availability(merged_avail)
         self._load_physical_resources_settings(); self._load_resource_compatibilities_settings(); self._load_resource_feeds_settings(); self._load_resource_availability_settings()
 
     def _build_tab_toolbar(self, parent, help_command, export_command=None, import_command=None):
