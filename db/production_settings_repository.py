@@ -169,6 +169,21 @@ DEFAULT_STAFF_AREAS = [
 ]
 
 
+DEFAULT_PHYSICAL_RESOURCES = [
+    ("COMPACTA","Compacta","Alimentación","Entrada fruta",7000.0,"Recurso",1,1,2,1,"Alimentación principal; no siempre puede alimentar todas las pesadoras."),
+    ("CALIBRADOR_PRINCIPAL","Calibrador principal","Calibrador","Clasificación",15000.0,"Recurso",1,1,2,1,""),
+    ("AWETTA","Calibrador Awetta","Calibrador auxiliar","Clasificación",4000.0,"Recurso",1,1,2,1,"Segundo calibrador pequeño. Disponible para cítricos/mandarinas solo si no está ocupado por caqui/fruta de hueso."),
+    ("TOLVA","Tolva","Alimentación","Entrada fruta",4000.0,"Recurso",1,1,1,1,""),
+    ("PESADORA_1","Pesadora 1","Pesadora","Mallas",300.0,"Recurso",1,1,1,1,"Solo Girsac según configuración actual."),
+    ("PESADORA_2","Pesadora 2","Pesadora","Mallas",300.0,"Recurso",1,1,1,1,"Dos brazos Girsac."),
+    ("PESADORA_3","Pesadora 3","Pesadora","Mallas",300.0,"Recurso",1,1,1,1,"Compatible Girsac y tradicional."),
+    ("PESADORA_4","Pesadora 4","Pesadora","Mallas",300.0,"Recurso",1,1,1,1,"Compatible Girsac y tradicional."),
+]
+DEFAULT_RESOURCE_COMPATIBILITIES = [("PESADORA_1","tipo_malla","Girsac",1,""),("PESADORA_2","tipo_malla","Girsac",1,""),("PESADORA_3","tipo_malla","Girsac",1,""),("PESADORA_3","tipo_malla","Tradicional",1,""),("PESADORA_4","tipo_malla","Girsac",1,""),("PESADORA_4","tipo_malla","Tradicional",1,"")]
+DEFAULT_RESOURCE_FEEDS = [("COMPACTA","CALIBRADOR_PRINCIPAL",1,0,1,""),("CALIBRADOR_PRINCIPAL","PESADORA_1",4,0,1,""),("CALIBRADOR_PRINCIPAL","PESADORA_2",4,0,1,""),("CALIBRADOR_PRINCIPAL","PESADORA_3",4,0,1,""),("CALIBRADOR_PRINCIPAL","PESADORA_4",4,0,1,""),("COMPACTA","AWETTA",1,0,1,"Awetta puede alimentarse desde compacta cuando está disponible.")]
+DEFAULT_RESOURCE_AVAILABILITY = [("AWETTA","CITRICOS",1,"Libre para apoyo si no hay otros cultivos.",1,""),("AWETTA","MANDARINAS",1,"Libre para apoyo si no hay otros cultivos.",1,""),("AWETTA","CAQUI",0,"Ocupada por caqui / no disponible para apoyo cítricos.",1,""),("AWETTA","FRUTA_HUESO",0,"Ocupada por fruta de hueso.",1,"")]
+
+
 class ProductionSettingsRepository:
     def __init__(self) -> None:
         self.ensure_defaults()
@@ -181,6 +196,10 @@ class ProductionSettingsRepository:
         self.ensure_semaphore_defaults()
         self.ensure_caliber_factors_defaults()
         self.ensure_unloading_priority_defaults()
+        self.ensure_physical_resources_defaults()
+        self.ensure_resource_compatibilities_defaults()
+        self.ensure_resource_feeds_defaults()
+        self.ensure_resource_availability_defaults()
 
     def ensure_schema(self) -> None:
         with get_connection() as conn:
@@ -1079,6 +1098,10 @@ class ProductionSettingsRepository:
 
     def get_unloading_priority_rules(self) -> list[dict]:
         self.ensure_unloading_priority_defaults()
+        self.ensure_physical_resources_defaults()
+        self.ensure_resource_compatibilities_defaults()
+        self.ensure_resource_feeds_defaults()
+        self.ensure_resource_availability_defaults()
         with get_connection() as conn:
             rows = conn.execute("SELECT * FROM production_unloading_priority_rules ORDER BY id").fetchall()
         return [dict(row) for row in rows]
@@ -1114,3 +1137,117 @@ class ProductionSettingsRepository:
                     for row in rows
                 ],
             )
+
+    def ensure_physical_resources_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_physical_resources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    codigo TEXT NOT NULL UNIQUE,
+                    nombre TEXT NOT NULL,
+                    tipo_recurso TEXT NOT NULL,
+                    familia_operativa TEXT NOT NULL,
+                    capacidad_kg_h REAL NOT NULL,
+                    capacidad_por TEXT NOT NULL,
+                    numero_unidades INTEGER NOT NULL,
+                    personal_minimo INTEGER NOT NULL,
+                    personal_optimo INTEGER NOT NULL,
+                    activo INTEGER NOT NULL,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+
+    def ensure_physical_resources_defaults(self) -> None:
+        self.ensure_physical_resources_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            for row in DEFAULT_PHYSICAL_RESOURCES:
+                conn.execute("INSERT INTO production_physical_resources (codigo,nombre,tipo_recurso,familia_operativa,capacidad_kg_h,capacidad_por,numero_unidades,personal_minimo,personal_optimo,activo,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(codigo) DO NOTHING", (*row, now))
+
+    def get_physical_resources(self) -> list[dict]:
+        self.ensure_physical_resources_defaults()
+        with get_connection() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM production_physical_resources ORDER BY id").fetchall()]
+
+    def save_physical_resources(self, rows: list[dict]) -> None:
+        self.ensure_physical_resources_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_physical_resources")
+            for row in rows:
+                conn.execute("INSERT INTO production_physical_resources (codigo,nombre,tipo_recurso,familia_operativa,capacidad_kg_h,capacidad_por,numero_unidades,personal_minimo,personal_optimo,activo,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (row["codigo"], row["nombre"], row["tipo_recurso"], row["familia_operativa"], float(row.get("capacidad_kg_h", 0)), row.get("capacidad_por", "Recurso"), int(row.get("numero_unidades", 1)), int(row.get("personal_minimo", 0)), int(row.get("personal_optimo", 0)), int(row.get("activo", 1)), row.get("observaciones", ""), now))
+
+    def ensure_resource_compatibilities_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS production_resource_compatibilities (id INTEGER PRIMARY KEY AUTOINCREMENT,recurso_codigo TEXT NOT NULL,compatible_con TEXT NOT NULL,valor TEXT NOT NULL,activo INTEGER NOT NULL,observaciones TEXT,updated_at TEXT, UNIQUE(recurso_codigo, compatible_con, valor))")
+
+    def ensure_resource_compatibilities_defaults(self) -> None:
+        self.ensure_resource_compatibilities_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            for row in DEFAULT_RESOURCE_COMPATIBILITIES:
+                conn.execute("INSERT INTO production_resource_compatibilities (recurso_codigo,compatible_con,valor,activo,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(recurso_codigo, compatible_con, valor) DO NOTHING", (*row, now))
+
+    def get_resource_compatibilities(self) -> list[dict]:
+        self.ensure_resource_compatibilities_defaults()
+        with get_connection() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM production_resource_compatibilities ORDER BY id").fetchall()]
+
+    def save_resource_compatibilities(self, rows: list[dict]) -> None:
+        self.ensure_resource_compatibilities_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_resource_compatibilities")
+            for row in rows:
+                conn.execute("INSERT INTO production_resource_compatibilities (recurso_codigo,compatible_con,valor,activo,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?)", (row["recurso_codigo"], row["compatible_con"], row["valor"], int(row.get("activo", 1)), row.get("observaciones", ""), now))
+
+    def ensure_resource_feeds_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS production_resource_feeds (id INTEGER PRIMARY KEY AUTOINCREMENT,origen_codigo TEXT NOT NULL,destino_codigo TEXT NOT NULL,max_destinos_simultaneos INTEGER NOT NULL,requiere_precalibrado INTEGER NOT NULL,activo INTEGER NOT NULL,observaciones TEXT,updated_at TEXT, UNIQUE(origen_codigo, destino_codigo))")
+
+    def ensure_resource_feeds_defaults(self) -> None:
+        self.ensure_resource_feeds_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            for row in DEFAULT_RESOURCE_FEEDS:
+                conn.execute("INSERT INTO production_resource_feeds (origen_codigo,destino_codigo,max_destinos_simultaneos,requiere_precalibrado,activo,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(origen_codigo, destino_codigo) DO NOTHING", (*row, now))
+
+    def get_resource_feeds(self) -> list[dict]:
+        self.ensure_resource_feeds_defaults()
+        with get_connection() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM production_resource_feeds ORDER BY id").fetchall()]
+
+    def save_resource_feeds(self, rows: list[dict]) -> None:
+        self.ensure_resource_feeds_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_resource_feeds")
+            for row in rows:
+                conn.execute("INSERT INTO production_resource_feeds (origen_codigo,destino_codigo,max_destinos_simultaneos,requiere_precalibrado,activo,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (row["origen_codigo"], row["destino_codigo"], int(row.get("max_destinos_simultaneos", 1)), int(row.get("requiere_precalibrado", 0)), int(row.get("activo", 1)), row.get("observaciones", ""), now))
+
+    def ensure_resource_availability_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS production_resource_availability (id INTEGER PRIMARY KEY AUTOINCREMENT,recurso_codigo TEXT NOT NULL,contexto TEXT NOT NULL,disponible INTEGER NOT NULL,motivo TEXT,prioridad INTEGER NOT NULL,observaciones TEXT,updated_at TEXT, UNIQUE(recurso_codigo, contexto))")
+
+    def ensure_resource_availability_defaults(self) -> None:
+        self.ensure_resource_availability_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            for row in DEFAULT_RESOURCE_AVAILABILITY:
+                conn.execute("INSERT INTO production_resource_availability (recurso_codigo,contexto,disponible,motivo,prioridad,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(recurso_codigo, contexto) DO NOTHING", (*row, now))
+
+    def get_resource_availability(self) -> list[dict]:
+        self.ensure_resource_availability_defaults()
+        with get_connection() as conn:
+            return [dict(r) for r in conn.execute("SELECT * FROM production_resource_availability ORDER BY id").fetchall()]
+
+    def save_resource_availability(self, rows: list[dict]) -> None:
+        self.ensure_resource_availability_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_resource_availability")
+            for row in rows:
+                conn.execute("INSERT INTO production_resource_availability (recurso_codigo,contexto,disponible,motivo,prioridad,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (row["recurso_codigo"], row["contexto"], int(row.get("disponible", 1)), row.get("motivo", ""), int(row.get("prioridad", 1)), row.get("observaciones", ""), now))

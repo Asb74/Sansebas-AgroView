@@ -102,3 +102,27 @@ class ProductionSettingsService:
 
     def reset_caliber_performance_factors_defaults(self) -> None:
         self.repository.reset_caliber_performance_factors_defaults()
+
+    def get_physical_resources(self) -> list[dict]:
+        return self.repository.get_physical_resources()
+
+    def save_physical_resources(self, rows: list[dict]) -> None:
+        self.repository.save_physical_resources(rows)
+
+    def get_resource_compatibilities(self) -> list[dict]:
+        return self.repository.get_resource_compatibilities()
+
+    def save_resource_compatibilities(self, rows: list[dict]) -> None:
+        self.repository.save_resource_compatibilities(rows)
+
+    def get_resource_feeds(self) -> list[dict]:
+        return self.repository.get_resource_feeds()
+
+    def save_resource_feeds(self, rows: list[dict]) -> None:
+        self.repository.save_resource_feeds(rows)
+
+    def get_resource_availability(self) -> list[dict]:
+        return self.repository.get_resource_availability()
+
+    def save_resource_availability(self, rows: list[dict]) -> None:
+        self.repository.save_resource_availability(rows)
