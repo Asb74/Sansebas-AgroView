@@ -1176,9 +1176,8 @@ class ProductionSettingsRepository:
         self.ensure_physical_resources_schema()
         now = datetime.utcnow().isoformat()
         with get_connection() as conn:
-            conn.execute("DELETE FROM production_physical_resources")
             for row in rows:
-                conn.execute("INSERT INTO production_physical_resources (codigo,nombre,tipo_recurso,familia_operativa,capacidad_kg_h,capacidad_por,numero_unidades,personal_minimo,personal_optimo,activo,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (row["codigo"], row["nombre"], row["tipo_recurso"], row["familia_operativa"], float(row.get("capacidad_kg_h", 0)), row.get("capacidad_por", "Recurso"), int(row.get("numero_unidades", 1)), int(row.get("personal_minimo", 0)), int(row.get("personal_optimo", 0)), int(row.get("activo", 1)), row.get("observaciones", ""), now))
+                conn.execute("INSERT INTO production_physical_resources (codigo,nombre,tipo_recurso,familia_operativa,capacidad_kg_h,capacidad_por,numero_unidades,personal_minimo,personal_optimo,activo,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(codigo) DO UPDATE SET nombre=excluded.nombre,tipo_recurso=excluded.tipo_recurso,familia_operativa=excluded.familia_operativa,capacidad_kg_h=excluded.capacidad_kg_h,capacidad_por=excluded.capacidad_por,numero_unidades=excluded.numero_unidades,personal_minimo=excluded.personal_minimo,personal_optimo=excluded.personal_optimo,activo=excluded.activo,observaciones=excluded.observaciones,updated_at=excluded.updated_at", (row["codigo"], row["nombre"], row["tipo_recurso"], row["familia_operativa"], float(row.get("capacidad_kg_h", 0)), row.get("capacidad_por", "Recurso"), int(row.get("numero_unidades", 1)), int(row.get("personal_minimo", 0)), int(row.get("personal_optimo", 0)), int(row.get("activo", 1)), row.get("observaciones", ""), now))
 
     def ensure_resource_compatibilities_schema(self) -> None:
         with get_connection() as conn:
@@ -1200,9 +1199,8 @@ class ProductionSettingsRepository:
         self.ensure_resource_compatibilities_schema()
         now = datetime.utcnow().isoformat()
         with get_connection() as conn:
-            conn.execute("DELETE FROM production_resource_compatibilities")
             for row in rows:
-                conn.execute("INSERT INTO production_resource_compatibilities (recurso_codigo,compatible_con,valor,activo,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?)", (row["recurso_codigo"], row["compatible_con"], row["valor"], int(row.get("activo", 1)), row.get("observaciones", ""), now))
+                conn.execute("INSERT INTO production_resource_compatibilities (recurso_codigo,compatible_con,valor,activo,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(recurso_codigo, compatible_con, valor) DO UPDATE SET activo=excluded.activo,observaciones=excluded.observaciones,updated_at=excluded.updated_at", (row["recurso_codigo"], row["compatible_con"], row["valor"], int(row.get("activo", 1)), row.get("observaciones", ""), now))
 
     def ensure_resource_feeds_schema(self) -> None:
         with get_connection() as conn:
@@ -1224,9 +1222,8 @@ class ProductionSettingsRepository:
         self.ensure_resource_feeds_schema()
         now = datetime.utcnow().isoformat()
         with get_connection() as conn:
-            conn.execute("DELETE FROM production_resource_feeds")
             for row in rows:
-                conn.execute("INSERT INTO production_resource_feeds (origen_codigo,destino_codigo,max_destinos_simultaneos,requiere_precalibrado,activo,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (row["origen_codigo"], row["destino_codigo"], int(row.get("max_destinos_simultaneos", 1)), int(row.get("requiere_precalibrado", 0)), int(row.get("activo", 1)), row.get("observaciones", ""), now))
+                conn.execute("INSERT INTO production_resource_feeds (origen_codigo,destino_codigo,max_destinos_simultaneos,requiere_precalibrado,activo,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(origen_codigo, destino_codigo) DO UPDATE SET max_destinos_simultaneos=excluded.max_destinos_simultaneos,requiere_precalibrado=excluded.requiere_precalibrado,activo=excluded.activo,observaciones=excluded.observaciones,updated_at=excluded.updated_at", (row["origen_codigo"], row["destino_codigo"], int(row.get("max_destinos_simultaneos", 1)), int(row.get("requiere_precalibrado", 0)), int(row.get("activo", 1)), row.get("observaciones", ""), now))
 
     def ensure_resource_availability_schema(self) -> None:
         with get_connection() as conn:
@@ -1248,9 +1245,8 @@ class ProductionSettingsRepository:
         self.ensure_resource_availability_schema()
         now = datetime.utcnow().isoformat()
         with get_connection() as conn:
-            conn.execute("DELETE FROM production_resource_availability")
             for row in rows:
-                conn.execute("INSERT INTO production_resource_availability (recurso_codigo,contexto,disponible,motivo,prioridad,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)", (row["recurso_codigo"], row["contexto"], int(row.get("disponible", 1)), row.get("motivo", ""), int(row.get("prioridad", 1)), row.get("observaciones", ""), now))
+                conn.execute("INSERT INTO production_resource_availability (recurso_codigo,contexto,disponible,motivo,prioridad,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(recurso_codigo, contexto) DO UPDATE SET disponible=excluded.disponible,motivo=excluded.motivo,prioridad=excluded.prioridad,observaciones=excluded.observaciones,updated_at=excluded.updated_at", (row["recurso_codigo"], row["contexto"], int(row.get("disponible", 1)), row.get("motivo", ""), int(row.get("prioridad", 1)), row.get("observaciones", ""), now))
 
 
     def reset_resources_flows_defaults(self) -> None:
