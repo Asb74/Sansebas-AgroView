@@ -28,13 +28,27 @@ DEFAULT_GENERAL_SETTINGS = {
     "pedidos_maximos_recomendados": 36,
 }
 DEFAULT_STAFF_SUMMARY = {
-    "personal_total": 44,
-    "personal_directo": 32,
-    "personal_indirecto": 12,
+    "personal_total": 0,
+    "personal_directo": 0,
+    "personal_soporte": 0,
+    "personal_indirecto": 0,
     "horas_por_persona": 7.5,
     "ausencias_previstas": 2,
     "observaciones": "",
 }
+
+STAFF_TYPES = {"Directo", "Soporte", "Indirecto"}
+
+
+def _normalize_staff_type(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if text == "directo":
+        return "Directo"
+    if text == "soporte":
+        return "Soporte"
+    if text == "indirecto":
+        return "Indirecto"
+    raise ValueError("Tipo personal debe ser Directo, Soporte o Indirecto")
 
 DEFAULT_PACKAGING_TYPES = [
     {"codigo": "MALLA_1KG_TRAD", "descripcion": "Malla 1 kg tradicional", "familia": "Malla", "subtipo": "Tradicional", "kg_formato": 1.0, "material": "Malla", "tipo_malla": "Tradicional", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
@@ -406,6 +420,7 @@ class ProductionSettingsRepository:
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     personal_total INTEGER NOT NULL,
                     personal_directo INTEGER NOT NULL,
+                    personal_soporte INTEGER NOT NULL DEFAULT 0,
                     personal_indirecto INTEGER NOT NULL,
                     horas_por_persona REAL NOT NULL,
                     ausencias_previstas INTEGER NOT NULL,
@@ -414,6 +429,9 @@ class ProductionSettingsRepository:
                 )
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(production_staff_summary)").fetchall()}
+            if "personal_soporte" not in columns:
+                conn.execute("ALTER TABLE production_staff_summary ADD COLUMN personal_soporte INTEGER NOT NULL DEFAULT 0")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS production_staff_areas (
@@ -437,16 +455,17 @@ class ProductionSettingsRepository:
             conn.execute(
                 """
                 INSERT INTO production_staff_summary (
-                    id, personal_total, personal_directo, personal_indirecto,
+                    id, personal_total, personal_directo, personal_soporte, personal_indirecto,
                     horas_por_persona, ausencias_previstas, observaciones, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO NOTHING
                 """,
                 (
                     1,
                     DEFAULT_STAFF_SUMMARY["personal_total"],
                     DEFAULT_STAFF_SUMMARY["personal_directo"],
+                    DEFAULT_STAFF_SUMMARY["personal_soporte"],
                     DEFAULT_STAFF_SUMMARY["personal_indirecto"],
                     DEFAULT_STAFF_SUMMARY["horas_por_persona"],
                     DEFAULT_STAFF_SUMMARY["ausencias_previstas"],
@@ -466,26 +485,49 @@ class ProductionSettingsRepository:
                     [(*row, now) for row in DEFAULT_STAFF_AREAS],
                 )
 
+    def _calculate_staff_totals(self, rows: list[dict] | None = None) -> dict[str, int]:
+        if rows is None:
+            with get_connection() as conn:
+                rows = [dict(row) for row in conn.execute("SELECT tipo_personal, disponible, activo FROM production_staff_areas").fetchall()]
+        totals = {"personal_directo": 0, "personal_soporte": 0, "personal_indirecto": 0}
+        for row in rows:
+            if int(row.get("activo", 1) or 0) != 1:
+                continue
+            tipo = _normalize_staff_type(row.get("tipo_personal"))
+            disponible = int(float(row.get("disponible", 0) or 0))
+            if tipo == "Directo":
+                totals["personal_directo"] += disponible
+            elif tipo == "Soporte":
+                totals["personal_soporte"] += disponible
+            else:
+                totals["personal_indirecto"] += disponible
+        totals["personal_total"] = totals["personal_directo"] + totals["personal_soporte"] + totals["personal_indirecto"]
+        return totals
+
     def get_staff_summary(self) -> dict:
         self.ensure_staff_defaults()
         with get_connection() as conn:
             row = conn.execute("SELECT * FROM production_staff_summary WHERE id = 1").fetchone()
-        return dict(row) if row else {"id": 1, **DEFAULT_STAFF_SUMMARY}
+        summary = dict(row) if row else {"id": 1, **DEFAULT_STAFF_SUMMARY}
+        summary.update(self._calculate_staff_totals())
+        return summary
 
     def save_staff_summary(self, data: dict) -> None:
         self.ensure_staff_schema()
+        totals = self._calculate_staff_totals()
         now = datetime.utcnow().isoformat()
         with get_connection() as conn:
             conn.execute(
                 """
                 INSERT INTO production_staff_summary (
-                    id, personal_total, personal_directo, personal_indirecto,
+                    id, personal_total, personal_directo, personal_soporte, personal_indirecto,
                     horas_por_persona, ausencias_previstas, observaciones, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     personal_total=excluded.personal_total,
                     personal_directo=excluded.personal_directo,
+                    personal_soporte=excluded.personal_soporte,
                     personal_indirecto=excluded.personal_indirecto,
                     horas_por_persona=excluded.horas_por_persona,
                     ausencias_previstas=excluded.ausencias_previstas,
@@ -494,9 +536,10 @@ class ProductionSettingsRepository:
                 """,
                 (
                     1,
-                    data["personal_total"],
-                    data["personal_directo"],
-                    data["personal_indirecto"],
+                    totals["personal_total"],
+                    totals["personal_directo"],
+                    totals["personal_soporte"],
+                    totals["personal_indirecto"],
                     data["horas_por_persona"],
                     data["ausencias_previstas"],
                     data.get("observaciones", ""),
@@ -525,10 +568,10 @@ class ProductionSettingsRepository:
                 [
                     (
                         row["area"],
-                        row["tipo_personal"],
-                        int(row["disponible"]),
-                        int(row["minimo_operativo"]),
-                        int(row["optimo"]),
+                        _normalize_staff_type(row["tipo_personal"]),
+                        int(float(row["disponible"])),
+                        int(float(row["minimo_operativo"])),
+                        int(float(row["optimo"])),
                         int(row["activo"]),
                         row.get("observaciones", ""),
                         now,
@@ -536,6 +579,8 @@ class ProductionSettingsRepository:
                     for row in rows
                 ],
             )
+        summary = self.get_staff_summary()
+        self.save_staff_summary(summary)
 
     def reset_staff_defaults(self) -> None:
         self.ensure_staff_schema()

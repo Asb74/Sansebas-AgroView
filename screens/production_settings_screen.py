@@ -225,15 +225,16 @@ class ProductionSettingsScreen(ttk.Frame):
         summary = ttk.LabelFrame(parent, text="Resumen de plantilla diaria", padding=12)
         summary.grid(row=1, column=0, sticky="ew")
         summary.grid_columnconfigure(1, weight=1)
-        fields = [("personal_total", "Personal disponible total"), ("personal_directo", "Personal directo disponible"), ("personal_indirecto", "Personal indirecto disponible"), ("horas_por_persona", "Horas por persona"), ("ausencias_previstas", "Ausencias previstas")]
-        for i, (key, label) in enumerate(fields):
+        fields = [("personal_total", "Personal disponible total", True), ("personal_directo", "Personal directo disponible", True), ("personal_soporte", "Personal soporte disponible", True), ("personal_indirecto", "Personal indirecto disponible", True), ("horas_por_persona", "Horas por persona", False), ("ausencias_previstas", "Ausencias previstas", False)]
+        for i, (key, label, calculated) in enumerate(fields):
             ttk.Label(summary, text=label).grid(row=i, column=0, sticky="w", padx=(0, 8), pady=4)
             var = tk.StringVar(value="0")
-            ttk.Entry(summary, textvariable=var).grid(row=i, column=1, sticky="ew", pady=4)
+            state = "readonly" if calculated else "normal"
+            ttk.Entry(summary, textvariable=var, state=state).grid(row=i, column=1, sticky="ew", pady=4)
             self._staff_summary_vars[key] = var
-        ttk.Label(summary, text="Observaciones").grid(row=5, column=0, sticky="nw", padx=(0, 8), pady=4)
+        ttk.Label(summary, text="Observaciones").grid(row=6, column=0, sticky="nw", padx=(0, 8), pady=4)
         obs_var = tk.StringVar(value="")
-        ttk.Entry(summary, textvariable=obs_var).grid(row=5, column=1, sticky="ew", pady=4)
+        ttk.Entry(summary, textvariable=obs_var).grid(row=6, column=1, sticky="ew", pady=4)
         self._staff_summary_vars["observaciones"] = obs_var
 
         areas = ttk.LabelFrame(parent, text="Personal por área operativa", padding=12)
@@ -478,6 +479,7 @@ class ProductionSettingsScreen(ttk.Frame):
         for key, var in self._staff_summary_vars.items():
             var.set(str(summary.get(key, "")))
         self._refresh_staff_tree(self.service.get_staff_areas())
+        self._refresh_staff_summary_totals()
 
     def _refresh_staff_tree(self, rows: list[dict]) -> None:
         if not self._staff_tree:
@@ -510,10 +512,9 @@ class ProductionSettingsScreen(ttk.Frame):
         return {"horas_turno": horas_turno, "numero_turnos": numero_turnos, "horas_descanso": horas_descanso, "tipo_campana": self._general_vars["tipo_campana"].get(), "tipos_volcado_activos": tipos_volcado_activos, "saturacion_maxima_pct": saturacion, "permitir_horas_extra": int(self._general_vars["permitir_horas_extra"].get()), "permitir_segundo_turno": int(self._general_vars["permitir_segundo_turno"].get()), "priorizar_pedidos_reales": int(self._general_vars["priorizar_pedidos_reales"].get()), "permitir_adelantar_produccion": int(self._general_vars["permitir_adelantar_produccion"].get()), "agrupar_pedidos_compatibles": int(self._general_vars["agrupar_pedidos_compatibles"].get()), "minimizar_cambios_formato": int(self._general_vars["minimizar_cambios_formato"].get()), "kg_objetivo_dia": self._parse_float("kg_objetivo_dia", "Kg objetivo día"), "palets_objetivo_dia": self._parse_float("palets_objetivo_dia", "Palets objetivo día"), "pedidos_maximos_recomendados": self._parse_int("pedidos_maximos_recomendados", "Pedidos máximos recomendados")}
 
     def _collect_staff_summary_payload(self) -> dict:
+        calculated = self._calculate_staff_summary_from_tree()
         return {
-            "personal_total": self._parse_non_negative_int(self._staff_summary_vars["personal_total"].get(), "Personal disponible total"),
-            "personal_directo": self._parse_non_negative_int(self._staff_summary_vars["personal_directo"].get(), "Personal directo disponible"),
-            "personal_indirecto": self._parse_non_negative_int(self._staff_summary_vars["personal_indirecto"].get(), "Personal indirecto disponible"),
+            **calculated,
             "horas_por_persona": float(str(self._staff_summary_vars["horas_por_persona"].get()).replace(",", ".")),
             "ausencias_previstas": self._parse_non_negative_int(self._staff_summary_vars["ausencias_previstas"].get(), "Ausencias previstas"),
             "observaciones": str(self._staff_summary_vars["observaciones"].get()).strip(),
@@ -529,8 +530,42 @@ class ProductionSettingsScreen(ttk.Frame):
             if not area: raise ValueError("El área no puede estar vacía")
             if area.lower() in areas: raise ValueError(f"Área duplicada: {area}")
             areas.add(area.lower())
-            rows.append({"area": area, "tipo_personal": str(values[2]).strip(), "disponible": self._parse_non_negative_int(values[3], f"Disponible ({area})"), "minimo_operativo": self._parse_non_negative_int(values[4], f"Mínimo operativo ({area})"), "optimo": self._parse_non_negative_int(values[5], f"Óptimo ({area})"), "activo": 1 if str(values[6]).strip() in ("1", "True", "true", "Sí", "si") else 0, "observaciones": str(values[7]).strip()})
+            tipo_personal = self._normalize_staff_type(values[2])
+            rows.append({"area": area, "tipo_personal": tipo_personal, "disponible": self._parse_non_negative_int(values[3], f"Disponible ({area})"), "minimo_operativo": self._parse_non_negative_int(values[4], f"Mínimo operativo ({area})"), "optimo": self._parse_non_negative_int(values[5], f"Óptimo ({area})"), "activo": 1 if str(values[6]).strip() in ("1", "True", "true", "Sí", "si") else 0, "observaciones": str(values[7]).strip()})
         return rows
+
+    def _normalize_staff_type(self, value) -> str:
+        text = str(value or "").strip().lower()
+        if text == "directo":
+            return "Directo"
+        if text == "soporte":
+            return "Soporte"
+        if text == "indirecto":
+            return "Indirecto"
+        raise ValueError("Tipo personal debe ser Directo, Soporte o Indirecto")
+
+    def _calculate_staff_summary_from_tree(self) -> dict:
+        totals = {"personal_directo": 0, "personal_soporte": 0, "personal_indirecto": 0}
+        if self._staff_tree:
+            for item_id in self._staff_tree.get_children():
+                values = self._staff_tree.item(item_id, "values")
+                if str(values[6]).strip() not in ("1", "True", "true", "Sí", "si"):
+                    continue
+                tipo = self._normalize_staff_type(values[2])
+                disponible = self._parse_non_negative_int(values[3], "Disponible")
+                if tipo == "Directo":
+                    totals["personal_directo"] += disponible
+                elif tipo == "Soporte":
+                    totals["personal_soporte"] += disponible
+                else:
+                    totals["personal_indirecto"] += disponible
+        totals["personal_total"] = totals["personal_directo"] + totals["personal_soporte"] + totals["personal_indirecto"]
+        return totals
+
+    def _refresh_staff_summary_totals(self) -> None:
+        for key, value in self._calculate_staff_summary_from_tree().items():
+            if key in self._staff_summary_vars:
+                self._staff_summary_vars[key].set(str(value))
 
     def _recalculate(self) -> None:
         try:
@@ -568,12 +603,14 @@ class ProductionSettingsScreen(ttk.Frame):
             if not area: raise ValueError("El área es obligatoria")
             values = (self._staff_editor_vars["id"].get(), area, self._staff_editor_vars["tipo_personal"].get(), self._parse_non_negative_int(self._staff_editor_vars["disponible"].get(), "Disponible"), self._parse_non_negative_int(self._staff_editor_vars["minimo_operativo"].get(), "Mínimo operativo"), self._parse_non_negative_int(self._staff_editor_vars["optimo"].get(), "Óptimo"), 1 if int(self._staff_editor_vars["activo"].get()) else 0, str(self._staff_editor_vars["observaciones"].get()).strip())
             self._staff_tree.item(selected[0], values=values)
+            self._refresh_staff_summary_totals()
         except Exception as exc:
             messagebox.showerror("Datos inválidos", str(exc), parent=self)
 
     def _add_staff_area(self) -> None:
         if not self._staff_tree: return
         self._staff_tree.insert("", "end", values=("", "Nueva área", "Directo", 0, 0, 0, 1, ""))
+        self._refresh_staff_summary_totals()
 
     def _delete_staff_area(self) -> None:
         if not self._staff_tree: return
@@ -582,14 +619,15 @@ class ProductionSettingsScreen(ttk.Frame):
             messagebox.showerror("Personal", "Seleccione una fila para eliminar.", parent=self); return
         if messagebox.askyesno("Confirmar eliminación", "¿Desea eliminar el área seleccionada?", parent=self):
             self._staff_tree.delete(selected[0])
+            self._refresh_staff_summary_totals()
 
     def _save_staff_settings(self) -> None:
         try:
             summary = self._collect_staff_summary_payload()
             if summary["horas_por_persona"] < 0: raise ValueError("Horas por persona debe ser >= 0")
             rows = self._collect_staff_rows_payload()
-            self.service.save_staff_summary(summary)
             self.service.save_staff_areas(rows)
+            self.service.save_staff_summary(summary)
             self._load_staff_settings()
             messagebox.showinfo("Configuración productiva", "Personal guardado correctamente.", parent=self)
         except Exception as exc:
@@ -1771,6 +1809,8 @@ class ProductionSettingsScreen(ttk.Frame):
             for row_idx, vals in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
                 row={headers[i]: vals[i] if i < len(vals) else None for i in range(len(headers))}
                 clean={c: row.get(c, "") for c in cfg["columns"]}
+                for h in headers:
+                    clean.setdefault(h, row.get(h, ""))
                 for c in cfg.get("numeric_columns", []):
                     if clean.get(c) not in (None, ""): clean[c]=float(str(clean[c]).replace(",","."))
                 for c in cfg.get("boolean_columns", []): clean[c]=1 if str(clean.get(c,"0")).strip().upper() in {"1","SI","S","TRUE","X","Y","YES"} else 0
@@ -1782,24 +1822,50 @@ class ProductionSettingsScreen(ttk.Frame):
                 if uk in seen: errors.append(f"{ws.title} fila {row_idx}: clave duplicada {unique_key}")
                 seen.add(uk); data.append(clean)
             return data
+        personal_summary = None
         if master_key == "personal":
             areas = _sheet_to_rows(wb[config["sheet_name"]], config)
+            for row in areas:
+                row["tipo_personal"] = self._staff_type_from_excel_row(row)
             s_cfg=config["extra_sheets"]["Resumen personal"]
-            summary_rows = _sheet_to_rows(wb["Resumen personal"], {**s_cfg, "columns": s_cfg["columns"]})
-            if summary_rows: self.service.save_staff_summary(summary_rows[0])
+            if "Resumen personal" in wb.sheetnames:
+                summary_rows = _sheet_to_rows(wb["Resumen personal"], {**s_cfg, "columns": s_cfg["columns"]})
+                if summary_rows:
+                    personal_summary = summary_rows[0]
             rows=areas
         else:
             rows = _sheet_to_rows(wb.active if config["sheet_name"] not in wb.sheetnames else wb[config["sheet_name"]], config)
         if extra_validator: errors.extend(extra_validator(rows))
         if errors: return messagebox.showerror("Errores de validación", "\n".join(errors[:20]), parent=self)
         if not messagebox.askyesno("Confirmar importación", f"Se importarán {len(rows)} registros. ¿Continuar?", parent=self): return
-        saver(rows); reload_callback(); messagebox.showinfo("Configuración productiva", f"Importación completada. Registros procesados: {len(rows)}.", parent=self)
+        saver(rows)
+        if master_key == "personal" and personal_summary:
+            self.service.save_staff_summary(personal_summary)
+        reload_callback(); messagebox.showinfo("Configuración productiva", f"Importación completada. Registros procesados: {len(rows)}.", parent=self)
 
     def _load_personal_rows_for_excel(self):
+        area_rows = []
+        for row in self.service.get_staff_areas():
+            export_row = dict(row)
+            tipo = self._normalize_staff_type(export_row.get("tipo_personal"))
+            export_row["Directo"] = 1 if tipo == "Directo" else 0
+            export_row["Soporte"] = 1 if tipo == "Soporte" else 0
+            export_row["Indirecto"] = 1 if tipo == "Indirecto" else 0
+            area_rows.append(export_row)
         return {
             "Resumen personal": {"columns": PRODUCTION_MASTER_EXCEL_CONFIGS["personal"]["extra_sheets"]["Resumen personal"]["columns"], "rows": [self.service.get_staff_summary()]},
-            "Areas personal": {"columns": PRODUCTION_MASTER_EXCEL_CONFIGS["personal"]["columns"], "rows": self.service.get_staff_areas()},
+            "Areas personal": {"columns": PRODUCTION_MASTER_EXCEL_CONFIGS["personal"]["columns"], "rows": area_rows},
         }
+
+    def _staff_type_from_excel_row(self, row: dict) -> str:
+        tipo = str(row.get("tipo_personal") or "").strip()
+        if tipo:
+            return self._normalize_staff_type(tipo)
+        for key, label in (("Directo", "Directo"), ("Soporte", "Soporte"), ("Indirecto", "Indirecto"), ("directo", "Directo"), ("soporte", "Soporte"), ("indirecto", "Indirecto")):
+            raw = row.get(key)
+            if str(raw).strip().upper() in {"1", "SI", "S", "SÍ", "TRUE", "X", "Y", "YES"}:
+                return label
+        raise ValueError(f"Tipo personal obligatorio para el área {row.get('area', '')}")
 
     def _save_personal_rows_from_excel(self, rows):
         self.service.save_staff_areas(rows)
