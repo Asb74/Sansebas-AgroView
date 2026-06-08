@@ -123,6 +123,13 @@ class ProductionCapacityService:
                     incidencias.append(self._inc("Sin capacidad configurada", order, f"Línea {linea} sin capacidad productiva válida", "Completar maestro de líneas"))
                     continue
 
+                tipo_malla = str(productive_conf.get("tipo_malla", "") or "").strip()
+                subtipo_productivo = str(productive_conf.get("subtipo_productivo", "") or "").strip()
+                if linea == "MALLAS_TRADICIONAL" and tipo_malla == "Clip-to-clip":
+                    tipo_malla = "Tradicional"
+                    subtipo_productivo = "Tradicional"
+                    incidencias.append(self._inc("Tipo malla corregido", order, "Tipo malla corregido operativamente a Tradicional", "Actualizar Mapeo confecciones para separar nombre comercial y tipo operativo"))
+
                 factor = self._factor_for(order, familia, factor_index)
                 capacidad_real = max(0.01, capacidad_total * factor)
                 horas = kg / capacidad_real
@@ -142,8 +149,8 @@ class ProductionCapacityService:
                     "capacidad_kg_h": capacidad_real,
                     "personal_minimo_linea": max(0, personal_min),
                     "personal_optimo_linea": int(line_cfg.get("personal_optimo", 0) or 0),
-                    "tipo_malla": str(productive_conf.get("tipo_malla", "") or "").strip(),
-                    "subtipo_productivo": str(productive_conf.get("subtipo_productivo", "") or "").strip(),
+                    "tipo_malla": tipo_malla,
+                    "subtipo_productivo": subtipo_productivo,
                     "fallback_used": fallback_used,
                 })
         return out, incidencias

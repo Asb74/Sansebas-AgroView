@@ -1236,6 +1236,7 @@ class ProductionSettingsScreen(ttk.Frame):
         ttk.Button(btns,text="Guardar mapeo",command=self._save_packaging_mapping).pack(side="left",padx=4)
         ttk.Button(btns,text="Restaurar autodetección",command=self._reset_packaging_mapping_autodetect).pack(side="left",padx=4)
         ttk.Button(btns,text="Filtrar pendientes de revisar",command=lambda: self._load_packaging_mapping_settings(True)).pack(side="left",padx=4)
+        ttk.Button(btns,text="Ver incoherencias",command=self._show_packaging_mapping_incoherences).pack(side="left",padx=4)
         ttk.Button(btns,text="Ver todos",command=lambda: self._load_packaging_mapping_settings(False)).pack(side="left",padx=4)
 
     def _load_packaging_mapping_settings(self, only_review: bool = False) -> None:
@@ -1243,10 +1244,55 @@ class ProductionSettingsScreen(ttk.Frame):
         if not rows:
             self.service.autofill_packaging_mapping_from_mconfecciones(False)
             rows = self.service.get_packaging_mapping(only_review)
-        if not self._mapping_tree: return
+        self._refresh_mapping_tree(rows)
+
+    def _refresh_mapping_tree(self, rows: list[dict]) -> None:
+        if not self._mapping_tree:
+            return
         self._mapping_tree.delete(*self._mapping_tree.get_children())
         for r in rows:
             self._mapping_tree.insert("", "end", values=(r.get("codigo_mconfeccion",""),r.get("nombre_mconfeccion",""),r.get("grupo_origen",""),r.get("neto_origen",0),r.get("npiezas_origen",0),r.get("familia_productiva",""),r.get("subtipo_productivo",""),r.get("kg_formato",0),r.get("tipo_malla",""),r.get("linea_productiva",""),r.get("activo_produccion",1),r.get("revisar",0),r.get("confianza_autodeteccion",""),r.get("observaciones","")))
+
+    def _show_packaging_mapping_incoherences(self) -> None:
+        rows = self.service.get_packaging_mapping(False)
+        if not rows:
+            self.service.autofill_packaging_mapping_from_mconfecciones(False)
+            rows = self.service.get_packaging_mapping(False)
+        lines_by_code = {str(r.get("codigo", "") or "").strip(): r for r in self.service.get_lines()}
+        filtered = []
+        for row in rows:
+            reasons = self._mapping_incoherence_reasons(row, lines_by_code)
+            if not reasons:
+                continue
+            display_row = dict(row)
+            obs = str(display_row.get("observaciones", "") or "")
+            suffix = "INCOHERENCIAS: " + "; ".join(reasons)
+            display_row["observaciones"] = suffix if not obs else f"{obs} | {suffix}"
+            filtered.append(display_row)
+        self._refresh_mapping_tree(filtered)
+        if not filtered:
+            messagebox.showinfo("Mapeo confecciones", "No se han detectado incoherencias en el mapeo productivo.", parent=self)
+
+    def _mapping_incoherence_reasons(self, row: dict, lines_by_code: dict[str, dict]) -> list[str]:
+        reasons = []
+        line_code = str(row.get("linea_productiva", "") or "").strip()
+        tipo_malla = str(row.get("tipo_malla", "") or "").strip()
+        line = lines_by_code.get(line_code)
+        if line_code and (not line or int(line.get("activa", 0) or 0) != 1):
+            reasons.append("línea inactiva asignada")
+        if line_code == "MALLAS_CLIP" and (not line or int(line.get("activa", 0) or 0) != 1):
+            reasons.append("línea MALLAS_CLIP inactiva")
+        expected_mesh_by_line = {
+            "MALLAS_TRADICIONAL": "Tradicional",
+            "MALLAS_GIRSAC": "Girsac",
+            "MALLAS_CLIP": "Clip-to-clip",
+        }
+        expected = expected_mesh_by_line.get(line_code)
+        if expected and tipo_malla != expected:
+            reasons.append(f"tipo_malla incompatible con línea (esperado {expected})")
+        if line_code == "MALLAS_TRADICIONAL" and tipo_malla == "Clip-to-clip":
+            reasons.append("tipo_malla Clip-to-clip con línea Tradicional")
+        return reasons
 
     def _on_mapping_row_selected(self, _event=None) -> None:
         if not self._mapping_tree or not self._mapping_tree.selection(): return
