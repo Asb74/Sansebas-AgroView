@@ -6,7 +6,7 @@ PRODUCTION_MASTER_EXCEL_CONFIGS = {
         "sheet_name": "Areas personal",
         "default_filename": "personal.xlsx",
         "columns": ["id", "area", "tipo_personal", "Directo", "Soporte", "Indirecto", "disponible", "minimo_operativo", "optimo", "activo", "observaciones"],
-        "required_columns": ["area", "disponible", "minimo_operativo", "optimo", "activo"],
+        "required_columns": ["area", "tipo_personal", "disponible", "minimo_operativo", "optimo", "activo"],
         "numeric_columns": ["disponible", "minimo_operativo", "optimo"],
         "boolean_columns": ["activo"],
         "unique_key": "area",

@@ -6,6 +6,7 @@ from tkinter import filedialog, messagebox, ttk
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 
+from db.production_settings_repository import infer_default_staff_type, staff_type_flags
 from services.production_settings_service import ProductionSettingsService
 from utils.master_excel_io import export_master_to_excel, import_master_from_excel
 from utils.help_dialog import show_tab_help
@@ -16,7 +17,7 @@ from widgets.screen_header import ScreenHeader
 
 class ProductionSettingsScreen(ttk.Frame):
     VOLCADO_OPTIONS = ["Compacta", "Línea invierno", "Línea verano", "Tolva", "Manual"]
-    STAFF_TYPES = ["Directo", "Indirecto", "Soporte"]
+    STAFF_TYPES = ["Directo", "Soporte", "Indirecto"]
     PACKAGING_FAMILIES = ["Malla", "Encajado", "Granel", "Granelera", "Flowpack", "Otro"]
     PACKAGING_SUBTYPES = ["Tradicional", "Clip-to-clip", "Girsac", "Bolsa", "Caja cartón", "Caja madera", "Granel", "Granelera", "Otro"]
     PACKAGING_MATERIALS = ["Plástico", "Cartón", "Madera", "Malla", "Mixto", "Sin material", "Otro"]
@@ -1825,8 +1826,12 @@ class ProductionSettingsScreen(ttk.Frame):
         personal_summary = None
         if master_key == "personal":
             areas = _sheet_to_rows(wb[config["sheet_name"]], config)
-            for row in areas:
-                row["tipo_personal"] = self._staff_type_from_excel_row(row)
+            for idx, row in enumerate(areas, start=2):
+                try:
+                    row["tipo_personal"] = self._staff_type_from_excel_row(row)
+                    row.update(staff_type_flags(row["tipo_personal"]))
+                except Exception as exc:
+                    errors.append(f"{config['sheet_name']} fila {idx}: {exc}")
             s_cfg=config["extra_sheets"]["Resumen personal"]
             if "Resumen personal" in wb.sheetnames:
                 summary_rows = _sheet_to_rows(wb["Resumen personal"], {**s_cfg, "columns": s_cfg["columns"]})
@@ -1848,9 +1853,7 @@ class ProductionSettingsScreen(ttk.Frame):
         for row in self.service.get_staff_areas():
             export_row = dict(row)
             tipo = self._normalize_staff_type(export_row.get("tipo_personal"))
-            export_row["Directo"] = 1 if tipo == "Directo" else 0
-            export_row["Soporte"] = 1 if tipo == "Soporte" else 0
-            export_row["Indirecto"] = 1 if tipo == "Indirecto" else 0
+            export_row.update(staff_type_flags(tipo))
             area_rows.append(export_row)
         return {
             "Resumen personal": {"columns": PRODUCTION_MASTER_EXCEL_CONFIGS["personal"]["extra_sheets"]["Resumen personal"]["columns"], "rows": [self.service.get_staff_summary()]},
@@ -1861,10 +1864,16 @@ class ProductionSettingsScreen(ttk.Frame):
         tipo = str(row.get("tipo_personal") or "").strip()
         if tipo:
             return self._normalize_staff_type(tipo)
+        inferred = infer_default_staff_type(row.get("area"))
+        if inferred:
+            return inferred
+        active_flags = []
         for key, label in (("Directo", "Directo"), ("Soporte", "Soporte"), ("Indirecto", "Indirecto"), ("directo", "Directo"), ("soporte", "Soporte"), ("indirecto", "Indirecto")):
             raw = row.get(key)
             if str(raw).strip().upper() in {"1", "SI", "S", "SÍ", "TRUE", "X", "Y", "YES"}:
-                return label
+                active_flags.append(label)
+        if len(set(active_flags)) == 1:
+            return active_flags[0]
         raise ValueError(f"Tipo personal obligatorio para el área {row.get('area', '')}")
 
     def _save_personal_rows_from_excel(self, rows):
