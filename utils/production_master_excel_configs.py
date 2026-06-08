@@ -21,6 +21,12 @@ PRODUCTION_MASTER_EXCEL_CONFIGS = {
             }
         },
     },
+    "flow_staffing": {
+        "key": "flow_staffing", "sheet_name": "Dotacion flujos", "default_filename": "dotacion_flujos.xlsx",
+        "columns": ["id", "linea_productiva", "area_puesto", "tipo_personal", "minimo", "optimo", "escala_con_ocupacion", "factor_ocupacion", "obligatorio", "activo", "observaciones"],
+        "required_columns": ["linea_productiva", "area_puesto", "tipo_personal", "minimo", "optimo", "escala_con_ocupacion", "factor_ocupacion", "obligatorio", "activo"],
+        "numeric_columns": ["minimo", "optimo", "factor_ocupacion"], "boolean_columns": ["escala_con_ocupacion", "obligatorio", "activo"], "unique_key": "linea_productiva|area_puesto", "delete_missing_default": False,
+    },
     "packaging_types": {
         "key": "packaging_types", "sheet_name": "Confecciones", "default_filename": "confecciones.xlsx",
         "columns": ["id", "codigo", "descripcion", "familia", "subtipo", "kg_formato", "material", "tipo_malla", "requiere_precalibrado", "compatible_box", "activo", "observaciones"],

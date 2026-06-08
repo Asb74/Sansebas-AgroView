@@ -169,6 +169,47 @@ DEFAULT_STAFF_AREAS = [
 ]
 
 
+DEFAULT_FLOW_STAFFING = [
+    ('MALLAS_TRADICIONAL', 'Volcado', 'Directo', 1, 1, 0, 1.0, 1, 1, ''),
+    ('MALLAS_TRADICIONAL', 'Calibrador', 'Directo', 1, 1, 0, 1.0, 1, 1, ''),
+    ('MALLAS_TRADICIONAL', 'Tría', 'Directo', 2, 3, 1, 1.0, 1, 1, ''),
+    ('MALLAS_TRADICIONAL', 'Mallas', 'Directo', 4, 7, 1, 1.0, 1, 1, ''),
+    ('MALLAS_TRADICIONAL', 'Loteado / paletizado', 'Directo', 1, 2, 1, 1.0, 1, 1, ''),
+    ('MALLAS_TRADICIONAL', 'Carretillero', 'Soporte', 1, 1, 0, 1.0, 1, 1, ''),
+    ('MALLAS_TRADICIONAL', 'Calidad', 'Indirecto', 1, 1, 0, 1.0, 1, 1, ''),
+    ('MALLAS_TRADICIONAL', 'Encargado', 'Indirecto', 1, 1, 0, 1.0, 1, 1, ''),
+    ('MALLAS_GIRSAC', 'Volcado', 'Directo', 1, 1, 0, 1.0, 1, 1, ''),
+    ('MALLAS_GIRSAC', 'Calibrador', 'Directo', 1, 1, 0, 1.0, 1, 1, ''),
+    ('MALLAS_GIRSAC', 'Tría', 'Directo', 2, 3, 1, 1.0, 1, 1, ''),
+    ('MALLAS_GIRSAC', 'Mallas', 'Directo', 4, 8, 1, 1.0, 1, 1, ''),
+    ('MALLAS_GIRSAC', 'Loteado / paletizado', 'Directo', 1, 2, 1, 1.0, 1, 1, ''),
+    ('MALLAS_GIRSAC', 'Carretillero', 'Soporte', 1, 1, 0, 1.0, 1, 1, ''),
+    ('MALLAS_GIRSAC', 'Calidad', 'Indirecto', 1, 1, 0, 1.0, 1, 1, ''),
+    ('MALLAS_GIRSAC', 'Encargado', 'Indirecto', 1, 1, 0, 1.0, 1, 1, ''),
+    ('ENCAJADO', 'Volcado', 'Directo', 1, 1, 0, 1.0, 1, 1, ''),
+    ('ENCAJADO', 'Calibrador', 'Directo', 1, 1, 0, 1.0, 1, 1, ''),
+    ('ENCAJADO', 'Tría', 'Directo', 2, 4, 1, 1.0, 1, 1, ''),
+    ('ENCAJADO', 'Encajado', 'Directo', 6, 12, 1, 1.0, 1, 1, ''),
+    ('ENCAJADO', 'Loteado / paletizado', 'Directo', 1, 2, 1, 1.0, 1, 1, ''),
+    ('ENCAJADO', 'Carretillero', 'Soporte', 1, 1, 0, 1.0, 1, 1, ''),
+    ('ENCAJADO', 'Calidad', 'Indirecto', 1, 1, 0, 1.0, 1, 1, ''),
+    ('ENCAJADO', 'Encargado', 'Indirecto', 1, 1, 0, 1.0, 1, 1, ''),
+    ('GRANEL_MANUAL', 'Volcado', 'Directo', 1, 1, 0, 1.0, 1, 1, ''),
+    ('GRANEL_MANUAL', 'Calibrador', 'Directo', 1, 1, 0, 1.0, 1, 1, ''),
+    ('GRANEL_MANUAL', 'Tría', 'Directo', 1, 2, 1, 1.0, 1, 1, ''),
+    ('GRANEL_MANUAL', 'Granel manual', 'Directo', 2, 4, 1, 1.0, 1, 1, ''),
+    ('GRANEL_MANUAL', 'Carretillero', 'Soporte', 1, 1, 0, 1.0, 1, 1, ''),
+    ('GRANEL_MANUAL', 'Calidad', 'Indirecto', 1, 1, 0, 1.0, 1, 1, ''),
+    ('GRANEL_MANUAL', 'Encargado', 'Indirecto', 1, 1, 0, 1.0, 1, 1, ''),
+    ('GRANELERA', 'Volcado', 'Directo', 1, 1, 0, 1.0, 1, 1, ''),
+    ('GRANELERA', 'Calibrador', 'Directo', 1, 1, 0, 1.0, 1, 1, ''),
+    ('GRANELERA', 'Granelera', 'Directo', 1, 2, 1, 1.0, 1, 1, ''),
+    ('GRANELERA', 'Carretillero', 'Soporte', 1, 1, 0, 1.0, 1, 1, ''),
+    ('GRANELERA', 'Calidad', 'Indirecto', 1, 1, 0, 1.0, 1, 1, ''),
+    ('GRANELERA', 'Encargado', 'Indirecto', 1, 1, 0, 1.0, 1, 1, ''),
+]
+
+
 DEFAULT_PHYSICAL_RESOURCES = [
     ("COMPACTA","Compacta","Alimentación","Entrada fruta",7000.0,"Recurso",1,1,2,1,"Alimentación principal; no siempre puede alimentar todas las pesadoras."),
     ("CALIBRADOR_PRINCIPAL","Calibrador principal","Calibrador","Clasificación",15000.0,"Recurso",1,1,2,1,""),
@@ -200,6 +241,7 @@ class ProductionSettingsRepository:
         self.ensure_resource_compatibilities_defaults()
         self.ensure_resource_feeds_defaults()
         self.ensure_resource_availability_defaults()
+        self.ensure_flow_staffing_defaults()
 
     def ensure_schema(self) -> None:
         with get_connection() as conn:
@@ -515,6 +557,92 @@ class ProductionSettingsRepository:
         self.ensure_staff_schema()
         with get_connection() as conn:
             conn.execute("DELETE FROM production_staff_areas WHERE id = ?", (area_id,))
+
+
+    def ensure_flow_staffing_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_flow_staffing (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    linea_productiva TEXT NOT NULL,
+                    area_puesto TEXT NOT NULL,
+                    tipo_personal TEXT NOT NULL,
+                    minimo INTEGER NOT NULL,
+                    optimo INTEGER NOT NULL,
+                    escala_con_ocupacion INTEGER NOT NULL,
+                    factor_ocupacion REAL NOT NULL,
+                    obligatorio INTEGER NOT NULL,
+                    activo INTEGER NOT NULL,
+                    observaciones TEXT,
+                    updated_at TEXT,
+                    UNIQUE(linea_productiva, area_puesto)
+                )
+                """
+            )
+
+    def ensure_flow_staffing_defaults(self) -> None:
+        self.ensure_flow_staffing_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            for row in DEFAULT_FLOW_STAFFING:
+                conn.execute(
+                    """
+                    INSERT INTO production_flow_staffing (
+                        linea_productiva, area_puesto, tipo_personal, minimo, optimo,
+                        escala_con_ocupacion, factor_ocupacion, obligatorio, activo, observaciones, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(linea_productiva, area_puesto) DO NOTHING
+                    """,
+                    (*row, now),
+                )
+
+    def get_flow_staffing(self, active_only: bool = False) -> list[dict]:
+        self.ensure_flow_staffing_defaults()
+        sql = "SELECT * FROM production_flow_staffing"
+        if active_only:
+            sql += " WHERE activo = 1"
+        sql += " ORDER BY linea_productiva, id"
+        with get_connection() as conn:
+            return [dict(r) for r in conn.execute(sql).fetchall()]
+
+    def save_flow_staffing(self, rows: list[dict]) -> None:
+        self.ensure_flow_staffing_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_flow_staffing")
+            conn.executemany(
+                """
+                INSERT INTO production_flow_staffing (
+                    linea_productiva, area_puesto, tipo_personal, minimo, optimo,
+                    escala_con_ocupacion, factor_ocupacion, obligatorio, activo, observaciones, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(row.get("linea_productiva", "")).strip(),
+                        str(row.get("area_puesto", "")).strip(),
+                        str(row.get("tipo_personal", "")).strip(),
+                        int(row.get("minimo", 0) or 0),
+                        int(row.get("optimo", 0) or 0),
+                        int(row.get("escala_con_ocupacion", 0) or 0),
+                        float(row.get("factor_ocupacion", 1.0) or 1.0),
+                        int(row.get("obligatorio", 1) or 0),
+                        int(row.get("activo", 1) or 0),
+                        row.get("observaciones", ""),
+                        now,
+                    )
+                    for row in rows
+                ],
+            )
+
+    def reset_flow_staffing_defaults(self) -> None:
+        self.ensure_flow_staffing_schema()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_flow_staffing")
+        self.ensure_flow_staffing_defaults()
 
     def ensure_lines_schema(self) -> None:
         with get_connection() as conn:
