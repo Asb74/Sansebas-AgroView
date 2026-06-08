@@ -191,7 +191,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.capacidad_line_table = DataTable(self.capacidad_lineas_tab, ["Línea productiva", "Kg", "Horas necesarias", "Horas disponibles línea", "Ocupación %", "Pedidos", "Cambios formato estimados", "Estado"])
         self.capacidad_line_table.pack(fill="both", expand=True)
         ttk.Label(self.capacidad_recursos_tab, text="Recursos utilizados / cuellos de botella", style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
-        self.capacidad_resource_table = DataTable(self.capacidad_recursos_tab, ["Recurso", "Tipo recurso", "Línea productiva", "Kg asignados", "Capacidad kg/h", "Horas necesarias", "Horas disponibles", "Ocupación %", "Personal mínimo", "Personal óptimo", "Estado"])
+        self.capacidad_resource_table = DataTable(self.capacidad_recursos_tab, ["Recurso", "Tipo recurso", "Línea productiva", "Modo uso", "Kg asignados", "Capacidad kg/h", "Horas necesarias", "Horas disponibles", "Ocupación %", "Personal mínimo", "Personal óptimo", "Estado"])
         self.capacidad_resource_table.pack(fill="both", expand=True)
         self.capacidad_inc_table = DataTable(self.capacidad_incidencias_tab, ["Tipo incidencia", "Pedido", "Cliente", "Confección", "Línea productiva", "Motivo", "Acción sugerida"])
         self.capacidad_inc_table.pack(fill="both", expand=True)
