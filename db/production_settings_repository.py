@@ -39,6 +39,51 @@ DEFAULT_STAFF_SUMMARY = {
 
 STAFF_TYPES = {"Directo", "Soporte", "Indirecto"}
 
+DEFAULT_STAFF_TYPE_BY_AREA = {
+    "tría principal": "Directo",
+    "tria principal": "Directo",
+    "tría mallas": "Directo",
+    "tria mallas": "Directo",
+    "mallas": "Directo",
+    "encajado": "Directo",
+    "granel manual": "Directo",
+    "granelera": "Directo",
+    "loteado": "Directo",
+    "volcado": "Soporte",
+    "calibrador": "Soporte",
+    "calidad": "Soporte",
+    "control destrío": "Soporte",
+    "control destrio": "Soporte",
+    "alimentación": "Soporte",
+    "alimentacion": "Soporte",
+    "expedición": "Soporte",
+    "expedicion": "Soporte",
+    "flejado": "Soporte",
+    "mantenimiento": "Soporte",
+    "limpieza": "Soporte",
+    "carretilleros": "Indirecto",
+    "encargados": "Indirecto",
+}
+
+
+def infer_default_staff_type(area: object) -> str | None:
+    return DEFAULT_STAFF_TYPE_BY_AREA.get(str(area or "").strip().lower())
+
+
+def staff_type_flags(tipo_personal: object) -> dict[str, int]:
+    tipo = _normalize_staff_type(tipo_personal)
+    return {"Directo": 1 if tipo == "Directo" else 0, "Soporte": 1 if tipo == "Soporte" else 0, "Indirecto": 1 if tipo == "Indirecto" else 0}
+
+
+def _staff_type_for_area_row(row: dict) -> str:
+    tipo = str(row.get("tipo_personal") or "").strip()
+    if tipo:
+        return _normalize_staff_type(tipo)
+    inferred = infer_default_staff_type(row.get("area"))
+    if inferred:
+        return inferred
+    raise ValueError(f"Tipo personal obligatorio para el área {row.get('area', '')}")
+
 
 def _normalize_staff_type(value: object) -> str:
     text = str(value or "").strip().lower()
@@ -162,7 +207,7 @@ DEFAULT_UNLOADING_PRIORITY_RULES = [
 ]
 
 DEFAULT_STAFF_AREAS = [
-    ("Volcado", "Directo", 5, 4, 5, 1, "Config. base para compacta + invierno."),
+    ("Volcado", "Soporte", 5, 4, 5, 1, "Config. base para compacta + invierno."),
     ("Tría principal", "Directo", 6, 5, 7, 1, ""),
     ("Tría mallas", "Directo", 4, 3, 5, 1, ""),
     ("Mallas", "Directo", 8, 6, 9, 1, ""),
@@ -170,15 +215,15 @@ DEFAULT_STAFF_AREAS = [
     ("Granel manual", "Directo", 4, 3, 5, 1, ""),
     ("Granelera", "Directo", 2, 2, 3, 1, ""),
     ("Calibrador", "Soporte", 0, 0, 0, 1, ""),
-    ("Calidad", "Indirecto", 2, 1, 2, 1, ""),
+    ("Calidad", "Soporte", 2, 1, 2, 1, ""),
     ("Control destrío", "Soporte", 0, 0, 0, 1, ""),
     ("Alimentación", "Soporte", 3, 2, 3, 1, "Incluye apoyo de BOX en líneas con alta carga."),
-    ("Loteado", "Soporte", 0, 0, 0, 1, ""),
-    ("Expedición", "Indirecto", 2, 1, 2, 1, ""),
+    ("Loteado", "Directo", 0, 0, 0, 1, ""),
+    ("Expedición", "Soporte", 2, 1, 2, 1, ""),
     ("Carretilleros", "Indirecto", 2, 1, 2, 1, ""),
     ("Flejado", "Soporte", 0, 0, 0, 1, ""),
     ("Mantenimiento", "Soporte", 0, 0, 0, 1, ""),
-    ("Limpieza", "Indirecto", 0, 0, 0, 1, ""),
+    ("Limpieza", "Soporte", 0, 0, 0, 1, ""),
     ("Encargados", "Indirecto", 0, 0, 0, 1, ""),
 ]
 
@@ -568,7 +613,7 @@ class ProductionSettingsRepository:
                 [
                     (
                         row["area"],
-                        _normalize_staff_type(row["tipo_personal"]),
+                        _staff_type_for_area_row(row),
                         int(float(row["disponible"])),
                         int(float(row["minimo_operativo"])),
                         int(float(row["optimo"])),
