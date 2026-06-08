@@ -5,17 +5,17 @@ PRODUCTION_MASTER_EXCEL_CONFIGS = {
         "key": "personal",
         "sheet_name": "Areas personal",
         "default_filename": "personal.xlsx",
-        "columns": ["id", "area", "tipo_personal", "disponible", "minimo_operativo", "optimo", "activo", "observaciones"],
-        "required_columns": ["area", "tipo_personal", "disponible", "minimo_operativo", "optimo", "activo"],
+        "columns": ["id", "area", "tipo_personal", "Directo", "Soporte", "Indirecto", "disponible", "minimo_operativo", "optimo", "activo", "observaciones"],
+        "required_columns": ["area", "disponible", "minimo_operativo", "optimo", "activo"],
         "numeric_columns": ["disponible", "minimo_operativo", "optimo"],
         "boolean_columns": ["activo"],
         "unique_key": "area",
         "delete_missing_default": False,
         "extra_sheets": {
             "Resumen personal": {
-                "columns": ["personal_total", "personal_directo", "personal_indirecto", "horas_por_persona", "ausencias_previstas", "observaciones"],
-                "required_columns": ["personal_total", "personal_directo", "personal_indirecto", "horas_por_persona", "ausencias_previstas"],
-                "numeric_columns": ["personal_total", "personal_directo", "personal_indirecto", "horas_por_persona", "ausencias_previstas"],
+                "columns": ["personal_total", "personal_directo", "personal_soporte", "personal_indirecto", "horas_por_persona", "ausencias_previstas", "observaciones"],
+                "required_columns": ["horas_por_persona", "ausencias_previstas"],
+                "numeric_columns": ["personal_total", "personal_directo", "personal_soporte", "personal_indirecto", "horas_por_persona", "ausencias_previstas"],
                 "boolean_columns": [],
                 "unique_key": "personal_total",
             }

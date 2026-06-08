@@ -499,7 +499,7 @@ class ProductionCapacityService:
         hdisp = sum(float(r.get("Horas disponibles línea", 0) or 0) for r in line_rows)
         occ = horas / hdisp * 100 if hdisp > 0 else 0
         per = inputs["personnel"]
-        return {"Kg reales pendientes": round(kg_real, 2), "Kg previstos": round(kg_prev, 2), "Kg total simulación": round(kg_real + kg_prev, 2), "Horas necesarias estimadas": round(horas, 2), "Horas disponibles": round(hdisp, 2), "Ocupación %": round(occ, 2), "Personal disponible total": int(per.get("personal_total", 0) or 0), "Personal directo disponible": int(per.get("personal_directo", 0) or 0), "Personal indirecto disponible": int(per.get("personal_indirecto", 0) or 0), "Estado capacidad": self._state(occ, inputs["semaphore_rules"], "General")}
+        return {"Kg reales pendientes": round(kg_real, 2), "Kg previstos": round(kg_prev, 2), "Kg total simulación": round(kg_real + kg_prev, 2), "Horas necesarias estimadas": round(horas, 2), "Horas disponibles": round(hdisp, 2), "Ocupación %": round(occ, 2), "Personal disponible total": int(per.get("personal_total", 0) or 0), "Personal directo disponible": int(per.get("personal_directo", 0) or 0), "Personal soporte disponible": int(per.get("personal_soporte", 0) or 0), "Personal indirecto disponible": int(per.get("personal_indirecto", 0) or 0), "Estado capacidad": self._state(occ, inputs["semaphore_rules"], "General")}
 
     def calculate_capacity_alerts(self, summary: dict, family_rows: list[dict], line_rows: list[dict], incidencias: list[dict], resource_rows: list[dict] | None = None, bottleneck: dict | None = None) -> list[dict]:
         out = list(incidencias)
@@ -528,7 +528,7 @@ class ProductionCapacityService:
         type_availability: dict[str, int] = {
             "directo": int(inputs.get("personnel", {}).get("personal_directo", 0) or 0),
             "indirecto": int(inputs.get("personnel", {}).get("personal_indirecto", 0) or 0),
-            "soporte": max(0, int(inputs.get("personnel", {}).get("personal_total", 0) or 0) - int(inputs.get("personnel", {}).get("personal_directo", 0) or 0) - int(inputs.get("personnel", {}).get("personal_indirecto", 0) or 0)),
+            "soporte": int(inputs.get("personnel", {}).get("personal_soporte", 0) or 0),
         }
         for row in inputs.get("staff_areas", []):
             if int(row.get("activo", 1) or 0) != 1:
