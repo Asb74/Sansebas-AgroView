@@ -12,6 +12,12 @@ from services.planning_service import PlanningService
 class ProductionCapacityService:
     PEDIDOS_PREVISTOS_PATH = Path("runtime_config/pedidos_previstos.json")
     FAMILIES = ["Malla", "Encajado", "Granel", "Granelera", "Otros"]
+    RESOURCE_USAGE_INFORMATIVE = "informative"
+    RESOURCE_USAGE_RESTRICTIVE = "restrictive"
+    DEFAULT_RESOURCE_USAGE_MODE_BY_LINE = {
+        "MALLAS_TRADICIONAL": RESOURCE_USAGE_INFORMATIVE,
+        "MALLAS_GIRSAC": RESOURCE_USAGE_INFORMATIVE,
+    }
 
     def __init__(self) -> None:
         self.planning = PlanningService()
@@ -233,8 +239,19 @@ class ProductionCapacityService:
                 "tipo_malla": tipo_malla,
                 "inputs": inputs,
             }
+            usage_mode = self._resource_usage_mode(line_code, inputs)
             required = self.resolve_required_resources_for_line(line_code, productive_mapping)
-            resource_rows.extend(self.calculate_resource_capacity_usage(required, data["kg"], horas_disponibles))
+            if usage_mode == self.RESOURCE_USAGE_INFORMATIVE and required:
+                incidencias.append({
+                    "Tipo incidencia": "Recursos informativos",
+                    "Pedido": "-",
+                    "Cliente": "-",
+                    "Confección": "-",
+                    "Línea productiva": line_code,
+                    "Motivo": "Recursos físicos mostrados en modo informativo; capacidad tomada de Máquinas / líneas.",
+                    "Acción sugerida": "Sin acción requerida mientras la línea agregada esté configurada y disponible",
+                })
+            resource_rows.extend(self.calculate_resource_capacity_usage(required, data["kg"], horas_disponibles, usage_mode))
 
         for row in resource_rows:
             for inc in row.get("_incidencias", []):
@@ -267,6 +284,8 @@ class ProductionCapacityService:
 
         compatible_codes = []
         non_split_codes = []
+        configured_related_codes = []
+        compatibility_rules_found = False
         rows_by_code: dict[str, dict] = {}
         for code in candidates:
             row = dict(resource_index.get(code, {}))
@@ -274,10 +293,14 @@ class ProductionCapacityService:
             if not row:
                 row = {"codigo": code, "tipo_recurso": "No configurado", "familia_operativa": "", "capacidad_kg_h": 0, "numero_unidades": 0, "personal_minimo": 0, "personal_optimo": 0, "activo": 0}
                 incidencias.append({"tipo": "Recurso físico no configurado", "motivo": f"Recurso {code} no existe en production_physical_resources", "accion": "Configurar recurso físico o ajustar regla de asignación"})
-            elif int(row.get("activo", 0) or 0) != 1:
-                incidencias.append({"tipo": "Recurso inactivo", "motivo": f"Recurso {code} inactivo", "accion": "Activar recurso o reasignar carga"})
+            else:
+                configured_related_codes.append(code)
+                if int(row.get("activo", 0) or 0) != 1:
+                    incidencias.append({"tipo": "Recurso inactivo", "motivo": f"Recurso {code} inactivo", "accion": "Activar recurso o reasignar carga"})
 
             if str(row.get("tipo_recurso", "")).strip().lower() == "pesadora" or code.startswith("PESADORA_"):
+                if self._resource_has_compatibility_rule(code, "tipo_malla", tipo_malla, inputs):
+                    compatibility_rules_found = True
                 if self._is_resource_compatible(code, "tipo_malla", tipo_malla, inputs):
                     compatible_codes.append(code)
                 else:
@@ -292,6 +315,14 @@ class ProductionCapacityService:
             if availability_issue:
                 incidencias.append(availability_issue)
             rows_by_code[code] = {"row": row, "incidencias": incidencias, "include": True}
+
+        if not configured_related_codes:
+            fallback_row = {"codigo": line_code, "tipo_recurso": "No configurado", "familia_operativa": "", "capacidad_kg_h": 0, "numero_unidades": 0, "personal_minimo": 0, "personal_optimo": 0, "activo": 0}
+            rows_by_code[line_code] = {"row": fallback_row, "incidencias": [{"tipo": "Sin recursos físicos relacionados", "motivo": f"No existe ningún recurso físico relacionado con {line_code}", "accion": "Configurar recursos físicos relacionados en Recursos y flujos"}], "include": False}
+        if tipo_malla and compatible_codes == [] and any(code.startswith("PESADORA_") for code in candidates) and not compatibility_rules_found:
+            fallback_code = f"{line_code}:tipo_malla"
+            fallback_row = {"codigo": fallback_code, "tipo_recurso": "Compatibilidad", "familia_operativa": "", "capacidad_kg_h": 0, "numero_unidades": 0, "personal_minimo": 0, "personal_optimo": 0, "activo": 0}
+            rows_by_code[fallback_code] = {"row": fallback_row, "incidencias": [{"tipo": "Tipo malla sin compatibilidad", "motivo": f"tipo_malla={tipo_malla} no tiene ninguna compatibilidad definida", "accion": "Definir compatibilidades en Recursos y flujos"}], "include": False}
 
         out: list[dict] = []
         active_compatible = [code for code in compatible_codes if int(rows_by_code[code]["row"].get("activo", 0) or 0) == 1]
@@ -321,23 +352,32 @@ class ProductionCapacityService:
                 })
         return out
 
-    def calculate_resource_capacity_usage(self, resource_rows: list[dict], kg: float, horas_utiles_dia: float) -> list[dict]:
+    def calculate_resource_capacity_usage(self, resource_rows: list[dict], kg: float, horas_utiles_dia: float, usage_mode: str | None = None) -> list[dict]:
         out: list[dict] = []
+        mode = self._normalize_resource_usage_mode(usage_mode)
+        mode_label = "Informativo" if mode == self.RESOURCE_USAGE_INFORMATIVE else "Restrictivo"
         for resource in resource_rows:
             capacidad_kg_h = float(resource.get("capacidad_kg_h", 0) or 0)
             numero_unidades = int(resource.get("numero_unidades", 0) or 0)
             capacidad_total = capacidad_kg_h * numero_unidades if numero_unidades > 0 else 0.0
             assigned_kg = float(resource.get("kg_asignados", kg) or 0)
             incidencias = list(resource.get("_incidencias", []))
-            if capacidad_kg_h <= 0 and not resource.get("_solo_incidencia"):
+            if mode == self.RESOURCE_USAGE_RESTRICTIVE and capacidad_kg_h <= 0 and not resource.get("_solo_incidencia"):
                 incidencias.append({"tipo": "Recurso sin capacidad", "motivo": f"Recurso {resource.get('codigo', '')} sin capacidad kg/h configurada", "accion": "Configurar capacidad_kg_h del recurso"})
-            horas = assigned_kg / capacidad_total if capacidad_total > 0 else 0.0
-            ocupacion = horas / horas_utiles_dia * 100 if horas_utiles_dia > 0 else 0.0
-            estado = "Incidencia" if incidencias else ("Rojo" if ocupacion >= 100 else "Amarillo" if ocupacion >= 85 else "Verde")
+            if mode == self.RESOURCE_USAGE_INFORMATIVE:
+                horas = 0.0
+                ocupacion = 0.0
+                state_incidencias = [inc for inc in incidencias if inc.get("tipo") not in {"Recurso no compatible"}]
+                estado = "Incidencia" if state_incidencias else "Informativo"
+            else:
+                horas = assigned_kg / capacidad_total if capacidad_total > 0 else 0.0
+                ocupacion = horas / horas_utiles_dia * 100 if horas_utiles_dia > 0 else 0.0
+                estado = "Incidencia" if incidencias else ("Rojo" if ocupacion >= 100 else "Amarillo" if ocupacion >= 85 else "Verde")
             out.append({
                 "Recurso": resource.get("codigo", ""),
                 "Tipo recurso": resource.get("tipo_recurso", ""),
                 "Línea productiva": resource.get("linea_productiva", ""),
+                "Modo uso": mode_label,
                 "Kg asignados": round(assigned_kg, 2),
                 "Capacidad kg/h": round(capacidad_total, 2),
                 "Horas necesarias": round(horas, 2),
@@ -351,7 +391,7 @@ class ProductionCapacityService:
         return out
 
     def detect_bottleneck(self, resource_usage_rows: list[dict]) -> dict | None:
-        candidates = [r for r in resource_usage_rows if float(r.get("Kg asignados", 0) or 0) > 0]
+        candidates = [r for r in resource_usage_rows if str(r.get("Modo uso", "")).strip().lower() == "restrictivo" and float(r.get("Kg asignados", 0) or 0) > 0]
         if not candidates:
             return None
         bottleneck = max(candidates, key=lambda r: float(r.get("Ocupación %", 0) or 0))
@@ -361,9 +401,9 @@ class ProductionCapacityService:
 
     def calculate_resource_personnel(self, resource_usage_rows: list[dict]) -> dict:
         return {
-            "personal_minimo_recursos": sum(int(r.get("Personal mínimo", 0) or 0) for r in resource_usage_rows if float(r.get("Kg asignados", 0) or 0) > 0),
-            "personal_optimo_recursos": sum(int(r.get("Personal óptimo", 0) or 0) for r in resource_usage_rows if float(r.get("Kg asignados", 0) or 0) > 0),
-            "aviso_tecnico": "Suma simple por recurso; puede contener duplicidades en esta primera fase.",
+            "personal_minimo_recursos": sum(int(r.get("Personal mínimo", 0) or 0) for r in resource_usage_rows if str(r.get("Modo uso", "")).strip().lower() == "restrictivo" and float(r.get("Kg asignados", 0) or 0) > 0),
+            "personal_optimo_recursos": sum(int(r.get("Personal óptimo", 0) or 0) for r in resource_usage_rows if str(r.get("Modo uso", "")).strip().lower() == "restrictivo" and float(r.get("Kg asignados", 0) or 0) > 0),
+            "aviso_tecnico": "Suma simple solo sobre recursos restrictivos; recursos informativos no penalizan la capacidad agregada de línea.",
         }
 
     def calculate_capacity_summary(self, mapped: list[dict], family_rows: list[dict], line_rows: list[dict], inputs: dict) -> dict:
@@ -402,6 +442,18 @@ class ProductionCapacityService:
         turnos = int(gs.get("numero_turnos", 1) or 1)
         return max(0.0, horas_utiles_dia * max(1, turnos))
 
+    def _resource_has_compatibility_rule(self, recurso_codigo: str, compatible_con: str, valor: str, inputs: dict) -> bool:
+        if not valor:
+            return False
+        for row in inputs.get("resource_compatibilities", []):
+            if str(row.get("recurso_codigo", "") or "").strip() != recurso_codigo:
+                continue
+            if str(row.get("compatible_con", "") or "").strip() != compatible_con:
+                continue
+            if str(row.get("valor", "") or "").strip().lower() == str(valor).strip().lower():
+                return True
+        return False
+
     def _is_resource_compatible(self, recurso_codigo: str, compatible_con: str, valor: str, inputs: dict) -> bool:
         if not valor:
             return False
@@ -432,6 +484,31 @@ class ProductionCapacityService:
                 motivo = str(row.get("motivo", "") or "").strip() or f"No disponible en contexto {contexto}"
                 return {"tipo": "Recurso no disponible por contexto", "motivo": f"{recurso_codigo}: {motivo}", "accion": "Revisar disponibilidad del recurso o el contexto de planificación"}
         return None
+
+    def _normalize_resource_usage_mode(self, mode: str | None) -> str:
+        value = str(mode or "").strip().lower()
+        if value in {self.RESOURCE_USAGE_INFORMATIVE, "informativo"}:
+            return self.RESOURCE_USAGE_INFORMATIVE
+        if value in {self.RESOURCE_USAGE_RESTRICTIVE, "restrictivo"}:
+            return self.RESOURCE_USAGE_RESTRICTIVE
+        return self.RESOURCE_USAGE_RESTRICTIVE
+
+    def _resource_usage_mode(self, line_code: str, inputs: dict) -> str:
+        cfg = self._line_cfg(line_code, inputs)
+        configured = cfg.get("resource_usage_mode", cfg.get("modo_uso_recursos", "")) if cfg else ""
+        if str(configured or "").strip():
+            return self._normalize_resource_usage_mode(str(configured))
+        if self._line_has_valid_aggregate_capacity(cfg):
+            default = self.DEFAULT_RESOURCE_USAGE_MODE_BY_LINE.get(str(line_code or "").strip().upper(), self.RESOURCE_USAGE_RESTRICTIVE)
+            return self._normalize_resource_usage_mode(default)
+        return self.RESOURCE_USAGE_RESTRICTIVE
+
+    def _line_has_valid_aggregate_capacity(self, cfg: dict) -> bool:
+        if not cfg or int(cfg.get("activa", 0) or 0) != 1:
+            return False
+        numero_maquinas = int(cfg.get("numero_maquinas", 0) or 0)
+        cap_ref = float(cfg.get("capacidad_kg_h_referencia", 0) or 0)
+        return numero_maquinas > 0 and cap_ref > 0
 
     def _load_forecast_orders(self, filters: dict) -> list[dict]:
         if not self.PEDIDOS_PREVISTOS_PATH.exists():
