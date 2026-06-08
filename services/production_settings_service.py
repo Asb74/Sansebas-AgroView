@@ -31,6 +31,15 @@ class ProductionSettingsService:
     def reset_staff_defaults(self) -> None:
         self.repository.reset_staff_defaults()
 
+    def get_flow_staffing(self, active_only: bool = False) -> list[dict]:
+        return self.repository.get_flow_staffing(active_only)
+
+    def save_flow_staffing(self, rows: list[dict]) -> None:
+        self.repository.save_flow_staffing(rows)
+
+    def reset_flow_staffing_defaults(self) -> None:
+        self.repository.reset_flow_staffing_defaults()
+
     def get_packaging_types(self) -> list[dict]:
         return self.repository.get_packaging_types()
 

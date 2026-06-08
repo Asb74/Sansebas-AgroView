@@ -4,6 +4,8 @@ from collections import defaultdict
 from math import ceil
 from pathlib import Path
 import json
+import re
+import unicodedata
 
 from db.production_settings_repository import ProductionSettingsRepository
 from services.planning_service import PlanningService
@@ -34,6 +36,8 @@ class ProductionCapacityService:
             "performance_rules": self.prod_repo.get_performance_rules(),
             "caliber_factors": self.prod_repo.get_caliber_performance_factors(),
             "personnel": self.prod_repo.get_staff_summary(),
+            "staff_areas": self.prod_repo.get_staff_areas(),
+            "flow_staffing": self.prod_repo.get_flow_staffing(active_only=True),
             "lines": self.prod_repo.get_lines(),
             "physical_resources": self.prod_repo.get_physical_resources(),
             "resource_compatibilities": self.prod_repo.get_resource_compatibilities(),
@@ -53,6 +57,13 @@ class ProductionCapacityService:
         bottleneck = self.detect_bottleneck(resource_rows)
         personnel_resources = self.calculate_resource_personnel(resource_rows)
         summary = self.calculate_capacity_summary(mapped, fam, line, inputs)
+        staffing = self.calculate_staffing_requirements({"line_rows": line, "inputs": inputs})
+        summary.update({
+            "personal_minimo_flujo": staffing["summary"]["personal_minimo_requerido"],
+            "personal_optimo_flujo": staffing["summary"]["personal_optimo_requerido"],
+            "personal_estimado_flujo": staffing["summary"]["personal_necesario_estimado"],
+            "deficit_personal_flujo": staffing["summary"]["deficit_personal"],
+        })
         summary.update({
             "recurso_cuello_botella": bottleneck.get("Recurso", "") if bottleneck else "",
             "ocupacion_cuello_botella_pct": bottleneck.get("Ocupación %", 0) if bottleneck else 0,
@@ -61,8 +72,8 @@ class ProductionCapacityService:
             "personal_optimo_recursos": personnel_resources["personal_optimo_recursos"],
             "aviso_personal_recursos": personnel_resources["aviso_tecnico"],
         })
-        alerts = self.calculate_capacity_alerts(summary, fam, line, incidencias + resource_incidencias, resource_rows, bottleneck)
-        return {"summary": summary, "family_rows": fam, "line_rows": line, "resource_rows": resource_rows, "incidencias": alerts, "pedidos": mapped}
+        alerts = self.calculate_capacity_alerts(summary, fam, line, incidencias + resource_incidencias + staffing["incidencias"], resource_rows, bottleneck)
+        return {"summary": summary, "family_rows": fam, "line_rows": line, "resource_rows": resource_rows, "staffing_rows": staffing["rows"], "incidencias": alerts, "pedidos": mapped}
 
     def map_orders_to_productive_config(self, pedidos_reales: list[dict], pedidos_previstos: list[dict], inputs: dict) -> tuple[list[dict], list[dict]]:
         mapping = {str(r.get("codigo_mconfeccion", "")).strip(): r for r in inputs["packaging_mapping"]}
@@ -217,6 +228,81 @@ class ProductionCapacityService:
             })
         return sorted(rows, key=lambda x: x["Ocupación %"], reverse=True)
 
+
+
+    def calculate_staffing_requirements(self, capacity_result: dict) -> dict:
+        inputs = capacity_result.get("inputs", {})
+        line_rows = capacity_result.get("line_rows", [])
+        line_occ = {str(r.get("Línea productiva", "")).strip(): float(r.get("Ocupación %", 0) or 0) for r in line_rows}
+        used_lines = {line for line, occ in line_occ.items() if line}
+        staff_rows = [r for r in inputs.get("flow_staffing", []) if str(r.get("linea_productiva", "")).strip() in used_lines]
+        area_availability, type_availability = self._staff_availability_indexes(inputs)
+        rows: list[dict] = []
+        incidencias: list[dict] = []
+        totals = {"min": 0, "opt": 0, "est": 0, "deficit": 0}
+
+        for staff in staff_rows:
+            linea = str(staff.get("linea_productiva", "")).strip()
+            area = str(staff.get("area_puesto", "")).strip()
+            tipo = str(staff.get("tipo_personal", "")).strip()
+            minimo = max(0, int(staff.get("minimo", 0) or 0))
+            optimo = max(minimo, int(staff.get("optimo", 0) or 0))
+            ocupacion = float(line_occ.get(linea, 0) or 0)
+            factor = float(staff.get("factor_ocupacion", 1.0) or 1.0)
+            escala = int(staff.get("escala_con_ocupacion", 0) or 0) == 1
+            obligatorio = int(staff.get("obligatorio", 1) or 0) == 1
+            if escala:
+                necesario = ceil(optimo * ocupacion / 100.0 * factor)
+                necesario = max(minimo, necesario)
+                if ocupacion <= 100:
+                    necesario = min(optimo, necesario)
+            else:
+                necesario = minimo
+            disponible, match_kind = self._available_staff_for_area(area, tipo, area_availability, type_availability)
+            diferencia = disponible - necesario
+            if disponible >= necesario:
+                estado = "Verde"
+                tag = "tag_green"
+            elif disponible >= minimo:
+                estado = "Amarillo"
+                tag = "tag_yellow"
+            else:
+                estado = "Rojo" if obligatorio else "Amarillo"
+                tag = "tag_red" if obligatorio else "tag_yellow"
+            row = {
+                "Línea productiva": linea,
+                "Área / puesto": area,
+                "Tipo personal": tipo,
+                "Mínimo": minimo,
+                "Óptimo": optimo,
+                "Ocupación %": round(ocupacion, 2),
+                "Necesario estimado": int(necesario),
+                "Disponible": int(disponible),
+                "Diferencia": int(diferencia),
+                "Estado": estado,
+                "__tags__": (tag,),
+            }
+            rows.append(row)
+            totals["min"] += minimo; totals["opt"] += optimo; totals["est"] += int(necesario); totals["deficit"] += max(0, -int(diferencia))
+            if match_kind == "none":
+                incidencias.append(self._staff_inc("Área sin personal configurado", linea, area, f"No hay disponibilidad configurada para {area} ni total por tipo {tipo}", "Configurar personal por área o resumen por tipo"))
+            if disponible < minimo:
+                incidencias.append(self._staff_inc("Falta personal mínimo", linea, area, f"Disponible {disponible} < mínimo {minimo}", "Reforzar dotación mínima del puesto"))
+            elif disponible < optimo:
+                incidencias.append(self._staff_inc("Falta personal óptimo", linea, area, f"Disponible {disponible} < óptimo {optimo}", "Revisar dotación recomendada para rendimiento normal"))
+            if obligatorio and disponible < minimo:
+                incidencias.append(self._staff_inc("Dotación obligatoria no cubierta", linea, area, f"Puesto obligatorio {area} no cubre mínimo {minimo}", "Cubrir puesto imprescindible antes de lanzar el flujo"))
+
+        return {
+            "rows": rows,
+            "incidencias": incidencias,
+            "summary": {
+                "personal_minimo_requerido": totals["min"],
+                "personal_optimo_requerido": totals["opt"],
+                "personal_necesario_estimado": totals["est"],
+                "deficit_personal": totals["deficit"],
+            },
+        }
 
     def calculate_physical_resource_capacity(self, mapped: list[dict], inputs: dict) -> tuple[list[dict], list[dict]]:
         grouped: dict[tuple[str, str], dict] = defaultdict(lambda: {"kg": 0.0, "familia": "", "tipo_malla": ""})
@@ -435,6 +521,52 @@ class ProductionCapacityService:
             out.append({"Tipo incidencia": "Falta personal mínimo por recursos", "Pedido": "-", "Cliente": "-", "Confección": "-", "Línea productiva": "Recursos", "Motivo": f"Personal mínimo recursos {personal_min} > personal directo disponible {personal_directo}", "Acción sugerida": "Revisar turnos, ausencias o asignación de recursos"})
         return out
 
+
+
+    def _staff_availability_indexes(self, inputs: dict) -> tuple[dict[str, int], dict[str, int]]:
+        area_availability: dict[str, int] = {}
+        type_availability: dict[str, int] = {
+            "directo": int(inputs.get("personnel", {}).get("personal_directo", 0) or 0),
+            "indirecto": int(inputs.get("personnel", {}).get("personal_indirecto", 0) or 0),
+            "soporte": max(0, int(inputs.get("personnel", {}).get("personal_total", 0) or 0) - int(inputs.get("personnel", {}).get("personal_directo", 0) or 0) - int(inputs.get("personnel", {}).get("personal_indirecto", 0) or 0)),
+        }
+        for row in inputs.get("staff_areas", []):
+            if int(row.get("activo", 1) or 0) != 1:
+                continue
+            available = int(row.get("disponible", 0) or 0)
+            norm_area = self._normalize_staff_name(str(row.get("area", "")))
+            if norm_area:
+                area_availability[norm_area] = max(area_availability.get(norm_area, 0), available)
+            norm_type = self._normalize_staff_name(str(row.get("tipo_personal", "")))
+            if norm_type:
+                type_availability[norm_type] = max(type_availability.get(norm_type, 0), available)
+        return area_availability, type_availability
+
+    def _available_staff_for_area(self, area: str, tipo: str, area_availability: dict[str, int], type_availability: dict[str, int]) -> tuple[int, str]:
+        area_norm = self._normalize_staff_name(area)
+        if area_norm in area_availability:
+            return area_availability[area_norm], "area"
+        area_tokens = [token for token in area_norm.split() if len(token) > 2]
+        for configured_area, available in area_availability.items():
+            configured_tokens = set(configured_area.split())
+            if area_tokens and any(token in configured_tokens for token in area_tokens):
+                return available, "area_partial"
+        type_norm = self._normalize_staff_name(tipo)
+        if type_norm in type_availability:
+            return type_availability[type_norm], "type"
+        return 0, "none"
+
+    def _normalize_staff_name(self, value: str) -> str:
+        text = unicodedata.normalize("NFKD", str(value or ""))
+        text = "".join(ch for ch in text if not unicodedata.combining(ch))
+        text = text.lower().replace("/", " ")
+        text = re.sub(r"[^a-z0-9]+", " ", text)
+        synonyms = {"paletizado": "loteado", "paletizacion": "loteado", "carretilleros": "carretillero", "encargados": "encargado", "alimentacion": "volcado"}
+        tokens = [synonyms.get(token, token) for token in text.split()]
+        return " ".join(tokens).strip()
+
+    def _staff_inc(self, tipo: str, linea: str, area: str, motivo: str, accion: str) -> dict:
+        return {"Tipo incidencia": tipo, "Pedido": "-", "Cliente": "-", "Confección": area, "Línea productiva": linea, "Motivo": motivo, "Acción sugerida": accion}
 
     def _resource_hours_available(self, inputs: dict) -> float:
         gs = inputs["general_settings"]

@@ -260,3 +260,18 @@ PRODUCTION_RESOURCES_HELP = {
 }
 
 PRODUCTION_RESOURCES_HELP_KEYS = ["codigo", "nombre", "tipo_recurso", "familia_operativa", "capacidad_kg_h", "capacidad_por", "numero_unidades", "personal_minimo", "personal_optimo", "activo", "recurso_codigo", "compatible_con", "valor", "origen_codigo", "destino_codigo", "max_destinos_simultaneos", "requiere_precalibrado", "contexto", "disponible", "motivo", "prioridad", "observaciones"]
+
+
+PRODUCTION_FLOW_STAFFING_HELP = {
+    "linea_productiva": {"title": "Línea productiva", "description": "Código del flujo o línea donde se necesita la dotación.", "example": "MALLAS_TRADICIONAL.", "impact": "Permite calcular el equipo completo por flujo productivo activo."},
+    "area_puesto": {"title": "Área / puesto", "description": "Puesto operativo requerido dentro del flujo.", "example": "Loteado / paletizado.", "impact": "Desglosa la necesidad más allá de la máquina principal."},
+    "tipo_personal": {"title": "Tipo personal", "description": "Clasificación de la dotación: Directo, Indirecto o Soporte.", "example": "Directo.", "impact": "Facilita la comparación contra la plantilla disponible por tipo."},
+    "minimo": {"title": "Mínimo", "description": "Personas mínimas para poder operar el puesto.", "example": "1.", "impact": "Si no se cubre, genera incidencia de dotación mínima."},
+    "optimo": {"title": "Óptimo", "description": "Personas recomendadas para trabajar con normalidad.", "example": "7.", "impact": "Sirve como techo recomendado y para detectar falta de dotación óptima."},
+    "escala_con_ocupacion": {"title": "Escala con ocupación", "description": "Indica si el puesto crece según la ocupación de línea.", "example": "1 para mallas o tría; 0 para encargado.", "impact": "Ajusta dinámicamente el personal estimado según carga."},
+    "factor_ocupacion": {"title": "Factor ocupación", "description": "Multiplicador de ajuste para puestos escalables.", "example": "1.0.", "impact": "Permite calibrar necesidades por dificultad operativa sin cambiar el óptimo."},
+    "obligatorio": {"title": "Obligatorio", "description": "Marca si el puesto es imprescindible para lanzar el flujo.", "example": "1.", "impact": "Genera alerta roja cuando no se cubre el mínimo obligatorio."},
+    "activo": {"title": "Activo", "description": "Indica si el registro se usa en el cálculo.", "example": "1 activo, 0 inactivo.", "impact": "Permite desactivar dotaciones sin borrar el histórico."},
+    "observaciones": {"title": "Observaciones", "description": "Notas operativas sobre la dotación.", "example": "Refuerzo en campaña alta.", "impact": "Documenta criterios de planta para revisión futura."},
+}
+PRODUCTION_FLOW_STAFFING_HELP_KEYS = ["linea_productiva", "area_puesto", "tipo_personal", "minimo", "optimo", "escala_con_ocupacion", "factor_ocupacion", "obligatorio", "activo", "observaciones"]

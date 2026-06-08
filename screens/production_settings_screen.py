@@ -10,7 +10,7 @@ from services.production_settings_service import ProductionSettingsService
 from utils.master_excel_io import export_master_to_excel, import_master_from_excel
 from utils.help_dialog import show_tab_help
 from utils.production_master_excel_configs import PRODUCTION_MASTER_EXCEL_CONFIGS
-from utils.production_help_texts import PRODUCTION_CALIBER_FACTORS_HELP, PRODUCTION_CALIBER_FACTORS_HELP_KEYS, PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_LINES_HELP_KEYS, PRODUCTION_PACKAGING_HELP, PRODUCTION_PACKAGING_HELP_KEYS, PRODUCTION_PACKAGING_MAPPING_HELP, PRODUCTION_PACKAGING_MAPPING_HELP_KEYS, PRODUCTION_PENALTIES_HELP, PRODUCTION_PENALTIES_HELP_KEYS, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERFORMANCE_HELP_KEYS, PRODUCTION_PERSONAL_HELP, PRODUCTION_PERSONAL_HELP_KEYS, PRODUCTION_SEMAPHORE_HELP, PRODUCTION_SEMAPHORE_HELP_KEYS, PRODUCTION_RESOURCES_HELP, PRODUCTION_RESOURCES_HELP_KEYS, get_help_items
+from utils.production_help_texts import PRODUCTION_CALIBER_FACTORS_HELP, PRODUCTION_CALIBER_FACTORS_HELP_KEYS, PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_LINES_HELP_KEYS, PRODUCTION_PACKAGING_HELP, PRODUCTION_PACKAGING_HELP_KEYS, PRODUCTION_PACKAGING_MAPPING_HELP, PRODUCTION_PACKAGING_MAPPING_HELP_KEYS, PRODUCTION_PENALTIES_HELP, PRODUCTION_PENALTIES_HELP_KEYS, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERFORMANCE_HELP_KEYS, PRODUCTION_PERSONAL_HELP, PRODUCTION_PERSONAL_HELP_KEYS, PRODUCTION_FLOW_STAFFING_HELP, PRODUCTION_FLOW_STAFFING_HELP_KEYS, PRODUCTION_SEMAPHORE_HELP, PRODUCTION_SEMAPHORE_HELP_KEYS, PRODUCTION_RESOURCES_HELP, PRODUCTION_RESOURCES_HELP_KEYS, get_help_items
 from widgets.screen_header import ScreenHeader
 
 
@@ -50,6 +50,8 @@ class ProductionSettingsScreen(ttk.Frame):
         self._tipos_volcado_vars: dict[str, tk.IntVar] = {}
         self._staff_summary_vars: dict[str, tk.Variable] = {}
         self._staff_editor_vars: dict[str, tk.Variable] = {}
+        self._flow_staffing_editor_vars: dict[str, tk.Variable] = {}
+        self._flow_staffing_tree: ttk.Treeview | None = None
         self._staff_tree: ttk.Treeview | None = None
         self._packaging_tree: ttk.Treeview | None = None
         self._packaging_editor_vars: dict[str, tk.Variable] = {}
@@ -84,6 +86,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._build_ui()
         self._load_general_settings()
         self._load_staff_settings()
+        self._load_flow_staffing_settings()
         self._load_packaging_settings()
         self._load_base_packaging_settings()
         self._load_lines_settings()
@@ -115,6 +118,8 @@ class ProductionSettingsScreen(ttk.Frame):
         notebook.add(general_tab, text="General del día")
         personal_tab = ttk.Frame(notebook, padding=12)
         notebook.add(personal_tab, text="Personal")
+        flow_staffing_tab = ttk.Frame(notebook, padding=12)
+        notebook.add(flow_staffing_tab, text="Dotación flujos")
         packaging_tab = ttk.Frame(notebook, padding=12)
         notebook.add(packaging_tab, text="Confecciones")
         lines_tab = ttk.Frame(notebook, padding=12)
@@ -136,6 +141,7 @@ class ProductionSettingsScreen(ttk.Frame):
 
         self._build_general_tab(general_tab)
         self._build_staff_tab(personal_tab)
+        self._build_flow_staffing_tab(flow_staffing_tab)
         self._build_packaging_tab(packaging_tab)
         self._build_lines_tab(lines_tab)
         self._build_resources_flows_tab(resources_tab)
@@ -270,6 +276,58 @@ class ProductionSettingsScreen(ttk.Frame):
         ttk.Button(btns, text="Eliminar área seleccionada", command=self._delete_staff_area).pack(side="left", padx=4)
 
 
+    def _build_flow_staffing_tab(self, parent: ttk.Frame) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+        self._build_tab_toolbar(parent, help_command=self._show_flow_staffing_help,
+            export_command=lambda: self._export_master_excel("flow_staffing", self.service.get_flow_staffing),
+            import_command=lambda: self._import_master_excel("flow_staffing", self.service.save_flow_staffing, self._load_flow_staffing_settings))
+
+        columns = ("id", "linea_productiva", "area_puesto", "tipo_personal", "minimo", "optimo", "escala_con_ocupacion", "factor_ocupacion", "obligatorio", "activo", "observaciones")
+        headers = {"id": "ID", "linea_productiva": "Línea productiva", "area_puesto": "Área / puesto", "tipo_personal": "Tipo personal", "minimo": "Mínimo", "optimo": "Óptimo", "escala_con_ocupacion": "Escala con ocupación", "factor_ocupacion": "Factor ocupación", "obligatorio": "Obligatorio", "activo": "Activo", "observaciones": "Observaciones"}
+        widths = {"id": 45, "linea_productiva": 150, "area_puesto": 170, "tipo_personal": 110, "minimo": 75, "optimo": 75, "escala_con_ocupacion": 145, "factor_ocupacion": 120, "obligatorio": 90, "activo": 70, "observaciones": 260}
+        table_frame = ttk.LabelFrame(parent, text="Maestro de dotación por flujo", padding=12)
+        table_frame.grid(row=1, column=0, sticky="nsew")
+        tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=12)
+        self._flow_staffing_tree = tree
+        for col in columns:
+            tree.heading(col, text=headers[col]); tree.column(col, width=widths[col], anchor="w")
+        yscroll = ttk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        xscroll = ttk.Scrollbar(table_frame, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        tree.grid(row=0, column=0, sticky="nsew"); yscroll.grid(row=0, column=1, sticky="ns"); xscroll.grid(row=1, column=0, sticky="ew")
+        table_frame.grid_columnconfigure(0, weight=1); table_frame.grid_rowconfigure(0, weight=1)
+        tree.bind("<<TreeviewSelect>>", self._on_flow_staffing_row_selected)
+
+        editor = ttk.LabelFrame(parent, text="Editar dotación seleccionada", padding=12)
+        editor.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        editor.grid_columnconfigure(1, weight=1); editor.grid_columnconfigure(3, weight=1)
+        line_values = ["MALLAS_TRADICIONAL", "MALLAS_GIRSAC", "ENCAJADO", "GRANEL_MANUAL", "GRANELERA"]
+        self._flow_staffing_editor_vars = {"id": tk.StringVar(value=""), "linea_productiva": tk.StringVar(value=line_values[0]), "area_puesto": tk.StringVar(value=""), "tipo_personal": tk.StringVar(value="Directo"), "minimo": tk.StringVar(value="0"), "optimo": tk.StringVar(value="0"), "escala_con_ocupacion": tk.IntVar(value=0), "factor_ocupacion": tk.StringVar(value="1.0"), "obligatorio": tk.IntVar(value=1), "activo": tk.IntVar(value=1), "observaciones": tk.StringVar(value="")}
+        ttk.Label(editor, text="Línea productiva").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Combobox(editor, textvariable=self._flow_staffing_editor_vars["linea_productiva"], values=line_values).grid(row=0, column=1, sticky="ew", pady=4)
+        ttk.Label(editor, text="Área / puesto").grid(row=0, column=2, sticky="w", padx=(12, 8), pady=4)
+        ttk.Entry(editor, textvariable=self._flow_staffing_editor_vars["area_puesto"]).grid(row=0, column=3, sticky="ew", pady=4)
+        ttk.Label(editor, text="Tipo personal").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Combobox(editor, textvariable=self._flow_staffing_editor_vars["tipo_personal"], values=self.STAFF_TYPES, state="readonly").grid(row=1, column=1, sticky="ew", pady=4)
+        for row, col, key, label in ((1, 2, "minimo", "Mínimo"), (2, 0, "optimo", "Óptimo"), (2, 2, "factor_ocupacion", "Factor ocupación")):
+            ttk.Label(editor, text=label).grid(row=row, column=col, sticky="w", padx=(12 if col else 0, 8), pady=4)
+            ttk.Entry(editor, textvariable=self._flow_staffing_editor_vars[key]).grid(row=row, column=col + 1, sticky="ew", pady=4)
+        ttk.Checkbutton(editor, text="Escala con ocupación", variable=self._flow_staffing_editor_vars["escala_con_ocupacion"]).grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
+        ttk.Checkbutton(editor, text="Obligatorio", variable=self._flow_staffing_editor_vars["obligatorio"]).grid(row=3, column=2, sticky="w", pady=2)
+        ttk.Checkbutton(editor, text="Activo", variable=self._flow_staffing_editor_vars["activo"]).grid(row=3, column=3, sticky="w", pady=2)
+        ttk.Label(editor, text="Observaciones").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Entry(editor, textvariable=self._flow_staffing_editor_vars["observaciones"]).grid(row=4, column=1, columnspan=3, sticky="ew", pady=4)
+
+        btns = ttk.Frame(parent); btns.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        ttk.Button(btns, text="Nueva dotación", command=self._add_flow_staffing_row).pack(side="left", padx=4)
+        ttk.Button(btns, text="Aplicar cambios", command=self._apply_flow_staffing_row_changes).pack(side="left", padx=4)
+        ttk.Button(btns, text="Eliminar dotación", command=self._delete_flow_staffing_row).pack(side="left", padx=4)
+        ttk.Button(btns, text="Guardar dotación", command=self._save_flow_staffing_settings).pack(side="left", padx=4)
+        ttk.Button(btns, text="Restaurar valores por defecto", command=self._reset_flow_staffing_defaults).pack(side="left", padx=4)
+
+
+
 
     def _build_packaging_tab(self, parent: ttk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1)
@@ -323,6 +381,87 @@ class ProductionSettingsScreen(ttk.Frame):
 
     def _show_personal_help(self) -> None:
         show_tab_help(self, title="Descripción de campos - Personal", heading="Personal", intro="Esta pestaña define la plantilla disponible y los mínimos operativos por área de trabajo. Estos datos se usarán posteriormente para estimar si los pedidos previstos pueden producirse con el personal disponible.", help_items=get_help_items(PRODUCTION_PERSONAL_HELP_KEYS, PRODUCTION_PERSONAL_HELP))
+
+
+    def _show_flow_staffing_help(self) -> None:
+        show_tab_help(self, title="Descripción de campos - Dotación por flujo", heading="Dotación por flujo", intro="Este maestro define el equipo completo requerido por línea productiva y puesto operativo para calcular el personal total necesario del flujo.", help_items=get_help_items(PRODUCTION_FLOW_STAFFING_HELP_KEYS, PRODUCTION_FLOW_STAFFING_HELP))
+
+    def _load_flow_staffing_settings(self) -> None:
+        self._refresh_flow_staffing_tree(self.service.get_flow_staffing())
+
+    def _refresh_flow_staffing_tree(self, rows: list[dict]) -> None:
+        if not self._flow_staffing_tree:
+            return
+        self._flow_staffing_tree.delete(*self._flow_staffing_tree.get_children())
+        for row in rows:
+            self._flow_staffing_tree.insert("", "end", values=(row.get("id", ""), row.get("linea_productiva", ""), row.get("area_puesto", ""), row.get("tipo_personal", ""), row.get("minimo", 0), row.get("optimo", 0), row.get("escala_con_ocupacion", 0), row.get("factor_ocupacion", 1.0), row.get("obligatorio", 1), row.get("activo", 1), row.get("observaciones", "")))
+
+    def _on_flow_staffing_row_selected(self, _event=None) -> None:
+        if not self._flow_staffing_tree:
+            return
+        selected = self._flow_staffing_tree.selection()
+        if not selected:
+            return
+        vals = self._flow_staffing_tree.item(selected[0], "values")
+        keys = ("id", "linea_productiva", "area_puesto", "tipo_personal", "minimo", "optimo", "escala_con_ocupacion", "factor_ocupacion", "obligatorio", "activo", "observaciones")
+        for i, key in enumerate(keys):
+            self._flow_staffing_editor_vars[key].set(vals[i])
+
+    def _validate_flow_staffing_values(self, values: tuple) -> tuple:
+        linea = str(values[1]).strip(); area = str(values[2]).strip(); tipo = str(values[3]).strip()
+        if not linea: raise ValueError("La línea productiva es obligatoria")
+        if not area: raise ValueError("El área / puesto es obligatorio")
+        if not tipo: raise ValueError("El tipo de personal es obligatorio")
+        minimo = int(str(values[4]).strip()); optimo = int(str(values[5]).strip()); factor = float(str(values[7]).strip().replace(",", "."))
+        if minimo < 0 or optimo < 0: raise ValueError("Mínimo y óptimo deben ser >= 0")
+        if optimo < minimo: raise ValueError("Óptimo no puede ser menor que mínimo")
+        if factor <= 0: raise ValueError("Factor ocupación debe ser > 0")
+        return (values[0], linea, area, tipo, minimo, optimo, 1 if str(values[6]).strip() in ("1", "True", "true") else 0, factor, 1 if str(values[8]).strip() in ("1", "True", "true") else 0, 1 if str(values[9]).strip() in ("1", "True", "true") else 0, str(values[10]).strip())
+
+    def _apply_flow_staffing_row_changes(self) -> None:
+        if not self._flow_staffing_tree: return
+        selected = self._flow_staffing_tree.selection()
+        if not selected:
+            messagebox.showerror("Dotación flujos", "Seleccione una fila para editar.", parent=self); return
+        try:
+            vals = self._validate_flow_staffing_values(tuple(self._flow_staffing_editor_vars[k].get() for k in ("id", "linea_productiva", "area_puesto", "tipo_personal", "minimo", "optimo", "escala_con_ocupacion", "factor_ocupacion", "obligatorio", "activo", "observaciones")))
+            self._flow_staffing_tree.item(selected[0], values=vals)
+        except Exception as exc:
+            messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _add_flow_staffing_row(self) -> None:
+        if self._flow_staffing_tree:
+            self._flow_staffing_tree.insert("", "end", values=("", "MALLAS_TRADICIONAL", "Nuevo puesto", "Directo", 1, 1, 0, 1.0, 1, 1, ""))
+
+    def _delete_flow_staffing_row(self) -> None:
+        if not self._flow_staffing_tree: return
+        selected = self._flow_staffing_tree.selection()
+        if not selected:
+            messagebox.showerror("Dotación flujos", "Seleccione una fila para eliminar.", parent=self); return
+        for item in selected:
+            self._flow_staffing_tree.delete(item)
+
+    def _collect_flow_staffing_rows_payload(self) -> list[dict]:
+        rows=[]
+        if not self._flow_staffing_tree:
+            return rows
+        for item in self._flow_staffing_tree.get_children():
+            vals = self._validate_flow_staffing_values(self._flow_staffing_tree.item(item, "values"))
+            rows.append({"id": vals[0], "linea_productiva": vals[1], "area_puesto": vals[2], "tipo_personal": vals[3], "minimo": vals[4], "optimo": vals[5], "escala_con_ocupacion": vals[6], "factor_ocupacion": vals[7], "obligatorio": vals[8], "activo": vals[9], "observaciones": vals[10]})
+        return rows
+
+    def _save_flow_staffing_settings(self) -> None:
+        try:
+            self.service.save_flow_staffing(self._collect_flow_staffing_rows_payload())
+            self._load_flow_staffing_settings()
+            messagebox.showinfo("Configuración productiva", "Dotación por flujo guardada correctamente.", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Datos inválidos", str(exc), parent=self)
+
+    def _reset_flow_staffing_defaults(self) -> None:
+        self.service.reset_flow_staffing_defaults()
+        self._load_flow_staffing_settings()
+        messagebox.showinfo("Configuración productiva", "Valores por defecto de dotación por flujo restaurados.", parent=self)
 
     def _load_general_settings(self) -> None:
         data = self.service.get_general_settings()
@@ -1635,8 +1774,12 @@ class ProductionSettingsScreen(ttk.Frame):
                 for c in cfg.get("numeric_columns", []):
                     if clean.get(c) not in (None, ""): clean[c]=float(str(clean[c]).replace(",","."))
                 for c in cfg.get("boolean_columns", []): clean[c]=1 if str(clean.get(c,"0")).strip().upper() in {"1","SI","S","TRUE","X","Y","YES"} else 0
-                uk=str(clean.get(cfg["unique_key"], "")).strip().lower()
-                if uk in seen: errors.append(f"{ws.title} fila {row_idx}: clave duplicada {cfg['unique_key']}")
+                unique_key = cfg["unique_key"]
+                if "|" in unique_key:
+                    uk = "|".join(str(clean.get(part, "")).strip().lower() for part in unique_key.split("|"))
+                else:
+                    uk=str(clean.get(unique_key, "")).strip().lower()
+                if uk in seen: errors.append(f"{ws.title} fila {row_idx}: clave duplicada {unique_key}")
                 seen.add(uk); data.append(clean)
             return data
         if master_key == "personal":
@@ -1691,6 +1834,7 @@ class ProductionSettingsScreen(ttk.Frame):
     def _get_master_help_items(self, master_key: str) -> list[dict]:
         by_key = {
             "personal": get_help_items(PRODUCTION_PERSONAL_HELP_KEYS, PRODUCTION_PERSONAL_HELP),
+            "flow_staffing": get_help_items(PRODUCTION_FLOW_STAFFING_HELP_KEYS, PRODUCTION_FLOW_STAFFING_HELP),
             "packaging_types": get_help_items(PRODUCTION_PACKAGING_HELP_KEYS, PRODUCTION_PACKAGING_HELP),
             "packaging_mapping": get_help_items(PRODUCTION_PACKAGING_MAPPING_HELP_KEYS, PRODUCTION_PACKAGING_MAPPING_HELP),
             "lines": get_help_items(PRODUCTION_LINES_HELP_KEYS, PRODUCTION_LINES_HELP),
