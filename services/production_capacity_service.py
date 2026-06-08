@@ -236,7 +236,7 @@ class ProductionCapacityService:
         line_occ = {str(r.get("Línea productiva", "")).strip(): float(r.get("Ocupación %", 0) or 0) for r in line_rows}
         used_lines = {line for line, occ in line_occ.items() if line}
         staff_rows = [r for r in inputs.get("flow_staffing", []) if str(r.get("linea_productiva", "")).strip() in used_lines]
-        area_availability, type_availability = self._staff_availability_indexes(inputs)
+        area_availability, type_availability, area_type = self._staff_availability_indexes(inputs)
         rows: list[dict] = []
         incidencias: list[dict] = []
         totals = {"min": 0, "opt": 0, "est": 0, "deficit": 0}
@@ -244,7 +244,8 @@ class ProductionCapacityService:
         for staff in staff_rows:
             linea = str(staff.get("linea_productiva", "")).strip()
             area = str(staff.get("area_puesto", "")).strip()
-            tipo = str(staff.get("tipo_personal", "")).strip()
+            tipo_configurado = str(staff.get("tipo_personal", "")).strip()
+            tipo, _ = self._staff_type_for_area(area, tipo_configurado, area_type)
             minimo = max(0, int(staff.get("minimo", 0) or 0))
             optimo = max(minimo, int(staff.get("optimo", 0) or 0))
             ocupacion = float(line_occ.get(linea, 0) or 0)
@@ -523,24 +524,39 @@ class ProductionCapacityService:
 
 
 
-    def _staff_availability_indexes(self, inputs: dict) -> tuple[dict[str, int], dict[str, int]]:
+    def _staff_availability_indexes(self, inputs: dict) -> tuple[dict[str, int], dict[str, int], dict[str, str]]:
         area_availability: dict[str, int] = {}
         type_availability: dict[str, int] = {
             "directo": int(inputs.get("personnel", {}).get("personal_directo", 0) or 0),
             "indirecto": int(inputs.get("personnel", {}).get("personal_indirecto", 0) or 0),
             "soporte": int(inputs.get("personnel", {}).get("personal_soporte", 0) or 0),
         }
+        area_type: dict[str, str] = {}
         for row in inputs.get("staff_areas", []):
             if int(row.get("activo", 1) or 0) != 1:
                 continue
             available = int(row.get("disponible", 0) or 0)
             norm_area = self._normalize_staff_name(str(row.get("area", "")))
+            tipo_personal = str(row.get("tipo_personal", "")).strip()
             if norm_area:
                 area_availability[norm_area] = max(area_availability.get(norm_area, 0), available)
-            norm_type = self._normalize_staff_name(str(row.get("tipo_personal", "")))
+                if tipo_personal:
+                    area_type[norm_area] = tipo_personal
+            norm_type = self._normalize_staff_name(tipo_personal)
             if norm_type:
                 type_availability[norm_type] = max(type_availability.get(norm_type, 0), available)
-        return area_availability, type_availability
+        return area_availability, type_availability, area_type
+
+    def _staff_type_for_area(self, area: str, configured_type: str, area_type: dict[str, str]) -> tuple[str, str]:
+        area_norm = self._normalize_staff_name(area)
+        if area_norm in area_type:
+            return area_type[area_norm], "area"
+        area_tokens = [token for token in area_norm.split() if len(token) > 2]
+        for configured_area, tipo_personal in area_type.items():
+            configured_tokens = set(configured_area.split())
+            if area_tokens and any(token in configured_tokens for token in area_tokens):
+                return tipo_personal, "area_partial"
+        return configured_type, "flow_staffing"
 
     def _available_staff_for_area(self, area: str, tipo: str, area_availability: dict[str, int], type_availability: dict[str, int]) -> tuple[int, str]:
         area_norm = self._normalize_staff_name(area)

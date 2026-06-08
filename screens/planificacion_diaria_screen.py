@@ -283,7 +283,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                     f"Kg reales pendientes: {s['Kg reales pendientes']:,.2f} | Kg previstos: {s['Kg previstos']:,.2f} | "
                     f"Kg total simulación: {s['Kg total simulación']:,.2f} | Horas necesarias estimadas: {s['Horas necesarias estimadas']:,.2f} | "
                     f"Horas disponibles: {s['Horas disponibles']:,.2f} | Ocupación %: {s['Ocupación %']:,.2f}% | "
-                    f"Personal total/directo/indirecto: {s['Personal disponible total']}/{s['Personal directo disponible']}/{s['Personal indirecto disponible']} | "
+                    f"Personal total/directo/soporte/indirecto: {s['Personal disponible total']}/{s['Personal directo disponible']}/{s['Personal soporte disponible']}/{s['Personal indirecto disponible']} | "
                     f"Personal requerido mín/ópt/estimado: {s.get('personal_minimo_flujo', 0)}/{s.get('personal_optimo_flujo', 0)}/{s.get('personal_estimado_flujo', 0)} | "
                     f"Déficit personal: {s.get('deficit_personal_flujo', 0)} | "
                     f"Personal min/ópt recursos: {s.get('personal_minimo_recursos', 0)}/{s.get('personal_optimo_recursos', 0)} | "
