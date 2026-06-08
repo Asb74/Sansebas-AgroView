@@ -39,7 +39,7 @@ DEFAULT_STAFF_SUMMARY = {
 DEFAULT_PACKAGING_TYPES = [
     {"codigo": "MALLA_1KG_TRAD", "descripcion": "Malla 1 kg tradicional", "familia": "Malla", "subtipo": "Tradicional", "kg_formato": 1.0, "material": "Malla", "tipo_malla": "Tradicional", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
     {"codigo": "MALLA_2KG_TRAD", "descripcion": "Malla 2 kg tradicional", "familia": "Malla", "subtipo": "Tradicional", "kg_formato": 2.0, "material": "Malla", "tipo_malla": "Tradicional", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
-    {"codigo": "MALLA_2KG_CLIP", "descripcion": "Malla 2 kg clip-to-clip", "familia": "Malla", "subtipo": "Clip-to-clip", "kg_formato": 2.0, "material": "Malla", "tipo_malla": "Clip-to-clip", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_2KG_CLIP", "descripcion": "Malla 2 kg clip-to-clip", "familia": "Malla", "subtipo": "Clip-to-clip", "kg_formato": 2.0, "material": "Malla", "tipo_malla": "Clip-to-clip", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 0, "observaciones": "Formato comercial sin línea clip-to-clip activa; usar tipo operativo Tradicional en capacidad."},
     {"codigo": "MALLA_3KG_GIRSAC", "descripcion": "Malla 3 kg girsac", "familia": "Malla", "subtipo": "Girsac", "kg_formato": 3.0, "material": "Malla", "tipo_malla": "Girsac", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
     {"codigo": "ENCAJADO_10KG_CARTON", "descripcion": "Encajado 10 kg cartón", "familia": "Encajado", "subtipo": "Caja cartón", "kg_formato": 10.0, "material": "Cartón", "tipo_malla": "No aplica", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
     {"codigo": "ENCAJADO_15KG_MADERA", "descripcion": "Encajado 15 kg madera", "familia": "Encajado", "subtipo": "Caja madera", "kg_formato": 15.0, "material": "Madera", "tipo_malla": "No aplica", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
@@ -54,7 +54,7 @@ DEFAULT_BASE_PACKAGING = [
     {"codigo": "MALLA_1KG_TRAD", "descripcion": "Malla 1 kg tradicional", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Tradicional", "kg_formato": 1.0, "tipo_malla": "Tradicional", "linea_productiva": "MALLAS_TRADICIONAL", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
     {"codigo": "MALLA_2KG_TRAD", "descripcion": "Malla 2 kg tradicional", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Tradicional", "kg_formato": 2.0, "tipo_malla": "Tradicional", "linea_productiva": "MALLAS_TRADICIONAL", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
     {"codigo": "MALLA_2KG_GIRSAC", "descripcion": "Malla 2 kg girsac", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Girsac", "kg_formato": 2.0, "tipo_malla": "Girsac", "linea_productiva": "MALLAS_GIRSAC", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
-    {"codigo": "MALLA_2KG_CLIP", "descripcion": "Malla 2 kg clip-to-clip", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Clip-to-clip", "kg_formato": 2.0, "tipo_malla": "Clip-to-clip", "linea_productiva": "MALLAS_CLIP", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
+    {"codigo": "MALLA_2KG_CLIP", "descripcion": "Malla 2 kg clip-to-clip", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Clip-to-clip", "kg_formato": 2.0, "tipo_malla": "Clip-to-clip", "linea_productiva": "MALLAS_CLIP", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 0, "observaciones": "Formato comercial sin línea clip-to-clip activa; usar tipo operativo Tradicional en capacidad."},
     {"codigo": "MALLA_3KG_GIRSAC", "descripcion": "Malla 3 kg girsac", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Girsac", "kg_formato": 3.0, "tipo_malla": "Girsac", "linea_productiva": "MALLAS_GIRSAC", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
     {"codigo": "MALLA_4KG_GIRSAC", "descripcion": "Malla 4 kg girsac", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Girsac", "kg_formato": 4.0, "tipo_malla": "Girsac", "linea_productiva": "MALLAS_GIRSAC", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
     {"codigo": "MALLA_4KG_TRAD", "descripcion": "Malla 4 kg tradicional", "grupo_confeccion": "MALLAS", "perfil_confeccion": "MALLA", "familia_productiva": "Malla", "subtipo_productivo": "Tradicional", "kg_formato": 4.0, "tipo_malla": "Tradicional", "linea_productiva": "MALLAS_TRADICIONAL", "requiere_precalibrado": 0, "compatible_box": 0, "activo": 1, "observaciones": ""},
@@ -76,7 +76,7 @@ DEFAULT_PRODUCTION_LINES = [
     {"codigo": "VOLCADO_TOLVA", "nombre": "Tolva", "tipo_linea": "Volcado", "familia_principal": "Entrada fruta", "numero_maquinas": 1, "activa": 0, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
     {"codigo": "VOLCADO_MANUAL", "nombre": "Manual", "tipo_linea": "Volcado", "familia_principal": "Entrada fruta", "numero_maquinas": 1, "activa": 0, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
     {"codigo": "MALLAS_TRADICIONAL", "nombre": "Línea mallas tradicional", "tipo_linea": "Malla", "familia_principal": "Envasado", "numero_maquinas": 2, "activa": 1, "capacidad_kg_h_referencia": 3200.0, "personal_minimo": 6, "personal_optimo": 8, "permite_precalibrado": 1, "permite_box": 1, "observaciones": "Tría malla y mallas como bloque principal."},
-    {"codigo": "MALLAS_CLIP", "nombre": "Línea mallas clip-to-clip", "tipo_linea": "Malla", "familia_principal": "Envasado", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 2600.0, "personal_minimo": 4, "personal_optimo": 6, "permite_precalibrado": 1, "permite_box": 1, "observaciones": "Soporte para pedidos pequeños y cambios de formato."},
+    {"codigo": "MALLAS_CLIP", "nombre": "Línea mallas clip-to-clip", "tipo_linea": "Malla", "familia_principal": "Envasado", "numero_maquinas": 0, "activa": 0, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": "No existe máquina clip-to-clip activa; reasignar formatos comerciales CLIP a MALLAS_TRADICIONAL con tipo operativo Tradicional."},
     {"codigo": "MALLAS_GIRSAC", "nombre": "Línea mallas girsac", "tipo_linea": "Malla", "familia_principal": "Envasado", "numero_maquinas": 1, "activa": 0, "capacidad_kg_h_referencia": 0.0, "personal_minimo": 0, "personal_optimo": 0, "permite_precalibrado": 0, "permite_box": 0, "observaciones": ""},
     {"codigo": "ENCAJADO", "nombre": "Línea encajado", "tipo_linea": "Encajado", "familia_principal": "Envasado", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 2200.0, "personal_minimo": 4, "personal_optimo": 5, "permite_precalibrado": 0, "permite_box": 1, "observaciones": "Reforzar cuando suban pedidos de caja."},
     {"codigo": "GRANEL_MANUAL", "nombre": "Granel manual", "tipo_linea": "Granel", "familia_principal": "Envasado", "numero_maquinas": 1, "activa": 1, "capacidad_kg_h_referencia": 3600.0, "personal_minimo": 3, "personal_optimo": 4, "permite_precalibrado": 1, "permite_box": 1, "observaciones": "Uso flexible para absorber picos diarios."},
@@ -545,6 +545,31 @@ class ProductionSettingsRepository:
             existing = conn.execute("SELECT COUNT(*) AS n FROM production_lines").fetchone()["n"]
             if existing == 0:
                 self.save_lines(DEFAULT_PRODUCTION_LINES)
+            else:
+                self._deactivate_clip_line(conn)
+
+    def _deactivate_clip_line(self, conn) -> None:
+        now = datetime.utcnow().isoformat()
+        conn.execute(
+            """
+            UPDATE production_lines
+            SET activa = 0,
+                numero_maquinas = 0,
+                capacidad_kg_h_referencia = 0,
+                personal_minimo = 0,
+                personal_optimo = 0,
+                permite_precalibrado = 0,
+                permite_box = 0,
+                observaciones = CASE
+                    WHEN COALESCE(observaciones, '') = '' THEN 'No existe máquina clip-to-clip activa; reasignar formatos comerciales CLIP a MALLAS_TRADICIONAL con tipo operativo Tradicional.'
+                    WHEN observaciones NOT LIKE '%No existe máquina clip-to-clip activa%' THEN observaciones || ' | No existe máquina clip-to-clip activa; reasignar formatos comerciales CLIP a MALLAS_TRADICIONAL con tipo operativo Tradicional.'
+                    ELSE observaciones
+                END,
+                updated_at = ?
+            WHERE codigo = 'MALLAS_CLIP'
+            """,
+            (now,),
+        )
 
     def get_lines(self) -> list[dict]:
         self.ensure_lines_defaults()
@@ -608,6 +633,25 @@ class ProductionSettingsRepository:
             existing = conn.execute("SELECT COUNT(*) AS n FROM production_packaging_types").fetchone()["n"]
             if existing == 0:
                 self.save_packaging_types(DEFAULT_PACKAGING_TYPES)
+            else:
+                self._deactivate_clip_packaging_type(conn)
+
+    def _deactivate_clip_packaging_type(self, conn) -> None:
+        now = datetime.utcnow().isoformat()
+        conn.execute(
+            """
+            UPDATE production_packaging_types
+            SET activo = 0,
+                observaciones = CASE
+                    WHEN COALESCE(observaciones, '') = '' THEN 'Formato comercial sin línea clip-to-clip activa; usar tipo operativo Tradicional en capacidad.'
+                    WHEN observaciones NOT LIKE '%sin línea clip-to-clip activa%' THEN observaciones || ' | Formato comercial sin línea clip-to-clip activa; usar tipo operativo Tradicional en capacidad.'
+                    ELSE observaciones
+                END,
+                updated_at = ?
+            WHERE codigo = 'MALLA_2KG_CLIP'
+            """,
+            (now,),
+        )
 
     def get_packaging_types(self) -> list[dict]:
         self.ensure_packaging_defaults()
@@ -672,6 +716,25 @@ class ProductionSettingsRepository:
             existing = conn.execute("SELECT COUNT(*) AS n FROM production_base_packaging").fetchone()["n"]
             if existing == 0:
                 self.save_base_packaging(DEFAULT_BASE_PACKAGING)
+            else:
+                self._deactivate_clip_base_packaging(conn)
+
+    def _deactivate_clip_base_packaging(self, conn) -> None:
+        now = datetime.utcnow().isoformat()
+        conn.execute(
+            """
+            UPDATE production_base_packaging
+            SET activo = 0,
+                observaciones = CASE
+                    WHEN COALESCE(observaciones, '') = '' THEN 'Formato comercial sin línea clip-to-clip activa; usar tipo operativo Tradicional en capacidad.'
+                    WHEN observaciones NOT LIKE '%sin línea clip-to-clip activa%' THEN observaciones || ' | Formato comercial sin línea clip-to-clip activa; usar tipo operativo Tradicional en capacidad.'
+                    ELSE observaciones
+                END,
+                updated_at = ?
+            WHERE codigo = 'MALLA_2KG_CLIP'
+            """,
+            (now,),
+        )
 
     def get_base_packaging(self, active_only: bool = False) -> list[dict]:
         self.ensure_base_packaging_defaults()
@@ -779,8 +842,30 @@ class ProductionSettingsRepository:
                         tuple(payload[k] for k in payload if k != "codigo_mconfeccion") + (codigo,))
         return {"source_total": len(source_rows), "created": created, "updated": updated}
 
-    def get_packaging_mapping(self, show_only_review: bool = False) -> list[dict]:
+    def _correct_traditional_clip_mapping(self) -> None:
         self.ensure_packaging_mapping_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE production_packaging_mapping
+                SET tipo_malla = 'Tradicional',
+                    subtipo_productivo = 'Tradicional',
+                    linea_productiva = 'MALLAS_TRADICIONAL',
+                    observaciones = CASE
+                        WHEN COALESCE(observaciones, '') = '' THEN 'Tipo malla corregido operativamente a Tradicional'
+                        WHEN observaciones NOT LIKE '%Tipo malla corregido operativamente a Tradicional%' THEN observaciones || ' | Tipo malla corregido operativamente a Tradicional'
+                        ELSE observaciones
+                    END,
+                    updated_at = ?
+                WHERE linea_productiva = 'MALLAS_TRADICIONAL'
+                  AND tipo_malla = 'Clip-to-clip'
+                """,
+                (now,),
+            )
+
+    def get_packaging_mapping(self, show_only_review: bool = False) -> list[dict]:
+        self._correct_traditional_clip_mapping()
         sql = "SELECT * FROM production_packaging_mapping"
         if show_only_review:
             sql += " WHERE revisar = 1"
@@ -794,6 +879,13 @@ class ProductionSettingsRepository:
         now = datetime.utcnow().isoformat()
         with get_connection() as conn:
             for row in rows:
+                row = dict(row)
+                if row.get("linea_productiva") == "MALLAS_TRADICIONAL" and row.get("tipo_malla") == "Clip-to-clip":
+                    row["tipo_malla"] = "Tradicional"
+                    row["subtipo_productivo"] = "Tradicional"
+                    obs = str(row.get("observaciones", "") or "")
+                    msg = "Tipo malla corregido operativamente a Tradicional"
+                    row["observaciones"] = msg if not obs else obs if msg in obs else f"{obs} | {msg}"
                 conn.execute("""INSERT INTO production_packaging_mapping (
                     codigo_mconfeccion,nombre_mconfeccion,descripcion_corta,grupo_origen,neto_origen,npiezas_origen,activa_origen,familia_productiva,subtipo_productivo,kg_formato,tipo_malla,linea_productiva,requiere_precalibrado,compatible_box,activo_produccion,confianza_autodeteccion,revisar,observaciones,updated_at
                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -828,8 +920,18 @@ class ProductionSettingsRepository:
         elif familia == "Malla" and npiezas > 0 and kg > 0: kg = kg / npiezas
         elif familia not in ("Encajado", "Granel"): kg = 0.0
         revisar = 1 if kg == 0 or subtipo == "Otro" or familia == "Otro" else 0
-        tipo_malla = "No aplica" if familia != "Malla" else ("Tradicional" if subtipo == "Tradicional" else subtipo if subtipo in ("Girsac", "Clip-to-clip", "Flowpack") else "Tradicional")
-        linea = {"Tradicional": "MALLAS_TRADICIONAL", "Clip-to-clip": "MALLAS_CLIP", "Girsac": "MALLAS_GIRSAC"}.get(subtipo, "ENCAJADO" if familia == "Encajado" else "GRANEL_MANUAL" if familia == "Granel" else "GRANELERA" if familia == "Granelera" else "OTRO")
+        tipo_malla = "No aplica"
+        linea = "ENCAJADO" if familia == "Encajado" else "GRANEL_MANUAL" if familia == "Granel" else "GRANELERA" if familia == "Granelera" else "OTRO"
+        if familia == "Malla":
+            if subtipo == "Girsac":
+                tipo_malla = "Girsac"
+                linea = "MALLAS_GIRSAC"
+            else:
+                # CLIP en el nombre se conserva como texto comercial, pero no existe una
+                # máquina clip-to-clip activa: para capacidad se opera como malla tradicional.
+                subtipo = "Tradicional"
+                tipo_malla = "Tradicional"
+                linea = "MALLAS_TRADICIONAL"
         activa = str(src.get("ACTIVA") or "").upper()
         activo_produccion = 1 if activa not in ("N",) else 0
         if activa not in ("S", "N"): revisar = 1
