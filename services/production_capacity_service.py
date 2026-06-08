@@ -29,18 +29,34 @@ class ProductionCapacityService:
             "caliber_factors": self.prod_repo.get_caliber_performance_factors(),
             "personnel": self.prod_repo.get_staff_summary(),
             "lines": self.prod_repo.get_lines(),
+            "physical_resources": self.prod_repo.get_physical_resources(),
+            "resource_compatibilities": self.prod_repo.get_resource_compatibilities(),
+            "resource_feeds": self.prod_repo.get_resource_feeds(),
+            "resource_availability": self.prod_repo.get_resource_availability(),
             "semaphore_rules": self.prod_repo.get_semaphore_rules(),
             "general_settings": self.prod_repo.get_general_settings(),
         }
 
     def build_capacity_simulation(self, filters: dict, modo_pedidos: str = "10_dias") -> dict:
         inputs = self.load_capacity_inputs(filters, modo_pedidos)
+        inputs["filters"] = filters
         mapped, incidencias = self.map_orders_to_productive_config(inputs["pedidos_reales"], inputs["pedidos_previstos"], inputs)
         fam = self.calculate_family_capacity(mapped, inputs)
         line = self.calculate_line_capacity(mapped, inputs)
+        resource_rows, resource_incidencias = self.calculate_physical_resource_capacity(mapped, inputs)
+        bottleneck = self.detect_bottleneck(resource_rows)
+        personnel_resources = self.calculate_resource_personnel(resource_rows)
         summary = self.calculate_capacity_summary(mapped, fam, line, inputs)
-        alerts = self.calculate_capacity_alerts(summary, fam, line, incidencias)
-        return {"summary": summary, "family_rows": fam, "line_rows": line, "incidencias": alerts, "pedidos": mapped}
+        summary.update({
+            "recurso_cuello_botella": bottleneck.get("Recurso", "") if bottleneck else "",
+            "ocupacion_cuello_botella_pct": bottleneck.get("Ocupación %", 0) if bottleneck else 0,
+            "motivo_cuello_botella": bottleneck.get("motivo", "") if bottleneck else "",
+            "personal_minimo_recursos": personnel_resources["personal_minimo_recursos"],
+            "personal_optimo_recursos": personnel_resources["personal_optimo_recursos"],
+            "aviso_personal_recursos": personnel_resources["aviso_tecnico"],
+        })
+        alerts = self.calculate_capacity_alerts(summary, fam, line, incidencias + resource_incidencias, resource_rows, bottleneck)
+        return {"summary": summary, "family_rows": fam, "line_rows": line, "resource_rows": resource_rows, "incidencias": alerts, "pedidos": mapped}
 
     def map_orders_to_productive_config(self, pedidos_reales: list[dict], pedidos_previstos: list[dict], inputs: dict) -> tuple[list[dict], list[dict]]:
         mapping = {str(r.get("codigo_mconfeccion", "")).strip(): r for r in inputs["packaging_mapping"]}
@@ -126,6 +142,8 @@ class ProductionCapacityService:
                     "capacidad_kg_h": capacidad_real,
                     "personal_minimo_linea": max(0, personal_min),
                     "personal_optimo_linea": int(line_cfg.get("personal_optimo", 0) or 0),
+                    "tipo_malla": str(productive_conf.get("tipo_malla", "") or "").strip(),
+                    "subtipo_productivo": str(productive_conf.get("subtipo_productivo", "") or "").strip(),
                     "fallback_used": fallback_used,
                 })
         return out, incidencias
@@ -186,6 +204,161 @@ class ProductionCapacityService:
             })
         return sorted(rows, key=lambda x: x["Ocupación %"], reverse=True)
 
+
+    def calculate_physical_resource_capacity(self, mapped: list[dict], inputs: dict) -> tuple[list[dict], list[dict]]:
+        grouped: dict[tuple[str, str], dict] = defaultdict(lambda: {"kg": 0.0, "familia": "", "tipo_malla": ""})
+        for m in mapped:
+            tipo_malla = str(m.get("tipo_malla", "") or "").strip()
+            key = (str(m.get("linea", "") or "").strip(), tipo_malla)
+            grouped[key]["kg"] += float(m.get("kg", 0) or 0)
+            grouped[key]["familia"] = str(m.get("familia", "") or "").strip()
+            grouped[key]["tipo_malla"] = tipo_malla
+
+        resource_rows: list[dict] = []
+        incidencias: list[dict] = []
+        horas_disponibles = self._resource_hours_available(inputs)
+        for (line_code, tipo_malla), data in grouped.items():
+            if not line_code or data["kg"] <= 0:
+                continue
+            productive_mapping = {
+                "kg": data["kg"],
+                "familia": data["familia"],
+                "tipo_malla": tipo_malla,
+                "inputs": inputs,
+            }
+            required = self.resolve_required_resources_for_line(line_code, productive_mapping)
+            resource_rows.extend(self.calculate_resource_capacity_usage(required, data["kg"], horas_disponibles))
+
+        for row in resource_rows:
+            for inc in row.get("_incidencias", []):
+                incidencias.append({
+                    "Tipo incidencia": inc["tipo"],
+                    "Pedido": "-",
+                    "Cliente": "-",
+                    "Confección": "-",
+                    "Línea productiva": row.get("Línea productiva", ""),
+                    "Motivo": inc["motivo"],
+                    "Acción sugerida": inc["accion"],
+                })
+            row.pop("_incidencias", None)
+        return sorted(resource_rows, key=lambda x: (x["Línea productiva"], x["Recurso"])), incidencias
+
+    def resolve_required_resources_for_line(self, line_code: str, productive_mapping: dict) -> list[dict]:
+        inputs = productive_mapping.get("inputs", {})
+        kg = float(productive_mapping.get("kg", 0) or 0)
+        tipo_malla = str(productive_mapping.get("tipo_malla", "") or "").strip()
+        resource_index = {str(r.get("codigo", "") or "").strip(): r for r in inputs.get("physical_resources", [])}
+
+        line_upper = str(line_code or "").strip().upper()
+        candidates = {
+            "MALLAS_TRADICIONAL": ["CALIBRADOR_PRINCIPAL", "PESADORA_3", "PESADORA_4"],
+            "MALLAS_GIRSAC": ["CALIBRADOR_PRINCIPAL", "PESADORA_1", "PESADORA_2", "PESADORA_3", "PESADORA_4"],
+            "ENCAJADO": ["CALIBRADOR_PRINCIPAL", "ENCAJADO", "FINAL_LINEA"],
+            "GRANEL_MANUAL": ["CALIBRADOR_PRINCIPAL", "GRANEL_MANUAL"],
+            "GRANELERA": ["CALIBRADOR_PRINCIPAL", "GRANELERA_1", "GRANELERA_2"],
+        }.get(line_upper, ["CALIBRADOR_PRINCIPAL", line_code])
+
+        compatible_codes = []
+        non_split_codes = []
+        rows_by_code: dict[str, dict] = {}
+        for code in candidates:
+            row = dict(resource_index.get(code, {}))
+            incidencias = []
+            if not row:
+                row = {"codigo": code, "tipo_recurso": "No configurado", "familia_operativa": "", "capacidad_kg_h": 0, "numero_unidades": 0, "personal_minimo": 0, "personal_optimo": 0, "activo": 0}
+                incidencias.append({"tipo": "Recurso físico no configurado", "motivo": f"Recurso {code} no existe en production_physical_resources", "accion": "Configurar recurso físico o ajustar regla de asignación"})
+            elif int(row.get("activo", 0) or 0) != 1:
+                incidencias.append({"tipo": "Recurso inactivo", "motivo": f"Recurso {code} inactivo", "accion": "Activar recurso o reasignar carga"})
+
+            if str(row.get("tipo_recurso", "")).strip().lower() == "pesadora" or code.startswith("PESADORA_"):
+                if self._is_resource_compatible(code, "tipo_malla", tipo_malla, inputs):
+                    compatible_codes.append(code)
+                else:
+                    incidencias.append({"tipo": "Recurso no compatible", "motivo": f"{code} no compatible con tipo_malla={tipo_malla or 'VACÍO'}", "accion": "Revisar compatibilidades de recursos"})
+                    # No incluir pesadoras no compatibles en el cálculo operativo.
+                    rows_by_code[code] = {"row": row, "incidencias": incidencias, "include": False}
+                    continue
+            else:
+                non_split_codes.append(code)
+
+            availability_issue = self._resource_availability_issue(code, inputs)
+            if availability_issue:
+                incidencias.append(availability_issue)
+            rows_by_code[code] = {"row": row, "incidencias": incidencias, "include": True}
+
+        out: list[dict] = []
+        active_compatible = [code for code in compatible_codes if int(rows_by_code[code]["row"].get("activo", 0) or 0) == 1]
+        split_kg = kg / len(active_compatible) if active_compatible else 0.0
+        for code in non_split_codes + compatible_codes:
+            payload = rows_by_code.get(code)
+            if not payload or not payload.get("include"):
+                continue
+            row = dict(payload["row"])
+            assigned_kg = split_kg if code in compatible_codes else kg
+            out.append({
+                **row,
+                "linea_productiva": line_code,
+                "kg_asignados": assigned_kg,
+                "_incidencias": list(payload["incidencias"]),
+            })
+        for code, payload in rows_by_code.items():
+            if payload.get("include"):
+                continue
+            for inc in payload.get("incidencias", []):
+                out.append({
+                    **payload["row"],
+                    "linea_productiva": line_code,
+                    "kg_asignados": 0.0,
+                    "_incidencias": [inc],
+                    "_solo_incidencia": True,
+                })
+        return out
+
+    def calculate_resource_capacity_usage(self, resource_rows: list[dict], kg: float, horas_utiles_dia: float) -> list[dict]:
+        out: list[dict] = []
+        for resource in resource_rows:
+            capacidad_kg_h = float(resource.get("capacidad_kg_h", 0) or 0)
+            numero_unidades = int(resource.get("numero_unidades", 0) or 0)
+            capacidad_total = capacidad_kg_h * numero_unidades if numero_unidades > 0 else 0.0
+            assigned_kg = float(resource.get("kg_asignados", kg) or 0)
+            incidencias = list(resource.get("_incidencias", []))
+            if capacidad_kg_h <= 0 and not resource.get("_solo_incidencia"):
+                incidencias.append({"tipo": "Recurso sin capacidad", "motivo": f"Recurso {resource.get('codigo', '')} sin capacidad kg/h configurada", "accion": "Configurar capacidad_kg_h del recurso"})
+            horas = assigned_kg / capacidad_total if capacidad_total > 0 else 0.0
+            ocupacion = horas / horas_utiles_dia * 100 if horas_utiles_dia > 0 else 0.0
+            estado = "Incidencia" if incidencias else ("Rojo" if ocupacion >= 100 else "Amarillo" if ocupacion >= 85 else "Verde")
+            out.append({
+                "Recurso": resource.get("codigo", ""),
+                "Tipo recurso": resource.get("tipo_recurso", ""),
+                "Línea productiva": resource.get("linea_productiva", ""),
+                "Kg asignados": round(assigned_kg, 2),
+                "Capacidad kg/h": round(capacidad_total, 2),
+                "Horas necesarias": round(horas, 2),
+                "Horas disponibles": round(horas_utiles_dia, 2),
+                "Ocupación %": round(ocupacion, 2),
+                "Personal mínimo": int(resource.get("personal_minimo", 0) or 0),
+                "Personal óptimo": int(resource.get("personal_optimo", 0) or 0),
+                "Estado": estado,
+                "_incidencias": incidencias,
+            })
+        return out
+
+    def detect_bottleneck(self, resource_usage_rows: list[dict]) -> dict | None:
+        candidates = [r for r in resource_usage_rows if float(r.get("Kg asignados", 0) or 0) > 0]
+        if not candidates:
+            return None
+        bottleneck = max(candidates, key=lambda r: float(r.get("Ocupación %", 0) or 0))
+        row = dict(bottleneck)
+        row["motivo"] = f"{row.get('Recurso', '')} al {float(row.get('Ocupación %', 0) or 0):.2f}%"
+        return row
+
+    def calculate_resource_personnel(self, resource_usage_rows: list[dict]) -> dict:
+        return {
+            "personal_minimo_recursos": sum(int(r.get("Personal mínimo", 0) or 0) for r in resource_usage_rows if float(r.get("Kg asignados", 0) or 0) > 0),
+            "personal_optimo_recursos": sum(int(r.get("Personal óptimo", 0) or 0) for r in resource_usage_rows if float(r.get("Kg asignados", 0) or 0) > 0),
+            "aviso_tecnico": "Suma simple por recurso; puede contener duplicidades en esta primera fase.",
+        }
+
     def calculate_capacity_summary(self, mapped: list[dict], family_rows: list[dict], line_rows: list[dict], inputs: dict) -> dict:
         kg_real = sum(m["kg"] for m in mapped if m["tipo_pedido"] == "Real")
         kg_prev = sum(m["kg"] for m in mapped if m["tipo_pedido"] == "Previsto")
@@ -195,7 +368,7 @@ class ProductionCapacityService:
         per = inputs["personnel"]
         return {"Kg reales pendientes": round(kg_real, 2), "Kg previstos": round(kg_prev, 2), "Kg total simulación": round(kg_real + kg_prev, 2), "Horas necesarias estimadas": round(horas, 2), "Horas disponibles": round(hdisp, 2), "Ocupación %": round(occ, 2), "Personal disponible total": int(per.get("personal_total", 0) or 0), "Personal directo disponible": int(per.get("personal_directo", 0) or 0), "Personal indirecto disponible": int(per.get("personal_indirecto", 0) or 0), "Estado capacidad": self._state(occ, inputs["semaphore_rules"], "General")}
 
-    def calculate_capacity_alerts(self, summary: dict, family_rows: list[dict], line_rows: list[dict], incidencias: list[dict]) -> list[dict]:
+    def calculate_capacity_alerts(self, summary: dict, family_rows: list[dict], line_rows: list[dict], incidencias: list[dict], resource_rows: list[dict] | None = None, bottleneck: dict | None = None) -> list[dict]:
         out = list(incidencias)
         for row in family_rows:
             if row["Ocupación %"] >= 100:
@@ -203,7 +376,55 @@ class ProductionCapacityService:
         for row in line_rows:
             if row["Ocupación %"] >= 100:
                 out.append({"Tipo incidencia": "Línea saturada", "Pedido": "-", "Cliente": "-", "Confección": "-", "Línea productiva": row["Línea productiva"], "Motivo": f"Ocupación {row['Ocupación %']}%", "Acción sugerida": "Mover carga entre líneas"})
+        if bottleneck:
+            occ = float(bottleneck.get("Ocupación %", 0) or 0)
+            if occ >= 100:
+                out.append({"Tipo incidencia": "Cuello de botella > 100%", "Pedido": "-", "Cliente": "-", "Confección": "-", "Línea productiva": bottleneck.get("Línea productiva", ""), "Motivo": bottleneck.get("motivo", f"Ocupación {occ:.2f}%"), "Acción sugerida": "Reducir kg asignados o ampliar capacidad del recurso"})
+            elif occ >= 85:
+                out.append({"Tipo incidencia": "Cuello de botella > 85%", "Pedido": "-", "Cliente": "-", "Confección": "-", "Línea productiva": bottleneck.get("Línea productiva", ""), "Motivo": bottleneck.get("motivo", f"Ocupación {occ:.2f}%"), "Acción sugerida": "Vigilar recurso y preparar alternativa"})
+        personal_min = int(summary.get("personal_minimo_recursos", 0) or 0)
+        personal_directo = int(summary.get("Personal directo disponible", 0) or 0)
+        if personal_min > personal_directo:
+            out.append({"Tipo incidencia": "Falta personal mínimo por recursos", "Pedido": "-", "Cliente": "-", "Confección": "-", "Línea productiva": "Recursos", "Motivo": f"Personal mínimo recursos {personal_min} > personal directo disponible {personal_directo}", "Acción sugerida": "Revisar turnos, ausencias o asignación de recursos"})
         return out
+
+
+    def _resource_hours_available(self, inputs: dict) -> float:
+        gs = inputs["general_settings"]
+        horas_utiles_dia = self._usable_hours_day(inputs)
+        turnos = int(gs.get("numero_turnos", 1) or 1)
+        return max(0.0, horas_utiles_dia * max(1, turnos))
+
+    def _is_resource_compatible(self, recurso_codigo: str, compatible_con: str, valor: str, inputs: dict) -> bool:
+        if not valor:
+            return False
+        for row in inputs.get("resource_compatibilities", []):
+            if str(row.get("recurso_codigo", "") or "").strip() != recurso_codigo:
+                continue
+            if str(row.get("compatible_con", "") or "").strip() != compatible_con:
+                continue
+            if str(row.get("valor", "") or "").strip().lower() != str(valor).strip().lower():
+                continue
+            return int(row.get("activo", 0) or 0) == 1
+        return False
+
+    def _resource_availability_issue(self, recurso_codigo: str, inputs: dict) -> dict | None:
+        context_values = set()
+        filters = inputs.get("filters", {})
+        for key in ("cultivo", "grupo_varietal", "var_coop", "campana"):
+            value = filters.get(key, []) if isinstance(filters, dict) else []
+            values = value if isinstance(value, list) else [value]
+            context_values.update(str(v).strip().upper() for v in values if str(v).strip())
+        if not context_values:
+            return None
+        for row in inputs.get("resource_availability", []):
+            if str(row.get("recurso_codigo", "") or "").strip() != recurso_codigo:
+                continue
+            contexto = str(row.get("contexto", "") or "").strip().upper()
+            if contexto in context_values and int(row.get("disponible", 1) or 0) != 1:
+                motivo = str(row.get("motivo", "") or "").strip() or f"No disponible en contexto {contexto}"
+                return {"tipo": "Recurso no disponible por contexto", "motivo": f"{recurso_codigo}: {motivo}", "accion": "Revisar disponibilidad del recurso o el contexto de planificación"}
+        return None
 
     def _load_forecast_orders(self, filters: dict) -> list[dict]:
         if not self.PEDIDOS_PREVISTOS_PATH.exists():

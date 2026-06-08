@@ -176,11 +176,24 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
         self.kpi_capacidad = tk.StringVar(value="Capacidad productiva: sin calcular")
         ttk.Label(self.capacidad_tab, textvariable=self.kpi_capacidad, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
-        self.capacidad_family_table = DataTable(self.capacidad_tab, ["Familia", "Kg reales", "Kg previstos", "Kg total", "Horas necesarias", "Horas disponibles", "Ocupación %", "Rendimiento medio", "Personal estimado", "Estado"])
-        self.capacidad_family_table.pack(fill="both", expand=True, pady=(0, 6))
-        self.capacidad_line_table = DataTable(self.capacidad_tab, ["Línea productiva", "Kg", "Horas necesarias", "Horas disponibles línea", "Ocupación %", "Pedidos", "Cambios formato estimados", "Estado"])
-        self.capacidad_line_table.pack(fill="both", expand=True, pady=(0, 6))
-        self.capacidad_inc_table = DataTable(self.capacidad_tab, ["Tipo incidencia", "Pedido", "Cliente", "Confección", "Línea productiva", "Motivo", "Acción sugerida"])
+        self.capacidad_subtabs = ttk.Notebook(self.capacidad_tab)
+        self.capacidad_subtabs.pack(fill="both", expand=True)
+        self.capacidad_familias_tab = ttk.Frame(self.capacidad_subtabs, padding=4)
+        self.capacidad_lineas_tab = ttk.Frame(self.capacidad_subtabs, padding=4)
+        self.capacidad_recursos_tab = ttk.Frame(self.capacidad_subtabs, padding=4)
+        self.capacidad_incidencias_tab = ttk.Frame(self.capacidad_subtabs, padding=4)
+        self.capacidad_subtabs.add(self.capacidad_familias_tab, text="Familias")
+        self.capacidad_subtabs.add(self.capacidad_lineas_tab, text="Líneas")
+        self.capacidad_subtabs.add(self.capacidad_recursos_tab, text="Recursos")
+        self.capacidad_subtabs.add(self.capacidad_incidencias_tab, text="Incidencias")
+        self.capacidad_family_table = DataTable(self.capacidad_familias_tab, ["Familia", "Kg reales", "Kg previstos", "Kg total", "Horas necesarias", "Horas disponibles", "Ocupación %", "Rendimiento medio", "Personal estimado", "Estado"])
+        self.capacidad_family_table.pack(fill="both", expand=True)
+        self.capacidad_line_table = DataTable(self.capacidad_lineas_tab, ["Línea productiva", "Kg", "Horas necesarias", "Horas disponibles línea", "Ocupación %", "Pedidos", "Cambios formato estimados", "Estado"])
+        self.capacidad_line_table.pack(fill="both", expand=True)
+        ttk.Label(self.capacidad_recursos_tab, text="Recursos utilizados / cuellos de botella", style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
+        self.capacidad_resource_table = DataTable(self.capacidad_recursos_tab, ["Recurso", "Tipo recurso", "Línea productiva", "Kg asignados", "Capacidad kg/h", "Horas necesarias", "Horas disponibles", "Ocupación %", "Personal mínimo", "Personal óptimo", "Estado"])
+        self.capacidad_resource_table.pack(fill="both", expand=True)
+        self.capacidad_inc_table = DataTable(self.capacidad_incidencias_tab, ["Tipo incidencia", "Pedido", "Cliente", "Confección", "Línea productiva", "Motivo", "Acción sugerida"])
         self.capacidad_inc_table.pack(fill="both", expand=True)
 
     def _build_date_field(self, parent: ttk.Frame, row: int, col: int, var: tk.StringVar) -> None:
@@ -266,14 +279,17 @@ class PlanificacionDiariaScreen(ttk.Frame):
                     f"Kg total simulación: {s['Kg total simulación']:,.2f} | Horas necesarias estimadas: {s['Horas necesarias estimadas']:,.2f} | "
                     f"Horas disponibles: {s['Horas disponibles']:,.2f} | Ocupación %: {s['Ocupación %']:,.2f}% | "
                     f"Personal total/directo/indirecto: {s['Personal disponible total']}/{s['Personal directo disponible']}/{s['Personal indirecto disponible']} | "
-                    f"Estado capacidad: {s['Estado capacidad']}"
+                    f"Personal min/ópt recursos: {s.get('personal_minimo_recursos', 0)}/{s.get('personal_optimo_recursos', 0)} | "
+                    f"Cuello botella: {s.get('motivo_cuello_botella', '') or 'Sin datos'} | Estado capacidad: {s['Estado capacidad']}"
                 )
                 self.capacidad_family_table.set_rows(cap["family_rows"])
                 self.capacidad_line_table.set_rows(cap["line_rows"])
+                self.capacidad_resource_table.set_rows(cap.get("resource_rows", []))
                 self.capacidad_inc_table.set_rows(cap["incidencias"])
             except Exception as exc:
                 self.capacidad_family_table.set_rows([])
                 self.capacidad_line_table.set_rows([])
+                self.capacidad_resource_table.set_rows([])
                 self.capacidad_inc_table.set_rows([])
                 messagebox.showwarning("Capacidad productiva", f"No se pudo calcular capacidad productiva: {exc}")
         self.campo_table.set_rows(self.stock_campo_rows)
