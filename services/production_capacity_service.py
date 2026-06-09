@@ -32,6 +32,19 @@ class ProductionCapacityService:
         "GRANEL_MANUAL": "Granel manual",
         "GRANELERA": "Granelera",
     }
+    # Equivalencias estrictas de puesto para resolver nombres operativos del flujo
+    # contra el maestro de Personal sin convertir el tipo_personal en bolsa de personas.
+    # Ejemplo: Tría puede estar dada de alta de forma más específica como Tría principal
+    # o Tría mallas, pero nunca debe caer a todo el personal Directo.
+    STAFF_AREA_EQUIVALENCES = {
+        "tria": ("tria", "tria principal", "tria mallas"),
+        "tria principal": ("tria principal", "tria"),
+        "tria mallas": ("tria mallas", "tria"),
+    }
+    # Maestro futuro: production_staff_flexibility. En esta fase solo se carga/documenta
+    # para diseñar coberturas alternativas posteriores. Cuando se active, deberá cubrir
+    # déficits de target_area con sobrantes reales de source_area, consumir esas personas
+    # y aplicar efficiency_factor sin sumar esa cobertura a la disponibilidad base.
 
     def __init__(self) -> None:
         self.planning = PlanningService()
@@ -55,6 +68,7 @@ class ProductionCapacityService:
             "resource_compatibilities": self.prod_repo.get_resource_compatibilities(),
             "resource_feeds": self.prod_repo.get_resource_feeds(),
             "resource_availability": self.prod_repo.get_resource_availability(),
+            "staff_flexibility": self.prod_repo.get_staff_flexibility(),
             "semaphore_rules": self.prod_repo.get_semaphore_rules(),
             "general_settings": self.prod_repo.get_general_settings(),
         }
@@ -160,8 +174,16 @@ class ProductionCapacityService:
                 main_staff_area = str(main_staff.get("area_puesto", "") or "").strip()
                 main_staff_min = max(0, int(main_staff.get("minimo", 0) or 0))
                 main_staff_opt = max(main_staff_min, int(main_staff.get("optimo", 0) or 0))
-                area_availability, _area_type = self._staff_availability_indexes(inputs)
-                main_staff_available, main_staff_match = self._available_staff_for_area(main_staff_area, area_availability)
+                area_availability, _area_type, area_names = self._staff_availability_indexes(inputs)
+                main_staff_available, main_staff_match, main_staff_found = self._available_staff_for_area(main_staff_area, area_availability, area_names)
+                logger.debug(
+                    "CAPACIDAD PERSONAL PRINCIPAL puesto=%s normalizado=%s area_encontrada=%s disponible=%s equivalencia=%s",
+                    main_staff_area,
+                    self._normalize_staff_name(main_staff_area),
+                    main_staff_found or "-",
+                    main_staff_available,
+                    main_staff_match == "equivalence",
+                )
                 main_staff_real = main_staff_available
                 if not main_staff_area:
                     incidencias.append(self._inc("Puesto principal no configurado", order, f"Línea {linea} sin puesto productivo principal resoluble en dotación flujos", "Configurar puesto principal de la línea en Dotación flujos"))
@@ -318,7 +340,7 @@ class ProductionCapacityService:
         line_occ = {str(r.get("Línea productiva", "")).strip(): float(r.get("Ocupación %", 0) or 0) for r in line_rows}
         used_lines = {line for line, occ in line_occ.items() if line}
         staff_rows = [r for r in inputs.get("flow_staffing", []) if str(r.get("linea_productiva", "")).strip() in used_lines]
-        area_availability, area_type = self._staff_availability_indexes(inputs)
+        area_availability, area_type, area_names = self._staff_availability_indexes(inputs)
         rows: list[dict] = []
         incidencias: list[dict] = []
         totals = {"min": 0, "opt": 0, "est": 0, "deficit": 0}
@@ -335,7 +357,15 @@ class ProductionCapacityService:
             obligatorio = int(staff.get("obligatorio", 1) or 0) == 1
             necesario = optimo if escala else minimo
             necesario = max(minimo, necesario)
-            disponible, match_kind = self._available_staff_for_area(area, area_availability)
+            disponible, match_kind, matched_area = self._available_staff_for_area(area, area_availability, area_names)
+            logger.debug(
+                "CAPACIDAD PERSONAL REQUERIDO puesto=%s normalizado=%s area_encontrada=%s disponible=%s equivalencia=%s",
+                area,
+                self._normalize_staff_name(area),
+                matched_area or "-",
+                disponible,
+                match_kind == "equivalence",
+            )
             diferencia = disponible - necesario
             if disponible >= necesario:
                 estado = "Verde"
@@ -362,7 +392,7 @@ class ProductionCapacityService:
             rows.append(row)
             totals["min"] += minimo; totals["opt"] += optimo; totals["est"] += int(necesario); totals["deficit"] += max(0, -int(diferencia))
             if match_kind == "none":
-                incidencias.append(self._staff_inc("Área sin personal configurado", linea, area, f"No hay disponibilidad exacta configurada para {area}", "Configurar personal por puesto exacto o equivalencia clara en maestro Personal"))
+                incidencias.append(self._staff_inc("Área sin personal configurado", linea, area, f"No hay disponibilidad real configurada para {area}", "Configurar personal por puesto exacto o equivalencia clara en maestro Personal"))
             if disponible < minimo:
                 incidencias.append(self._staff_inc("Falta personal mínimo", linea, area, f"Disponible {disponible} < mínimo {minimo}", "Reforzar dotación mínima del puesto"))
             elif disponible < optimo:
@@ -626,32 +656,56 @@ class ProductionCapacityService:
                     return row
         return {}
 
-    def _staff_availability_indexes(self, inputs: dict) -> tuple[dict[str, int], dict[str, str]]:
+    def _staff_availability_indexes(self, inputs: dict) -> tuple[dict[str, int], dict[str, str], dict[str, str]]:
         area_availability: dict[str, int] = {}
         area_type: dict[str, str] = {}
+        area_names: dict[str, str] = {}
         for row in inputs.get("staff_areas", []):
             if int(row.get("activo", 1) or 0) != 1:
                 continue
             available = int(row.get("disponible", 0) or 0)
-            norm_area = self._normalize_staff_name(str(row.get("area", "")))
+            raw_area = str(row.get("area", ""))
+            norm_area = self._normalize_staff_name(raw_area)
             tipo_personal = str(row.get("tipo_personal", "")).strip()
             if norm_area:
+                # Si existen filas duplicadas del mismo puesto normalizado, conservar la
+                # mayor disponibilidad para no duplicar personas por variantes de nombre.
                 area_availability[norm_area] = max(area_availability.get(norm_area, 0), available)
+                area_names.setdefault(norm_area, raw_area.strip() or norm_area)
                 if tipo_personal:
                     area_type[norm_area] = tipo_personal
-        return area_availability, area_type
+        return area_availability, area_type, area_names
 
     def _staff_type_for_area(self, area: str, configured_type: str, area_type: dict[str, str]) -> tuple[str, str]:
         area_norm = self._normalize_staff_name(area)
         if area_norm in area_type:
             return area_type[area_norm], "area"
+        for equivalent_norm in self._staff_equivalent_names(area_norm):
+            if equivalent_norm != area_norm and equivalent_norm in area_type:
+                return area_type[equivalent_norm], "equivalence"
+        # tipo_personal clasifica/resume el puesto requerido, pero no asigna
+        # disponibilidad si no existe área real en el maestro Personal.
         return configured_type, "flow_staffing"
 
-    def _available_staff_for_area(self, area: str, area_availability: dict[str, int]) -> tuple[int, str]:
+    def _available_staff_for_area(self, area: str, area_availability: dict[str, int], area_names: dict[str, str] | None = None) -> tuple[int, str, str]:
+        area_names = area_names or {}
         area_norm = self._normalize_staff_name(area)
         if area_norm in area_availability:
-            return area_availability[area_norm], "area"
-        return 0, "none"
+            return area_availability[area_norm], "area", area_names.get(area_norm, area_norm)
+        equivalent_matches = [
+            norm for norm in self._staff_equivalent_names(area_norm)
+            if norm != area_norm and norm in area_availability
+        ]
+        if equivalent_matches:
+            available = sum(area_availability[norm] for norm in equivalent_matches)
+            matched = " + ".join(area_names.get(norm, norm) for norm in equivalent_matches)
+            return available, "equivalence", matched
+        return 0, "none", ""
+
+    def _staff_equivalent_names(self, area_norm: str) -> tuple[str, ...]:
+        if not area_norm:
+            return ()
+        return self.STAFF_AREA_EQUIVALENCES.get(area_norm, (area_norm,))
 
     def _normalize_staff_name(self, value: str) -> str:
         text = unicodedata.normalize("NFKD", str(value or ""))
