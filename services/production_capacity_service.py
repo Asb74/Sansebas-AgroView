@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from collections import defaultdict
 from math import ceil
+import logging
 import re
 import unicodedata
 
 from db.production_settings_repository import ProductionSettingsRepository
 from services.planning_service import PlanningService
 from services.pedidos_previstos_service import PEDIDOS_PREVISTOS_PATH as PEDIDOS_PREVISTOS_JSON_PATH, cargar_pedidos_previstos_filtrados
+
+logger = logging.getLogger(__name__)
 
 
 class ProductionCapacityService:
@@ -85,6 +88,15 @@ class ProductionCapacityService:
         for tipo, rows in (("Real", pedidos_reales), ("Previsto", pedidos_previstos)):
             for order in rows:
                 kg = float(order.get("Kg pendiente", order.get("kg_estimados", 0)) or 0)
+                if tipo == "Previsto":
+                    logger.info(
+                        "CAPACIDAD PREVISTO | id=%s | codigo_base=%s | linea=%s | familia=%s | kg=%s",
+                        order.get("id_previsto"),
+                        order.get("codigo_base_packaging"),
+                        order.get("linea_productiva"),
+                        order.get("familia_productiva"),
+                        order.get("kg_estimados"),
+                    )
                 if kg <= 0:
                     continue
 
