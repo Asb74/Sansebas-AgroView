@@ -105,3 +105,29 @@ PRODUCTION_MASTER_EXCEL_CONFIGS = {
         "numeric_columns": ["factor_rendimiento"], "boolean_columns": ["activo"], "unique_key": "codigo", "delete_missing_default": False,
     },
 }
+PRODUCTION_MASTER_EXCEL_CONFIGS.update({
+    "productive_families": {
+        "key": "productive_families", "sheet_name": "Datos", "default_filename": "familias_productivas.xlsx",
+        "columns": ["id", "codigo", "descripcion", "orden", "activa", "observaciones", "updated_at"],
+        "required_columns": ["codigo", "orden", "activa"],
+        "numeric_columns": ["orden"], "boolean_columns": ["activa"], "unique_key": "codigo", "delete_missing_default": False,
+    },
+    "line_capacity_config": {
+        "key": "line_capacity_config", "sheet_name": "Datos", "default_filename": "configuracion_lineas_capacidad.xlsx",
+        "columns": ["id", "linea_productiva", "familia_productiva", "puesto_productivo_principal", "modo_uso_recursos", "usar_capacidad_agregada", "activa", "observaciones", "updated_at"],
+        "required_columns": ["linea_productiva", "familia_productiva", "modo_uso_recursos", "usar_capacidad_agregada", "activa"],
+        "numeric_columns": [], "boolean_columns": ["usar_capacidad_agregada", "activa"], "unique_key": "linea_productiva", "delete_missing_default": False,
+    },
+    "line_required_resources": {
+        "key": "line_required_resources", "sheet_name": "Datos", "default_filename": "recursos_requeridos_linea.xlsx",
+        "columns": ["id", "linea_productiva", "recurso_codigo", "obligatorio", "modo_uso", "reparte_kg", "orden", "activo", "observaciones", "updated_at"],
+        "required_columns": ["linea_productiva", "recurso_codigo", "obligatorio", "modo_uso", "reparte_kg", "orden", "activo"],
+        "numeric_columns": ["orden"], "boolean_columns": ["obligatorio", "reparte_kg", "activo"], "unique_key": "linea_productiva|recurso_codigo", "delete_missing_default": False,
+    },
+    "staff_area_equivalences": {
+        "key": "staff_area_equivalences", "sheet_name": "Datos", "default_filename": "equivalencias_puestos.xlsx",
+        "columns": ["id", "area_requerida", "area_personal", "prioridad", "activa", "observaciones", "updated_at"],
+        "required_columns": ["area_requerida", "area_personal", "prioridad", "activa"],
+        "numeric_columns": ["prioridad"], "boolean_columns": ["activa"], "unique_key": "area_requerida|area_personal", "delete_missing_default": False,
+    },
+})

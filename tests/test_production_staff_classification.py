@@ -67,6 +67,12 @@ def test_staffing_requirements_prefer_staff_area_tipo_personal_over_flow_staffin
                     {"area": "Encargados", "tipo_personal": "Indirecto", "disponible": 2, "activo": 1},
                 ],
                 "personnel": {"personal_directo": 18, "personal_soporte": 8, "personal_indirecto": 2},
+                "staff_area_equivalences": [
+                    {"area_requerida": "Calibrador", "area_personal": "Calibradores", "prioridad": 1, "activa": 1},
+                    {"area_requerida": "Loteado / paletizado", "area_personal": "Loteado", "prioridad": 1, "activa": 1},
+                    {"area_requerida": "Carretillero", "area_personal": "Carretilleros", "prioridad": 1, "activa": 1},
+                    {"area_requerida": "Encargado", "area_personal": "Encargados", "prioridad": 1, "activa": 1},
+                ],
             },
         }
     )
@@ -216,6 +222,9 @@ def test_encajado_capacity_uses_real_available_main_productive_people(monkeypatc
         "personnel": {"personal_total": 23, "personal_directo": 18, "personal_soporte": 3, "personal_indirecto": 2},
         "general_settings": {"horas_utiles_dia": 7, "numero_turnos": 1},
         "semaphore_rules": [],
+        "productive_families": [{"codigo": "Malla", "orden": 1, "activa": 1}, {"codigo": "Encajado", "orden": 2, "activa": 1}],
+        "line_capacity_config": [{"linea_productiva": "ENCAJADO", "familia_productiva": "Encajado", "puesto_productivo_principal": "Encajado", "modo_uso_recursos": "informativo", "usar_capacidad_agregada": 1, "activa": 1}],
+        "staff_area_equivalences": [{"area_requerida": "Tría", "area_personal": "Tría principal", "prioridad": 1, "activa": 1}, {"area_requerida": "Tría", "area_personal": "Tría mallas", "prioridad": 2, "activa": 1}],
     }
 
     mapped, incidencias = service.map_orders_to_productive_config(
@@ -321,6 +330,7 @@ def test_staffing_requirements_uses_only_real_equivalent_staff_areas(monkeypatch
                         {"area": "Otra área directa", "tipo_personal": "Directo", "disponible": 18, "activo": 1},
                     ],
                     "personnel": {"personal_directo": 31, "personal_soporte": 0, "personal_indirecto": 0},
+                    "staff_area_equivalences": [{"area_requerida": "Tría", "area_personal": "Tría principal", "prioridad": 1, "activa": 1}, {"area_requerida": "Tría", "area_personal": "Tría mallas", "prioridad": 2, "activa": 1}],
                 },
             }
         )

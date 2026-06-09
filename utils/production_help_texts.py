@@ -279,3 +279,26 @@ PRODUCTION_FLOW_STAFFING_HELP = {
     "observaciones": {"title": "Observaciones", "description": "Notas operativas sobre la dotación.", "example": "Refuerzo en campaña alta.", "impact": "Documenta criterios de planta para revisión futura."},
 }
 PRODUCTION_FLOW_STAFFING_HELP_KEYS = ["linea_productiva", "area_puesto", "tipo_personal", "minimo", "optimo", "escala_con_ocupacion", "factor_ocupacion", "obligatorio", "activo", "observaciones"]
+
+PRODUCTION_CAPACITY_MASTERS_HELP = {
+    "codigo": {"title": "Código", "description": "Identificador único de la familia productiva.", "example": "Malla.", "impact": "Define las familias que aparecen en el resumen de capacidad."},
+    "descripcion": {"title": "Descripción", "description": "Texto explicativo de la familia.", "example": "Formatos de malla.", "impact": "Facilita la revisión operativa del maestro."},
+    "orden": {"title": "Orden", "description": "Orden de visualización.", "example": "1.", "impact": "Controla la presentación de familias y recursos."},
+    "activa": {"title": "Activa", "description": "Indica si la familia o configuración se usa en el cálculo.", "example": "1 activo, 0 inactivo.", "impact": "Permite desactivar registros sin borrarlos."},
+    "linea_productiva": {"title": "Línea productiva", "description": "Código de la línea productiva configurada.", "example": "ENCAJADO.", "impact": "Enlaza mapeos, recursos requeridos y cálculo de capacidad."},
+    "familia_productiva": {"title": "Familia productiva", "description": "Familia asociada a la línea.", "example": "Encajado.", "impact": "Documenta a qué agrupación pertenece la línea."},
+    "puesto_productivo_principal": {"title": "Puesto productivo principal", "description": "Área de personal que multiplica el rendimiento kg/h/persona de la línea.", "example": "Encajado.", "impact": "Determina la capacidad real con la disponibilidad de personal."},
+    "modo_uso_recursos": {"title": "Modo uso recursos", "description": "Indica si los recursos físicos son informativos o restrictivos.", "example": "informativo.", "impact": "Evita que recursos auxiliares bloqueen el cálculo agregado salvo que así se configure."},
+    "usar_capacidad_agregada": {"title": "Usar capacidad agregada", "description": "Marca que la línea usa la capacidad de Máquinas / líneas como referencia principal.", "example": "1.", "impact": "Documenta que el cálculo principal sale de la línea agregada."},
+    "recurso_codigo": {"title": "Recurso código", "description": "Código del recurso físico requerido por la línea.", "example": "CALIBRADOR_PRINCIPAL.", "impact": "Solo los recursos aquí configurados pueden generar incidencias de recurso físico."},
+    "obligatorio": {"title": "Obligatorio", "description": "Indica si el recurso es imprescindible para esa línea.", "example": "1.", "impact": "Aporta contexto operativo a incidencias y revisiones."},
+    "modo_uso": {"title": "Modo uso", "description": "Modo específico documentado para el recurso requerido.", "example": "informativo.", "impact": "Permite alinear cada recurso con el modo de la línea."},
+    "reparte_kg": {"title": "Reparte kg", "description": "Indica si los kilos se reparten entre recursos equivalentes activos.", "example": "1 para pesadoras paralelas.", "impact": "Evita cargar el 100% de kilos a cada recurso paralelo."},
+    "activo": {"title": "Activo", "description": "Indica si el recurso requerido se usa en el cálculo.", "example": "1 activo, 0 inactivo.", "impact": "Permite probar escenarios sin borrar configuración."},
+    "area_requerida": {"title": "Área requerida", "description": "Nombre del puesto solicitado por el flujo o la línea.", "example": "Tría.", "impact": "Punto de partida para resolver disponibilidad equivalente."},
+    "area_personal": {"title": "Área personal", "description": "Área real del maestro Personal equivalente al área requerida.", "example": "Tría principal.", "impact": "Permite sumar nombres equivalentes sin introducir polivalencia."},
+    "prioridad": {"title": "Prioridad", "description": "Orden de aplicación o visualización de la equivalencia.", "example": "1.", "impact": "Mantiene trazabilidad cuando hay varias equivalencias."},
+    "observaciones": {"title": "Observaciones", "description": "Notas operativas del registro.", "example": "Configuración base de campaña.", "impact": "Documenta criterios de planta sin cambiar lógica."},
+    "updated_at": {"title": "Actualizado", "description": "Marca temporal de la última actualización guardada por el sistema.", "example": "2026-06-09T10:00:00.", "impact": "Aporta trazabilidad a cambios de maestros."},
+}
+PRODUCTION_CAPACITY_MASTERS_HELP_KEYS = ["codigo", "descripcion", "orden", "activa", "linea_productiva", "familia_productiva", "puesto_productivo_principal", "modo_uso_recursos", "usar_capacidad_agregada", "recurso_codigo", "obligatorio", "modo_uso", "reparte_kg", "activo", "area_requerida", "area_personal", "prioridad", "observaciones", "updated_at"]

@@ -138,3 +138,39 @@ class ProductionSettingsService:
 
     def reset_resources_flows_defaults(self) -> None:
         self.repository.reset_resources_flows_defaults()
+
+    def get_productive_families(self, active_only: bool = False) -> list[dict]:
+        return self.repository.get_productive_families(active_only)
+
+    def save_productive_families(self, rows: list[dict]) -> None:
+        self.repository.save_productive_families(rows)
+
+    def reset_productive_families_defaults(self) -> None:
+        self.repository.reset_productive_families_defaults()
+
+    def get_line_capacity_config(self, active_only: bool = False) -> list[dict]:
+        return self.repository.get_line_capacity_config(active_only)
+
+    def save_line_capacity_config(self, rows: list[dict]) -> None:
+        self.repository.save_line_capacity_config(rows)
+
+    def reset_line_capacity_config_defaults(self) -> None:
+        self.repository.reset_line_capacity_config_defaults()
+
+    def get_line_required_resources(self, active_only: bool = False) -> list[dict]:
+        return self.repository.get_line_required_resources(active_only)
+
+    def save_line_required_resources(self, rows: list[dict]) -> None:
+        self.repository.save_line_required_resources(rows)
+
+    def reset_line_required_resources_defaults(self) -> None:
+        self.repository.reset_line_required_resources_defaults()
+
+    def get_staff_area_equivalences(self, active_only: bool = False) -> list[dict]:
+        return self.repository.get_staff_area_equivalences(active_only)
+
+    def save_staff_area_equivalences(self, rows: list[dict]) -> None:
+        self.repository.save_staff_area_equivalences(rows)
+
+    def reset_staff_area_equivalences_defaults(self) -> None:
+        self.repository.reset_staff_area_equivalences_defaults()
