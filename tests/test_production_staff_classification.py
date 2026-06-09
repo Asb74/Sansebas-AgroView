@@ -115,3 +115,58 @@ def test_staffing_requirements_do_not_scale_people_by_occupancy(monkeypatch):
     assert rows_by_area["Loteado"]["Necesario estimado"] == 2
     assert rows_by_area["Encargado"]["Necesario estimado"] == 1
     assert result["summary"]["personal_necesario_estimado"] == 19
+
+
+def test_family_personnel_estimate_uses_staffing_requirements_instead_of_hour_scaling(monkeypatch, caplog):
+    import logging
+    import sys
+    import types
+
+    planning_service = types.ModuleType("services.planning_service")
+    planning_service.PlanningService = object
+    monkeypatch.setitem(sys.modules, "services.planning_service", planning_service)
+
+    from services.production_capacity_service import ProductionCapacityService
+
+    service = ProductionCapacityService.__new__(ProductionCapacityService)
+    mapped = [
+        {
+            "tipo_pedido": "Real",
+            "pedido": {"IdConfeccion": "E1"},
+            "kg": 7000,
+            "familia": "Encajado",
+            "linea": "ENCAJADO",
+            "rendimiento": 100,
+            "horas": 70,
+        }
+    ]
+    inputs = {
+        "lines": [
+            {
+                "codigo": "ENCAJADO",
+                "activa": 1,
+                "numero_maquinas": 1,
+                "personal_minimo": 6,
+                "personal_optimo": 12,
+            }
+        ],
+        "general_settings": {"horas_utiles_dia": 7.5, "numero_turnos": 1},
+        "semaphore_rules": [],
+    }
+    staffing_rows = [
+        {"Línea productiva": "ENCAJADO", "Área / puesto": "Encajado", "Necesario estimado": 12},
+        {"Línea productiva": "ENCAJADO", "Área / puesto": "Tría", "Necesario estimado": 4},
+        {"Línea productiva": "ENCAJADO", "Área / puesto": "Loteado", "Necesario estimado": 2},
+        {"Línea productiva": "ENCAJADO", "Área / puesto": "Encargado", "Necesario estimado": 1},
+    ]
+
+    with caplog.at_level(logging.INFO, logger="services.production_capacity_service"):
+        result = service.calculate_family_capacity(mapped, inputs, staffing_rows)
+
+    rows_by_family = {row["Familia"]: row for row in result}
+    assert rows_by_family["Encajado"]["Personal estimado"] == 19
+    assert rows_by_family["Encajado"]["Personal estimado"] != 112
+    assert "CAPACIDAD FAMILIA" in caplog.text
+    assert "familia=Encajado" in caplog.text
+    assert "personal_estimado_familia=112" in caplog.text
+    assert "personal_estimado_staffing=19" in caplog.text

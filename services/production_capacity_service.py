@@ -53,13 +53,13 @@ class ProductionCapacityService:
         inputs = self.load_capacity_inputs(filters, modo_pedidos)
         inputs["filters"] = filters
         mapped, incidencias = self.map_orders_to_productive_config(inputs["pedidos_reales"], inputs["pedidos_previstos"], inputs)
-        fam = self.calculate_family_capacity(mapped, inputs)
         line = self.calculate_line_capacity(mapped, inputs)
+        staffing = self.calculate_staffing_requirements({"line_rows": line, "inputs": inputs})
+        fam = self.calculate_family_capacity(mapped, inputs, staffing["rows"])
         resource_rows, resource_incidencias = self.calculate_physical_resource_capacity(mapped, inputs)
         bottleneck = self.detect_bottleneck(resource_rows)
         personnel_resources = self.calculate_resource_personnel(resource_rows)
         summary = self.calculate_capacity_summary(mapped, fam, line, inputs)
-        staffing = self.calculate_staffing_requirements({"line_rows": line, "inputs": inputs})
         summary.update({
             "personal_minimo_flujo": staffing["summary"]["personal_minimo_requerido"],
             "personal_optimo_flujo": staffing["summary"]["personal_optimo_requerido"],
@@ -183,7 +183,7 @@ class ProductionCapacityService:
                 })
         return out, incidencias
 
-    def calculate_family_capacity(self, mapped: list[dict], inputs: dict) -> list[dict]:
+    def calculate_family_capacity(self, mapped: list[dict], inputs: dict, staffing_rows: list[dict] | None = None) -> list[dict]:
         by = defaultdict(lambda: {"kg_real": 0.0, "kg_prev": 0.0, "kg_total": 0.0, "horas": 0.0, "rend_sum": 0.0, "n": 0, "lineas": set(), "personal": 0})
         for m in mapped:
             d = by[m["familia"]]
@@ -195,11 +195,20 @@ class ProductionCapacityService:
                 d["kg_prev"] += m["kg"]
             d["personal"] += self._estimate_personnel_for_order(m, inputs)
 
+        staffing_by_family = self._staffing_estimate_by_family(mapped, staffing_rows or []) if staffing_rows is not None else {}
         rows = []
         for fam in self.FAMILIES:
             d = by[fam]
             horas_disp = self._family_hours_available(d["lineas"], inputs)
             occ = (d["horas"] / horas_disp * 100.0) if horas_disp > 0 else 0
+            order_personnel = int(d["personal"])
+            staffing_personnel = int(staffing_by_family.get(fam, 0)) if staffing_rows is not None else order_personnel
+            logger.info(
+                "CAPACIDAD FAMILIA\nfamilia=%s\npersonal_estimado_familia=%s\npersonal_estimado_staffing=%s",
+                fam,
+                order_personnel,
+                staffing_personnel,
+            )
             rows.append({
                 "Familia": fam,
                 "Kg reales": round(d["kg_real"], 2),
@@ -209,10 +218,28 @@ class ProductionCapacityService:
                 "Horas disponibles": round(horas_disp, 2),
                 "Ocupación %": round(occ, 2),
                 "Rendimiento medio": round((d["rend_sum"] / d["n"]) if d["n"] else 0, 2),
-                "Personal estimado": int(d["personal"]),
+                "Personal estimado": staffing_personnel,
                 "Estado": self._state(occ, inputs["semaphore_rules"], fam),
             })
         return rows
+
+
+    def _staffing_estimate_by_family(self, mapped: list[dict], staffing_rows: list[dict]) -> dict[str, int]:
+        family_lines: dict[str, set[str]] = defaultdict(set)
+        for row in mapped:
+            family = str(row.get("familia", "") or "").strip()
+            line = str(row.get("linea", "") or "").strip()
+            if family and line:
+                family_lines[family].add(line)
+
+        staffing_by_line: dict[str, int] = defaultdict(int)
+        for row in staffing_rows:
+            line = str(row.get("Línea productiva", "") or "").strip()
+            if not line:
+                continue
+            staffing_by_line[line] += int(row.get("Necesario estimado", 0) or 0)
+
+        return {family: sum(staffing_by_line[line] for line in lines) for family, lines in family_lines.items()}
 
     def calculate_line_capacity(self, mapped: list[dict], inputs: dict) -> list[dict]:
         by = defaultdict(lambda: {"kg": 0.0, "horas": 0.0, "pedidos": 0, "formatos": set(), "personal": 0})
