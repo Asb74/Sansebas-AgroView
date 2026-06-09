@@ -29,6 +29,7 @@ class ProductionCapacityService:
     def load_capacity_inputs(self, filters: dict, modo_pedidos: str = "10_dias") -> dict:
         pedidos_reales, _kpi = self.planning.load_pedidos_pendientes(filters, modo_pedidos)
         pedidos_previstos = self._load_forecast_orders(filters)
+        staff_area_equivalences = self.prod_repo.get_staff_area_equivalences(active_only=True)
         return {
             "pedidos_reales": pedidos_reales,
             "pedidos_previstos": pedidos_previstos,
@@ -47,7 +48,8 @@ class ProductionCapacityService:
             "productive_families": self.prod_repo.get_productive_families(active_only=True),
             "line_capacity_config": self.prod_repo.get_line_capacity_config(active_only=True),
             "line_required_resources": self.prod_repo.get_line_required_resources(active_only=True),
-            "staff_area_equivalences": self.prod_repo.get_staff_area_equivalences(active_only=True),
+            "production_staff_area_equivalences": staff_area_equivalences,
+            "staff_area_equivalences": staff_area_equivalences,
             "staff_polyvalence": self.prod_repo.get_staff_polyvalence(active_only=True),
             "staff_flexibility": self.prod_repo.get_staff_flexibility(),
             "semaphore_rules": self.prod_repo.get_semaphore_rules(),
@@ -672,17 +674,40 @@ class ProductionCapacityService:
     def _available_staff_for_area(self, area: str, area_availability: dict[str, int], area_names: dict[str, str] | None = None) -> tuple[int, str, str]:
         area_names = area_names or {}
         area_norm = self._normalize_staff_name(area)
+        equivalent_names = self._staff_equivalent_names(area_norm, getattr(self, "_current_capacity_inputs", None))
+        equivalent_matches = [norm for norm in equivalent_names if norm != area_norm and norm in area_availability]
+
+        matched_norms = []
         if area_norm in area_availability:
-            return area_availability[area_norm], "area", area_names.get(area_norm, area_norm)
-        equivalent_matches = [
-            norm for norm in self._staff_equivalent_names(area_norm, getattr(self, "_current_capacity_inputs", None))
-            if norm != area_norm and norm in area_availability
-        ]
-        if equivalent_matches:
-            available = sum(area_availability[norm] for norm in equivalent_matches)
-            matched = " + ".join(area_names.get(norm, norm) for norm in equivalent_matches)
-            return available, "equivalence", matched
-        return 0, "none", ""
+            matched_norms.append(area_norm)
+        matched_norms.extend(equivalent_matches)
+
+        if matched_norms:
+            available = sum(area_availability[norm] for norm in matched_norms)
+            matched = " + ".join(area_names.get(norm, norm) for norm in matched_norms)
+            match_kind = "equivalence" if equivalent_matches else "area"
+        else:
+            available = 0
+            matched = ""
+            match_kind = "none"
+
+        logger.debug(
+            "AREA_REQUERIDA=%s AREAS_EQUIVALENTES=%s DISPONIBILIDAD_ENCONTRADA=%s area_encontrada=%s tipo_match=%s",
+            area,
+            [area_names.get(norm, norm) for norm in equivalent_names if norm != area_norm],
+            available,
+            matched or "-",
+            match_kind,
+        )
+        return available, match_kind, matched
+
+    def _staff_equivalence_rows(self, inputs: dict | None = None) -> list[dict]:
+        if not inputs:
+            return []
+        rows = inputs.get("production_staff_area_equivalences")
+        if rows is None:
+            rows = inputs.get("staff_area_equivalences", [])
+        return sorted(rows, key=lambda row: (int(row.get("prioridad", 1) or 1), str(row.get("area_requerida", "")), str(row.get("area_personal", ""))))
 
     def _staff_equivalent_names(self, area_norm: str, inputs: dict | None = None) -> tuple[str, ...]:
         if not area_norm:
@@ -690,12 +715,17 @@ class ProductionCapacityService:
         if inputs is None:
             return (area_norm,)
         equivalents = [area_norm]
-        for row in inputs.get("staff_area_equivalences", []):
+        for row in self._staff_equivalence_rows(inputs):
             if int(row.get("activa", 1) or 0) != 1:
                 continue
             required_norm = self._normalize_staff_name(str(row.get("area_requerida", "") or ""))
             if required_norm != area_norm:
                 continue
+            # Orientación confirmada del maestro production_staff_area_equivalences:
+            # area_requerida = puesto solicitado por el flujo (destino a cubrir).
+            # area_personal = puesto real del maestro Personal que puede cubrirlo (origen disponible).
+            # Ejemplo: si Alimentación puede cubrir Volcado, debe registrarse
+            # area_requerida="Volcado" y area_personal="Alimentación".
             personal_norm = self._normalize_staff_name(str(row.get("area_personal", "") or ""))
             if personal_norm and personal_norm not in equivalents:
                 equivalents.append(personal_norm)

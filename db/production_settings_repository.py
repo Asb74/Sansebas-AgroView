@@ -319,7 +319,9 @@ DEFAULT_STAFF_AREA_EQUIVALENCES = [
     {"area_requerida": "Loteado / paletizado", "area_personal": "Loteado", "prioridad": 1, "activa": 1, "observaciones": ""},
     {"area_requerida": "Carretillero", "area_personal": "Carretilleros", "prioridad": 1, "activa": 1, "observaciones": ""},
     {"area_requerida": "Encargado", "area_personal": "Encargados", "prioridad": 1, "activa": 1, "observaciones": ""},
-    {"area_requerida": "Alimentación", "area_personal": "Volcado", "prioridad": 1, "activa": 1, "observaciones": ""},
+    # Orientación: area_requerida es el puesto solicitado; area_personal es el área real que lo cubre.
+    # Alimentación puede cubrir Volcado => al pedir Volcado se suma la disponibilidad de Alimentación.
+    {"area_requerida": "Volcado", "area_personal": "Alimentación", "prioridad": 1, "activa": 1, "observaciones": ""},
 ]
 
 DEFAULT_STAFF_FLEXIBILITY = [
@@ -1806,6 +1808,25 @@ class ProductionSettingsRepository:
         self.ensure_staff_area_equivalences_schema()
         now = datetime.utcnow().isoformat()
         with get_connection() as conn:
+            # Corrige la orientación del default histórico Alimentación/Volcado si ya existe en BD.
+            # La equivalencia significa: area_personal puede cubrir area_requerida.
+            old_default = conn.execute("""
+                SELECT id FROM production_staff_area_equivalences
+                WHERE area_requerida = ? AND area_personal = ?
+            """, ("Alimentación", "Volcado")).fetchone()
+            new_default = conn.execute("""
+                SELECT id FROM production_staff_area_equivalences
+                WHERE area_requerida = ? AND area_personal = ?
+            """, ("Volcado", "Alimentación")).fetchone()
+            if old_default and new_default:
+                conn.execute("DELETE FROM production_staff_area_equivalences WHERE id = ?", (old_default["id"],))
+            elif old_default:
+                conn.execute("""
+                    UPDATE production_staff_area_equivalences
+                    SET area_requerida = ?, area_personal = ?, updated_at = ?
+                    WHERE id = ?
+                """, ("Volcado", "Alimentación", now, old_default["id"]))
+
             for row in DEFAULT_STAFF_AREA_EQUIVALENCES:
                 conn.execute("""
                     INSERT INTO production_staff_area_equivalences (area_requerida,area_personal,prioridad,activa,observaciones,updated_at)
