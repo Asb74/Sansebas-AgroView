@@ -158,14 +158,24 @@ class ProductionCapacityService:
 
                 main_staff = self._main_productive_staffing_for_line(linea, inputs)
                 main_staff_area = str(main_staff.get("area_puesto", "") or "").strip()
-                main_staff_opt = max(0, int(main_staff.get("optimo", 0) or 0))
-                capacidad_base_personas = cap_ref * main_staff_opt if cap_ref > 0 and main_staff_opt > 0 else 0.0
+                main_staff_min = max(0, int(main_staff.get("minimo", 0) or 0))
+                main_staff_opt = max(main_staff_min, int(main_staff.get("optimo", 0) or 0))
+                area_availability, _area_type = self._staff_availability_indexes(inputs)
+                main_staff_available, main_staff_match = self._available_staff_for_area(main_staff_area, area_availability)
+                main_staff_real = main_staff_available
                 if not main_staff_area:
                     incidencias.append(self._inc("Puesto principal no configurado", order, f"Línea {linea} sin puesto productivo principal resoluble en dotación flujos", "Configurar puesto principal de la línea en Dotación flujos"))
-                elif main_staff_opt <= 0:
+                elif main_staff_match == "none":
+                    incidencias.append(self._inc("Puesto principal sin disponibilidad exacta", order, f"Línea {linea} / {main_staff_area} no existe en maestro Personal", "Configurar disponibilidad exacta del puesto principal en Personal"))
+                elif main_staff_available <= 0:
+                    incidencias.append(self._inc("Puesto principal sin disponibilidad real", order, f"Línea {linea} / {main_staff_area} con disponible={main_staff_available}", "Revisar disponibilidad real del puesto principal en Personal"))
+                if main_staff_opt <= 0:
                     incidencias.append(self._inc("Puesto principal sin óptimo", order, f"Línea {linea} / {main_staff_area} con óptimo=0", "Configurar dotación óptima del puesto productivo principal"))
+                if main_staff_real <= 0:
+                    main_staff_real = main_staff_min
+                capacidad_base_personas = cap_ref * main_staff_real if cap_ref > 0 and main_staff_real > 0 else 0.0
                 if capacidad_base_personas <= 0:
-                    incidencias.append(self._inc("Sin capacidad configurada", order, f"Línea {linea} sin capacidad válida por persona productiva principal", "Completar rendimiento kg/h/persona y dotación óptima del puesto principal"))
+                    incidencias.append(self._inc("Sin capacidad configurada", order, f"Línea {linea} sin capacidad válida por persona productiva principal real", "Completar rendimiento kg/h/persona y disponibilidad real o dotación mínima del puesto principal"))
                     continue
 
                 tipo_malla = str(productive_conf.get("tipo_malla", "") or "").strip()
@@ -193,7 +203,8 @@ class ProductionCapacityService:
                     "horas": horas,
                     "capacidad_kg_h": capacidad_real,
                     "rendimiento_base_kg_h_persona": cap_ref,
-                    "personas_productivas_principales": main_staff_opt,
+                    "personas_productivas_principales": main_staff_real,
+                    "personas_productivas_principales_optimo": main_staff_opt,
                     "puesto_productivo_principal": main_staff_area,
                     "capacidad_real_kg_h": capacidad_real,
                     "personal_minimo_linea": max(0, personal_min),
@@ -307,7 +318,7 @@ class ProductionCapacityService:
         line_occ = {str(r.get("Línea productiva", "")).strip(): float(r.get("Ocupación %", 0) or 0) for r in line_rows}
         used_lines = {line for line, occ in line_occ.items() if line}
         staff_rows = [r for r in inputs.get("flow_staffing", []) if str(r.get("linea_productiva", "")).strip() in used_lines]
-        area_availability, type_availability, area_type = self._staff_availability_indexes(inputs)
+        area_availability, area_type = self._staff_availability_indexes(inputs)
         rows: list[dict] = []
         incidencias: list[dict] = []
         totals = {"min": 0, "opt": 0, "est": 0, "deficit": 0}
@@ -324,7 +335,7 @@ class ProductionCapacityService:
             obligatorio = int(staff.get("obligatorio", 1) or 0) == 1
             necesario = optimo if escala else minimo
             necesario = max(minimo, necesario)
-            disponible, match_kind = self._available_staff_for_area(area, tipo, area_availability, type_availability)
+            disponible, match_kind = self._available_staff_for_area(area, area_availability)
             diferencia = disponible - necesario
             if disponible >= necesario:
                 estado = "Verde"
@@ -351,7 +362,7 @@ class ProductionCapacityService:
             rows.append(row)
             totals["min"] += minimo; totals["opt"] += optimo; totals["est"] += int(necesario); totals["deficit"] += max(0, -int(diferencia))
             if match_kind == "none":
-                incidencias.append(self._staff_inc("Área sin personal configurado", linea, area, f"No hay disponibilidad configurada para {area} ni total por tipo {tipo}", "Configurar personal por área o resumen por tipo"))
+                incidencias.append(self._staff_inc("Área sin personal configurado", linea, area, f"No hay disponibilidad exacta configurada para {area}", "Configurar personal por puesto exacto o equivalencia clara en maestro Personal"))
             if disponible < minimo:
                 incidencias.append(self._staff_inc("Falta personal mínimo", linea, area, f"Disponible {disponible} < mínimo {minimo}", "Reforzar dotación mínima del puesto"))
             elif disponible < optimo:
@@ -615,13 +626,8 @@ class ProductionCapacityService:
                     return row
         return {}
 
-    def _staff_availability_indexes(self, inputs: dict) -> tuple[dict[str, int], dict[str, int], dict[str, str]]:
+    def _staff_availability_indexes(self, inputs: dict) -> tuple[dict[str, int], dict[str, str]]:
         area_availability: dict[str, int] = {}
-        type_availability: dict[str, int] = {
-            "directo": int(inputs.get("personnel", {}).get("personal_directo", 0) or 0),
-            "indirecto": int(inputs.get("personnel", {}).get("personal_indirecto", 0) or 0),
-            "soporte": int(inputs.get("personnel", {}).get("personal_soporte", 0) or 0),
-        }
         area_type: dict[str, str] = {}
         for row in inputs.get("staff_areas", []):
             if int(row.get("activo", 1) or 0) != 1:
@@ -633,10 +639,7 @@ class ProductionCapacityService:
                 area_availability[norm_area] = max(area_availability.get(norm_area, 0), available)
                 if tipo_personal:
                     area_type[norm_area] = tipo_personal
-            norm_type = self._normalize_staff_name(tipo_personal)
-            if norm_type:
-                type_availability[norm_type] = max(type_availability.get(norm_type, 0), available)
-        return area_availability, type_availability, area_type
+        return area_availability, area_type
 
     def _staff_type_for_area(self, area: str, configured_type: str, area_type: dict[str, str]) -> tuple[str, str]:
         area_norm = self._normalize_staff_name(area)
@@ -644,13 +647,10 @@ class ProductionCapacityService:
             return area_type[area_norm], "area"
         return configured_type, "flow_staffing"
 
-    def _available_staff_for_area(self, area: str, tipo: str, area_availability: dict[str, int], type_availability: dict[str, int]) -> tuple[int, str]:
+    def _available_staff_for_area(self, area: str, area_availability: dict[str, int]) -> tuple[int, str]:
         area_norm = self._normalize_staff_name(area)
         if area_norm in area_availability:
             return area_availability[area_norm], "area"
-        type_norm = self._normalize_staff_name(tipo)
-        if type_norm in type_availability:
-            return type_availability[type_norm], "type"
         return 0, "none"
 
     def _normalize_staff_name(self, value: str) -> str:

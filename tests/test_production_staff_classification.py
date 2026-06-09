@@ -172,7 +172,7 @@ def test_family_personnel_estimate_uses_staffing_requirements_instead_of_hour_sc
     assert "personal_estimado_staffing=19" in caplog.text
 
 
-def test_encajado_capacity_uses_main_productive_people_from_flow_staffing(monkeypatch):
+def test_encajado_capacity_uses_real_available_main_productive_people(monkeypatch):
     import sys
     import types
 
@@ -203,7 +203,16 @@ def test_encajado_capacity_uses_main_productive_people_from_flow_staffing(monkey
             {"codigo": "ENCAJADO", "activa": 1, "numero_maquinas": 1, "capacidad_kg_h_referencia": 250, "personal_minimo": 1, "personal_optimo": 23}
         ],
         "flow_staffing": flow_staffing,
-        "staff_areas": [],
+        "staff_areas": [
+            {"area": "Volcado", "tipo_personal": "Soporte", "disponible": 1, "activo": 1},
+            {"area": "Calibrador", "tipo_personal": "Soporte", "disponible": 1, "activo": 1},
+            {"area": "Tría", "tipo_personal": "Directo", "disponible": 2, "activo": 1},
+            {"area": "Encajado", "tipo_personal": "Directo", "disponible": 8, "activo": 1},
+            {"area": "Loteado / paletizado", "tipo_personal": "Directo", "disponible": 2, "activo": 1},
+            {"area": "Carretillero", "tipo_personal": "Indirecto", "disponible": 1, "activo": 1},
+            {"area": "Calidad", "tipo_personal": "Soporte", "disponible": 1, "activo": 1},
+            {"area": "Encargado", "tipo_personal": "Indirecto", "disponible": 1, "activo": 1},
+        ],
         "personnel": {"personal_total": 23, "personal_directo": 18, "personal_soporte": 3, "personal_indirecto": 2},
         "general_settings": {"horas_utiles_dia": 7, "numero_turnos": 1},
         "semaphore_rules": [],
@@ -222,24 +231,63 @@ def test_encajado_capacity_uses_main_productive_people_from_flow_staffing(monkey
     assert incidencias == []
     assert len(mapped) == 1
     assert mapped[0]["rendimiento_base_kg_h_persona"] == 250
-    assert mapped[0]["personas_productivas_principales"] == 12
-    assert mapped[0]["capacidad_real_kg_h"] == 3000
-    assert round(mapped[0]["horas"], 2) == 3.33
+    assert mapped[0]["personas_productivas_principales"] == 8
+    assert mapped[0]["personas_productivas_principales_optimo"] == 12
+    assert mapped[0]["capacidad_real_kg_h"] == 2000
+    assert round(mapped[0]["horas"], 2) == 5.00
 
-    assert line_rows[0]["Horas necesarias"] == 3.33
+    assert line_rows[0]["Horas necesarias"] == 5.00
     assert line_rows[0]["Horas disponibles línea"] == 7
-    assert line_rows[0]["Ocupación %"] == 47.62
+    assert line_rows[0]["Ocupación %"] == 71.43
     assert line_rows[0]["Rendimiento base kg/h/persona"] == 250
-    assert line_rows[0]["Personas productivas principales"] == 12
-    assert line_rows[0]["Capacidad real kg/h"] == 3000
+    assert line_rows[0]["Personas productivas principales"] == 8
+    assert line_rows[0]["Capacidad real kg/h"] == 2000
 
     rows_by_family = {row["Familia"]: row for row in family_rows}
-    assert rows_by_family["Encajado"]["Horas necesarias"] == 3.33
-    assert rows_by_family["Encajado"]["Ocupación %"] == 47.62
+    assert rows_by_family["Encajado"]["Horas necesarias"] == 5.00
+    assert rows_by_family["Encajado"]["Ocupación %"] == 71.43
     assert rows_by_family["Encajado"]["Personal estimado"] == 23
 
     staffing_by_area = {row["Área / puesto"]: row for row in staffing["rows"]}
     assert staffing_by_area["Encajado"]["Necesario estimado"] == 12
-    assert summary["turnos_equivalentes"] == 0.48
-    assert summary["Ocupación %"] == 47.62
+    assert staffing_by_area["Encajado"]["Disponible"] == 8
+    assert staffing_by_area["Encajado"]["Diferencia"] == -4
+    assert staffing_by_area["Tría"]["Disponible"] == 2
+    assert summary["turnos_equivalentes"] == 0.71
+    assert summary["Ocupación %"] == 71.43
     assert summary["Horas necesarias estimadas"] != 40
+
+
+def test_staffing_requirements_do_not_fallback_available_by_tipo_personal(monkeypatch):
+    import sys
+    import types
+
+    planning_service = types.ModuleType("services.planning_service")
+    planning_service.PlanningService = object
+    monkeypatch.setitem(sys.modules, "services.planning_service", planning_service)
+
+    from services.production_capacity_service import ProductionCapacityService
+
+    service = ProductionCapacityService.__new__(ProductionCapacityService)
+    result = service.calculate_staffing_requirements(
+        {
+            "line_rows": [{"Línea productiva": "ENCAJADO", "Ocupación %": 71.43}],
+            "inputs": {
+                "flow_staffing": [
+                    {"linea_productiva": "ENCAJADO", "area_puesto": "Tría", "tipo_personal": "Directo", "minimo": 2, "optimo": 4, "activo": 1, "escala_con_ocupacion": 1, "factor_ocupacion": 1, "obligatorio": 1},
+                    {"linea_productiva": "ENCAJADO", "area_puesto": "Encajado", "tipo_personal": "Directo", "minimo": 6, "optimo": 12, "activo": 1, "escala_con_ocupacion": 1, "factor_ocupacion": 1, "obligatorio": 1},
+                ],
+                "staff_areas": [
+                    {"area": "Encajado", "tipo_personal": "Directo", "disponible": 8, "activo": 1},
+                    {"area": "Otra área directa", "tipo_personal": "Directo", "disponible": 18, "activo": 1},
+                ],
+                "personnel": {"personal_directo": 18, "personal_soporte": 0, "personal_indirecto": 0},
+            },
+        }
+    )
+
+    rows_by_area = {row["Área / puesto"]: row for row in result["rows"]}
+    assert rows_by_area["Encajado"]["Disponible"] == 8
+    assert rows_by_area["Tría"]["Disponible"] == 0
+    assert rows_by_area["Tría"]["Disponible"] != 18
+    assert any(inc["Tipo incidencia"] == "Área sin personal configurado" and inc["Confección"] == "Tría" for inc in result["incidencias"])
