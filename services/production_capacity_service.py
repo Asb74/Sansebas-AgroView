@@ -557,22 +557,12 @@ class ProductionCapacityService:
         area_norm = self._normalize_staff_name(area)
         if area_norm in area_type:
             return area_type[area_norm], "area"
-        area_tokens = [token for token in area_norm.split() if len(token) > 2]
-        for configured_area, tipo_personal in area_type.items():
-            configured_tokens = set(configured_area.split())
-            if area_tokens and any(token in configured_tokens for token in area_tokens):
-                return tipo_personal, "area_partial"
         return configured_type, "flow_staffing"
 
     def _available_staff_for_area(self, area: str, tipo: str, area_availability: dict[str, int], type_availability: dict[str, int]) -> tuple[int, str]:
         area_norm = self._normalize_staff_name(area)
         if area_norm in area_availability:
             return area_availability[area_norm], "area"
-        area_tokens = [token for token in area_norm.split() if len(token) > 2]
-        for configured_area, available in area_availability.items():
-            configured_tokens = set(configured_area.split())
-            if area_tokens and any(token in configured_tokens for token in area_tokens):
-                return available, "area_partial"
         type_norm = self._normalize_staff_name(tipo)
         if type_norm in type_availability:
             return type_availability[type_norm], "type"
@@ -583,9 +573,17 @@ class ProductionCapacityService:
         text = "".join(ch for ch in text if not unicodedata.combining(ch))
         text = text.lower().replace("/", " ")
         text = re.sub(r"[^a-z0-9]+", " ", text)
-        synonyms = {"paletizado": "loteado", "paletizacion": "loteado", "carretilleros": "carretillero", "encargados": "encargado", "alimentacion": "volcado"}
+        synonyms = {
+            "alimentacion": "volcado",
+            "calibradores": "calibrador",
+            "carretilleros": "carretillero",
+            "encargados": "encargado",
+            "paletizacion": "loteado",
+            "paletizado": "loteado",
+        }
         tokens = [synonyms.get(token, token) for token in text.split()]
-        return " ".join(tokens).strip()
+        deduped_tokens = list(dict.fromkeys(tokens))
+        return " ".join(deduped_tokens).strip()
 
     def _staff_inc(self, tipo: str, linea: str, area: str, motivo: str, accion: str) -> dict:
         return {"Tipo incidencia": tipo, "Pedido": "-", "Cliente": "-", "Confección": area, "Línea productiva": linea, "Motivo": motivo, "Acción sugerida": accion}
