@@ -48,6 +48,7 @@ class ProductionCapacityService:
             "line_capacity_config": self.prod_repo.get_line_capacity_config(active_only=True),
             "line_required_resources": self.prod_repo.get_line_required_resources(active_only=True),
             "staff_area_equivalences": self.prod_repo.get_staff_area_equivalences(active_only=True),
+            "staff_polyvalence": self.prod_repo.get_staff_polyvalence(active_only=True),
             "staff_flexibility": self.prod_repo.get_staff_flexibility(),
             "semaphore_rules": self.prod_repo.get_semaphore_rules(),
             "general_settings": self.prod_repo.get_general_settings(),

@@ -87,6 +87,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._line_capacity_config_tree: ttk.Treeview | None = None
         self._line_required_resources_tree: ttk.Treeview | None = None
         self._staff_area_equivalences_tree: ttk.Treeview | None = None
+        self._staff_polyvalence_tree: ttk.Treeview | None = None
         self._capacity_productive_notebook: ttk.Notebook | None = None
         self._capacity_master_actions: dict[str, tuple[str, object, object]] = {}
         self._new_caliber_counter = 1
@@ -1770,8 +1771,8 @@ class ProductionSettingsScreen(ttk.Frame):
         self._build_tab_toolbar(
             parent,
             help_command=self._show_capacity_productive_help,
-            export_command=self._export_active_capacity_master_excel,
-            import_command=self._import_active_capacity_master_excel,
+            export_command=self._export_capacity_productive_excel,
+            import_command=self._import_capacity_productive_excel,
         )
         inner = ttk.Notebook(parent)
         inner.grid(row=1, column=0, sticky="nsew")
@@ -1782,6 +1783,7 @@ class ProductionSettingsScreen(ttk.Frame):
             ("Configuración líneas capacidad", "_line_capacity_config_tree", ("id", "linea_productiva", "familia_productiva", "puesto_productivo_principal", "modo_uso_recursos", "usar_capacidad_agregada", "activa", "observaciones", "updated_at"), {"id": 40, "linea_productiva": 170, "familia_productiva": 140, "puesto_productivo_principal": 190, "modo_uso_recursos": 140, "usar_capacidad_agregada": 160, "activa": 70, "observaciones": 250, "updated_at": 180}, "line_capacity_config", self.service.get_line_capacity_config, self.service.save_line_capacity_config, self.service.reset_line_capacity_config_defaults),
             ("Recursos requeridos por línea", "_line_required_resources_tree", ("id", "linea_productiva", "recurso_codigo", "obligatorio", "modo_uso", "reparte_kg", "orden", "activo", "observaciones", "updated_at"), {"id": 40, "linea_productiva": 170, "recurso_codigo": 180, "obligatorio": 90, "modo_uso": 110, "reparte_kg": 90, "orden": 70, "activo": 70, "observaciones": 250, "updated_at": 180}, "line_required_resources", self.service.get_line_required_resources, self.service.save_line_required_resources, self.service.reset_line_required_resources_defaults),
             ("Equivalencias de puestos", "_staff_area_equivalences_tree", ("id", "area_requerida", "area_personal", "prioridad", "activa", "observaciones", "updated_at"), {"id": 40, "area_requerida": 190, "area_personal": 190, "prioridad": 80, "activa": 70, "observaciones": 260, "updated_at": 180}, "staff_area_equivalences", self.service.get_staff_area_equivalences, self.service.save_staff_area_equivalences, self.service.reset_staff_area_equivalences_defaults),
+            ("Polivalencias de personal", "_staff_polyvalence_tree", ("id", "puesto_origen", "puesto_destino", "prioridad", "factor_productividad", "activa", "observaciones", "updated_at"), {"id": 40, "puesto_origen": 190, "puesto_destino": 190, "prioridad": 80, "factor_productividad": 140, "activa": 70, "observaciones": 260, "updated_at": 180}, "staff_polyvalence", self.service.get_staff_polyvalence, self.service.save_staff_polyvalence, self.service.reset_staff_polyvalence_defaults),
         ]
         for title, attr, columns, widths, key, loader, saver, resetter in specs:
             frame = ttk.Frame(inner, padding=8)
@@ -1863,6 +1865,7 @@ class ProductionSettingsScreen(ttk.Frame):
             (self._line_capacity_config_tree, self.service.get_line_capacity_config, ("id", "linea_productiva", "familia_productiva", "puesto_productivo_principal", "modo_uso_recursos", "usar_capacidad_agregada", "activa", "observaciones", "updated_at")),
             (self._line_required_resources_tree, self.service.get_line_required_resources, ("id", "linea_productiva", "recurso_codigo", "obligatorio", "modo_uso", "reparte_kg", "orden", "activo", "observaciones", "updated_at")),
             (self._staff_area_equivalences_tree, self.service.get_staff_area_equivalences, ("id", "area_requerida", "area_personal", "prioridad", "activa", "observaciones", "updated_at")),
+            (self._staff_polyvalence_tree, self.service.get_staff_polyvalence, ("id", "puesto_origen", "puesto_destino", "prioridad", "factor_productividad", "activa", "observaciones", "updated_at")),
         ]
         for tree, loader, columns in mapping:
             if not tree:
@@ -1881,21 +1884,115 @@ class ProductionSettingsScreen(ttk.Frame):
         title = self._capacity_productive_notebook.tab(selected, "text")
         return self._capacity_master_actions.get(title)
 
-    def _export_active_capacity_master_excel(self) -> None:
-        actions = self._get_active_capacity_master_actions()
-        if not actions:
-            messagebox.showerror("Capacidad productiva", "Seleccione un maestro de capacidad para exportar.", parent=self)
-            return
-        master_key, loader, _saver = actions
-        self._export_master_excel(master_key, loader)
+    def _capacity_productive_sheet_specs(self) -> list[dict]:
+        cfg = PRODUCTION_MASTER_EXCEL_CONFIGS
+        return [
+            {"sheet": "FamiliasProductivas", "key": "productive_families", "loader": self.service.get_productive_families, "saver": self.service.save_productive_families},
+            {"sheet": "ConfigLineasCapacidad", "key": "line_capacity_config", "loader": self.service.get_line_capacity_config, "saver": self.service.save_line_capacity_config},
+            {"sheet": "RecursosRequeridosLinea", "key": "line_required_resources", "loader": self.service.get_line_required_resources, "saver": self.service.save_line_required_resources},
+            {"sheet": "EquivalenciasPuestos", "key": "staff_area_equivalences", "loader": self.service.get_staff_area_equivalences, "saver": self.service.save_staff_area_equivalences},
+            {"sheet": "PolivalenciasPersonal", "key": "staff_polyvalence", "loader": self.service.get_staff_polyvalence, "saver": self.service.save_staff_polyvalence},
+        ]
 
-    def _import_active_capacity_master_excel(self) -> None:
-        actions = self._get_active_capacity_master_actions()
-        if not actions:
-            messagebox.showerror("Capacidad productiva", "Seleccione un maestro de capacidad para importar.", parent=self)
+    def _export_capacity_productive_excel(self) -> None:
+        help_rows = [{"campo": i.get("title", ""), "descripcion": i.get("description", "")} for i in get_help_items(PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP)]
+        self._export_master_excel("capacity_productive", lambda: {
+            spec["sheet"]: {"columns": PRODUCTION_MASTER_EXCEL_CONFIGS[spec["key"]]["columns"], "rows": spec["loader"]()}
+            for spec in self._capacity_productive_sheet_specs()
+        } | {"Descripcion campos": {"columns": ["campo", "descripcion"], "rows": help_rows}})
+
+    def _import_capacity_productive_excel(self) -> None:
+        path = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx")])
+        if not path:
             return
-        master_key, _loader, saver = actions
-        self._import_master_excel(master_key, saver, self._load_capacity_productive_settings)
+        wb = load_workbook(path, data_only=True)
+        cfg = PRODUCTION_MASTER_EXCEL_CONFIGS
+        errors = []
+
+        def read(sheet_name: str, config: dict) -> tuple[list[dict], bool]:
+            if sheet_name not in wb.sheetnames:
+                return [], False
+            ws = wb[sheet_name]
+            header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+            if not header_row:
+                return [], True
+            headers = [str(h or "").strip() for h in header_row]
+            missing = [col for col in config.get("required_columns", []) if col not in headers]
+            if missing:
+                errors.append(f"{sheet_name}: faltan columnas obligatorias: {', '.join(missing)}")
+            rows = []
+            seen = set()
+            for row_idx, vals in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
+                row = {headers[i]: vals[i] if i < len(vals) else None for i in range(len(headers))}
+                clean = {c: row.get(c, "") for c in config["columns"]}
+                if all(clean.get(c) in (None, "") for c in config["columns"] if c != "id"):
+                    continue
+                for column in config.get("required_columns", []):
+                    if str(clean.get(column) or "").strip() == "":
+                        errors.append(f"{sheet_name} fila {row_idx}: {column} obligatorio.")
+                for column in config.get("numeric_columns", []):
+                    raw = clean.get(column)
+                    if raw in (None, ""):
+                        clean[column] = 0.0
+                    else:
+                        try:
+                            clean[column] = float(str(raw).replace(",", "."))
+                        except ValueError:
+                            errors.append(f"{sheet_name} fila {row_idx}: {column} no es numérico válido ({raw}).")
+                for column in config.get("boolean_columns", []):
+                    clean[column] = 1 if str(clean.get(column, "0")).strip().upper() in {"1", "SI", "S", "SÍ", "TRUE", "X", "Y", "YES"} else 0
+                unique_key = config.get("unique_key", "")
+                if unique_key:
+                    key = "|".join(str(clean.get(part, "")).strip().lower() for part in unique_key.split("|"))
+                    if key in seen:
+                        errors.append(f"{sheet_name} fila {row_idx}: clave duplicada {unique_key}")
+                    seen.add(key)
+                rows.append(clean)
+            return rows, True
+
+        imported_by_key = {}
+        specs = self._capacity_productive_sheet_specs()
+        for spec in specs:
+            rows, present = read(spec["sheet"], cfg[spec["key"]])
+            if present:
+                imported_by_key[spec["key"]] = rows
+
+        if not imported_by_key and "Datos" in wb.sheetnames:
+            datos_headers = [str(h or "").strip() for h in next(wb["Datos"].iter_rows(min_row=1, max_row=1, values_only=True))]
+            for spec in specs:
+                config = cfg[spec["key"]]
+                if all(column in datos_headers for column in config.get("required_columns", [])):
+                    rows, _present = read("Datos", config)
+                    imported_by_key[spec["key"]] = rows
+                    break
+
+        if not imported_by_key:
+            messagebox.showerror("Capacidad productiva", "El Excel no contiene hojas de Capacidad productiva reconocidas.", parent=self)
+            return
+        if errors:
+            messagebox.showerror("Errores de validación", "\n".join(errors[:20]), parent=self)
+            return
+
+        def merge_rows(existing, imported, unique_key: str):
+            def key_for(row):
+                return "|".join(str(row.get(part, "")).strip().lower() for part in unique_key.split("|"))
+            merged = {key_for(row): row for row in existing if key_for(row)}
+            for row in imported:
+                key = key_for(row)
+                if key:
+                    merged[key] = row
+            return list(merged.values())
+
+        total = sum(len(rows) for rows in imported_by_key.values())
+        if not messagebox.askyesno("Confirmar importación", f"Se importarán {total} registros de Capacidad productiva actualizando por clave y sin borrar ausentes. ¿Continuar?", parent=self):
+            return
+        spec_by_key = {spec["key"]: spec for spec in specs}
+        for key, imported in imported_by_key.items():
+            spec = spec_by_key[key]
+            merged = merge_rows(spec["loader"](), imported, cfg[key]["unique_key"])
+            spec["saver"](merged)
+        self._load_capacity_productive_settings()
+        messagebox.showinfo("Configuración productiva", f"Importación completada. Registros procesados: {total}.", parent=self)
 
     def _show_capacity_productive_help(self) -> None:
         show_tab_help(self, title="Descripción de campos - Capacidad productiva", heading="Capacidad productiva", intro="Estos maestros describen la realidad operativa usada por el motor de capacidad sin reglas fijas en código.", help_items=get_help_items(PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP))
@@ -2073,6 +2170,8 @@ class ProductionSettingsScreen(ttk.Frame):
             "line_capacity_config": get_help_items(PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP),
             "line_required_resources": get_help_items(PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP),
             "staff_area_equivalences": get_help_items(PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP),
+            "staff_polyvalence": get_help_items(PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP),
+            "capacity_productive": get_help_items(PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP),
         }
         return by_key.get(master_key, [])
 

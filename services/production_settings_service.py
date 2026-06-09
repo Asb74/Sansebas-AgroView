@@ -174,3 +174,12 @@ class ProductionSettingsService:
 
     def reset_staff_area_equivalences_defaults(self) -> None:
         self.repository.reset_staff_area_equivalences_defaults()
+
+    def get_staff_polyvalence(self, active_only: bool = False) -> list[dict]:
+        return self.repository.get_staff_polyvalence(active_only)
+
+    def save_staff_polyvalence(self, rows: list[dict]) -> None:
+        self.repository.save_staff_polyvalence(rows)
+
+    def reset_staff_polyvalence_defaults(self) -> None:
+        self.repository.reset_staff_polyvalence_defaults()
