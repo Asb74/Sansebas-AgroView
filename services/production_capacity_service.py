@@ -22,6 +22,16 @@ class ProductionCapacityService:
         "MALLAS_TRADICIONAL": RESOURCE_USAGE_INFORMATIVE,
         "MALLAS_GIRSAC": RESOURCE_USAGE_INFORMATIVE,
     }
+    # Diseño mínimo hasta añadir un campo configurable en el maestro de Dotación flujos.
+    # La capacidad_kg_h_referencia de Máquinas / líneas se interpreta como kg/h/persona
+    # del puesto productivo principal, no como kg/h de línea completa ni de máquina.
+    DEFAULT_MAIN_PRODUCTIVE_STAFF_AREA_BY_LINE = {
+        "ENCAJADO": "Encajado",
+        "MALLAS_TRADICIONAL": "Mallas",
+        "MALLAS_GIRSAC": "Mallas",
+        "GRANEL_MANUAL": "Granel manual",
+        "GRANELERA": "Granelera",
+    }
 
     def __init__(self) -> None:
         self.planning = PlanningService()
@@ -144,11 +154,18 @@ class ProductionCapacityService:
                 if numero_maquinas <= 0:
                     incidencias.append(self._inc("Máquinas no configuradas", order, f"Línea {linea} con numero_maquinas=0", "Configurar número de máquinas"))
                 if cap_ref <= 0:
-                    incidencias.append(self._inc("Sin capacidad configurada", order, f"Línea {linea} con capacidad_kg_h_referencia=0", "Configurar capacidad kg/h"))
+                    incidencias.append(self._inc("Sin capacidad configurada", order, f"Línea {linea} con capacidad_kg_h_referencia=0", "Configurar rendimiento base kg/h/persona"))
 
-                capacidad_total = numero_maquinas * cap_ref if numero_maquinas > 0 and cap_ref > 0 else 0.0
-                if capacidad_total <= 0:
-                    incidencias.append(self._inc("Sin capacidad configurada", order, f"Línea {linea} sin capacidad productiva válida", "Completar maestro de líneas"))
+                main_staff = self._main_productive_staffing_for_line(linea, inputs)
+                main_staff_area = str(main_staff.get("area_puesto", "") or "").strip()
+                main_staff_opt = max(0, int(main_staff.get("optimo", 0) or 0))
+                capacidad_base_personas = cap_ref * main_staff_opt if cap_ref > 0 and main_staff_opt > 0 else 0.0
+                if not main_staff_area:
+                    incidencias.append(self._inc("Puesto principal no configurado", order, f"Línea {linea} sin puesto productivo principal resoluble en dotación flujos", "Configurar puesto principal de la línea en Dotación flujos"))
+                elif main_staff_opt <= 0:
+                    incidencias.append(self._inc("Puesto principal sin óptimo", order, f"Línea {linea} / {main_staff_area} con óptimo=0", "Configurar dotación óptima del puesto productivo principal"))
+                if capacidad_base_personas <= 0:
+                    incidencias.append(self._inc("Sin capacidad configurada", order, f"Línea {linea} sin capacidad válida por persona productiva principal", "Completar rendimiento kg/h/persona y dotación óptima del puesto principal"))
                     continue
 
                 tipo_malla = str(productive_conf.get("tipo_malla", "") or "").strip()
@@ -159,7 +176,7 @@ class ProductionCapacityService:
                     incidencias.append(self._inc("Tipo malla corregido", order, "Tipo malla corregido operativamente a Tradicional", "Actualizar Mapeo confecciones para separar nombre comercial y tipo operativo"))
 
                 factor = self._factor_for(order, familia, factor_index)
-                capacidad_real = max(0.01, capacidad_total * factor)
+                capacidad_real = max(0.01, capacidad_base_personas * factor)
                 horas = kg / capacidad_real
 
                 personal_min = int(line_cfg.get("personal_minimo", 0) or 0)
@@ -175,6 +192,10 @@ class ProductionCapacityService:
                     "rendimiento": capacidad_real,
                     "horas": horas,
                     "capacidad_kg_h": capacidad_real,
+                    "rendimiento_base_kg_h_persona": cap_ref,
+                    "personas_productivas_principales": main_staff_opt,
+                    "puesto_productivo_principal": main_staff_area,
+                    "capacidad_real_kg_h": capacidad_real,
                     "personal_minimo_linea": max(0, personal_min),
                     "personal_optimo_linea": int(line_cfg.get("personal_optimo", 0) or 0),
                     "tipo_malla": tipo_malla,
@@ -184,10 +205,13 @@ class ProductionCapacityService:
         return out, incidencias
 
     def calculate_family_capacity(self, mapped: list[dict], inputs: dict, staffing_rows: list[dict] | None = None) -> list[dict]:
-        by = defaultdict(lambda: {"kg_real": 0.0, "kg_prev": 0.0, "kg_total": 0.0, "horas": 0.0, "rend_sum": 0.0, "n": 0, "lineas": set(), "personal": 0})
+        by = defaultdict(lambda: {"kg_real": 0.0, "kg_prev": 0.0, "kg_total": 0.0, "horas": 0.0, "rend_sum": 0.0, "base_sum": 0.0, "main_people_sum": 0.0, "capacity_sum": 0.0, "n": 0, "lineas": set(), "personal": 0})
         for m in mapped:
             d = by[m["familia"]]
             d["kg_total"] += m["kg"]; d["horas"] += m["horas"]; d["rend_sum"] += m["rendimiento"]; d["n"] += 1
+            d["base_sum"] += float(m.get("rendimiento_base_kg_h_persona", 0) or 0)
+            d["main_people_sum"] += float(m.get("personas_productivas_principales", 0) or 0)
+            d["capacity_sum"] += float(m.get("capacidad_real_kg_h", m.get("capacidad_kg_h", 0)) or 0)
             d["lineas"].add(m["linea"])
             if m["tipo_pedido"] == "Real":
                 d["kg_real"] += m["kg"]
@@ -218,6 +242,9 @@ class ProductionCapacityService:
                 "Horas disponibles": round(horas_disp, 2),
                 "Ocupación %": round(occ, 2),
                 "Rendimiento medio": round((d["rend_sum"] / d["n"]) if d["n"] else 0, 2),
+                "Rendimiento base kg/h/persona": round((d["base_sum"] / d["n"]) if d["n"] else 0, 2),
+                "Personas productivas principales": round((d["main_people_sum"] / d["n"]) if d["n"] else 0, 2),
+                "Capacidad real kg/h": round((d["capacity_sum"] / d["n"]) if d["n"] else 0, 2),
                 "Personal estimado": staffing_personnel,
                 "Estado": self._state(occ, inputs["semaphore_rules"], fam),
             })
@@ -242,10 +269,13 @@ class ProductionCapacityService:
         return {family: sum(staffing_by_line[line] for line in lines) for family, lines in family_lines.items()}
 
     def calculate_line_capacity(self, mapped: list[dict], inputs: dict) -> list[dict]:
-        by = defaultdict(lambda: {"kg": 0.0, "horas": 0.0, "pedidos": 0, "formatos": set(), "personal": 0})
+        by = defaultdict(lambda: {"kg": 0.0, "horas": 0.0, "pedidos": 0, "formatos": set(), "personal": 0, "base_sum": 0.0, "main_people_sum": 0.0, "capacity_sum": 0.0})
         for m in mapped:
             d = by[m["linea"]]
             d["kg"] += m["kg"]; d["horas"] += m["horas"]; d["pedidos"] += 1
+            d["base_sum"] += float(m.get("rendimiento_base_kg_h_persona", 0) or 0)
+            d["main_people_sum"] += float(m.get("personas_productivas_principales", 0) or 0)
+            d["capacity_sum"] += float(m.get("capacidad_real_kg_h", m.get("capacidad_kg_h", 0)) or 0)
             d["formatos"].add(str(m["pedido"].get("IdConfeccion", m["pedido"].get("id_confeccion", ""))))
             d["personal"] += self._estimate_personnel_for_order(m, inputs)
 
@@ -259,6 +289,9 @@ class ProductionCapacityService:
                 "Horas necesarias": round(d["horas"], 2),
                 "Horas disponibles línea": round(hdisp, 2),
                 "Ocupación %": round(occ, 2),
+                "Rendimiento base kg/h/persona": round((d["base_sum"] / d["pedidos"]) if d["pedidos"] else 0, 2),
+                "Personas productivas principales": round((d["main_people_sum"] / d["pedidos"]) if d["pedidos"] else 0, 2),
+                "Capacidad real kg/h": round((d["capacity_sum"] / d["pedidos"]) if d["pedidos"] else 0, 2),
                 "Pedidos": d["pedidos"],
                 "Cambios formato estimados": max(0, len(d["formatos"]) - 1),
                 "Personal estimado": int(d["personal"]),
@@ -556,6 +589,31 @@ class ProductionCapacityService:
         return out
 
 
+
+
+    def _main_productive_staffing_for_line(self, line_code: str, inputs: dict) -> dict:
+        """Return the active staffing row that drives kg/h/person capacity for a line.
+
+        Current flow staffing schema has no explicit configurable flag for the
+        principal productive station. Prefer exact configured area names from the
+        active flow staffing master and keep the fallback mapping centralized so
+        it can be replaced by a future master column without changing formulas.
+        """
+        line = str(line_code or "").strip()
+        if not line:
+            return {}
+        expected_area = self.DEFAULT_MAIN_PRODUCTIVE_STAFF_AREA_BY_LINE.get(line.upper(), "")
+        expected_norm = self._normalize_staff_name(expected_area)
+        active_rows = [
+            row for row in inputs.get("flow_staffing", [])
+            if str(row.get("linea_productiva", "") or "").strip() == line
+            and int(row.get("activo", 1) or 0) == 1
+        ]
+        if expected_norm:
+            for row in active_rows:
+                if self._normalize_staff_name(str(row.get("area_puesto", "") or "")) == expected_norm:
+                    return row
+        return {}
 
     def _staff_availability_indexes(self, inputs: dict) -> tuple[dict[str, int], dict[str, int], dict[str, str]]:
         area_availability: dict[str, int] = {}

@@ -170,3 +170,76 @@ def test_family_personnel_estimate_uses_staffing_requirements_instead_of_hour_sc
     assert "familia=Encajado" in caplog.text
     assert "personal_estimado_familia=112" in caplog.text
     assert "personal_estimado_staffing=19" in caplog.text
+
+
+def test_encajado_capacity_uses_main_productive_people_from_flow_staffing(monkeypatch):
+    import sys
+    import types
+
+    planning_service = types.ModuleType("services.planning_service")
+    planning_service.PlanningService = object
+    monkeypatch.setitem(sys.modules, "services.planning_service", planning_service)
+
+    from services.production_capacity_service import ProductionCapacityService
+
+    service = ProductionCapacityService.__new__(ProductionCapacityService)
+    flow_staffing = [
+        {"linea_productiva": "ENCAJADO", "area_puesto": "Volcado", "tipo_personal": "Soporte", "minimo": 1, "optimo": 1, "activo": 1, "escala_con_ocupacion": 0, "factor_ocupacion": 1, "obligatorio": 1},
+        {"linea_productiva": "ENCAJADO", "area_puesto": "Calibrador", "tipo_personal": "Soporte", "minimo": 1, "optimo": 1, "activo": 1, "escala_con_ocupacion": 0, "factor_ocupacion": 1, "obligatorio": 1},
+        {"linea_productiva": "ENCAJADO", "area_puesto": "Tría", "tipo_personal": "Directo", "minimo": 2, "optimo": 4, "activo": 1, "escala_con_ocupacion": 1, "factor_ocupacion": 1, "obligatorio": 1},
+        {"linea_productiva": "ENCAJADO", "area_puesto": "Encajado", "tipo_personal": "Directo", "minimo": 6, "optimo": 12, "activo": 1, "escala_con_ocupacion": 1, "factor_ocupacion": 1, "obligatorio": 1},
+        {"linea_productiva": "ENCAJADO", "area_puesto": "Loteado / paletizado", "tipo_personal": "Directo", "minimo": 1, "optimo": 2, "activo": 1, "escala_con_ocupacion": 1, "factor_ocupacion": 1, "obligatorio": 1},
+        {"linea_productiva": "ENCAJADO", "area_puesto": "Carretillero", "tipo_personal": "Indirecto", "minimo": 1, "optimo": 1, "activo": 1, "escala_con_ocupacion": 0, "factor_ocupacion": 1, "obligatorio": 1},
+        {"linea_productiva": "ENCAJADO", "area_puesto": "Calidad", "tipo_personal": "Soporte", "minimo": 1, "optimo": 1, "activo": 1, "escala_con_ocupacion": 0, "factor_ocupacion": 1, "obligatorio": 1},
+        {"linea_productiva": "ENCAJADO", "area_puesto": "Encargado", "tipo_personal": "Indirecto", "minimo": 1, "optimo": 1, "activo": 1, "escala_con_ocupacion": 0, "factor_ocupacion": 1, "obligatorio": 1},
+    ]
+    inputs = {
+        "packaging_mapping": [
+            {"codigo_mconfeccion": "ENCAJADO_10KG", "familia_productiva": "Encajado", "linea_productiva": "ENCAJADO", "tipo_malla": "No aplica", "subtipo_productivo": "Caja cartón"}
+        ],
+        "base_packaging": [],
+        "caliber_factors": [],
+        "lines": [
+            {"codigo": "ENCAJADO", "activa": 1, "numero_maquinas": 1, "capacidad_kg_h_referencia": 250, "personal_minimo": 1, "personal_optimo": 23}
+        ],
+        "flow_staffing": flow_staffing,
+        "staff_areas": [],
+        "personnel": {"personal_total": 23, "personal_directo": 18, "personal_soporte": 3, "personal_indirecto": 2},
+        "general_settings": {"horas_utiles_dia": 7, "numero_turnos": 1},
+        "semaphore_rules": [],
+    }
+
+    mapped, incidencias = service.map_orders_to_productive_config(
+        [{"IdPedidoLora": "P1", "IdConfeccion": "ENCAJADO_10KG", "Kg pendiente": 10000, "Calibre": "4"}],
+        [],
+        inputs,
+    )
+    line_rows = service.calculate_line_capacity(mapped, inputs)
+    staffing = service.calculate_staffing_requirements({"line_rows": line_rows, "inputs": inputs})
+    family_rows = service.calculate_family_capacity(mapped, inputs, staffing["rows"])
+    summary = service.calculate_capacity_summary(mapped, family_rows, line_rows, inputs)
+
+    assert incidencias == []
+    assert len(mapped) == 1
+    assert mapped[0]["rendimiento_base_kg_h_persona"] == 250
+    assert mapped[0]["personas_productivas_principales"] == 12
+    assert mapped[0]["capacidad_real_kg_h"] == 3000
+    assert round(mapped[0]["horas"], 2) == 3.33
+
+    assert line_rows[0]["Horas necesarias"] == 3.33
+    assert line_rows[0]["Horas disponibles línea"] == 7
+    assert line_rows[0]["Ocupación %"] == 47.62
+    assert line_rows[0]["Rendimiento base kg/h/persona"] == 250
+    assert line_rows[0]["Personas productivas principales"] == 12
+    assert line_rows[0]["Capacidad real kg/h"] == 3000
+
+    rows_by_family = {row["Familia"]: row for row in family_rows}
+    assert rows_by_family["Encajado"]["Horas necesarias"] == 3.33
+    assert rows_by_family["Encajado"]["Ocupación %"] == 47.62
+    assert rows_by_family["Encajado"]["Personal estimado"] == 23
+
+    staffing_by_area = {row["Área / puesto"]: row for row in staffing["rows"]}
+    assert staffing_by_area["Encajado"]["Necesario estimado"] == 12
+    assert summary["turnos_equivalentes"] == 0.48
+    assert summary["Ocupación %"] == 47.62
+    assert summary["Horas necesarias estimadas"] != 40
