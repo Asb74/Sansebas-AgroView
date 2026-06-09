@@ -83,6 +83,58 @@ def test_staff_equivalence_tria_comes_from_master(monkeypatch):
     assert matched == "Tría principal + Tría mallas"
 
 
+def test_staff_equivalence_alimentacion_covers_volcado_orientation(monkeypatch, caplog):
+    import logging
+
+    service = _service(monkeypatch)
+    with caplog.at_level(logging.DEBUG, logger="services.production_capacity_service"):
+        result = service.calculate_staffing_requirements(
+            {
+                "line_rows": [{"Línea productiva": "LINEA", "Ocupación %": 10}],
+                "inputs": {
+                    "flow_staffing": [
+                        {"linea_productiva": "LINEA", "area_puesto": "Volcado", "tipo_personal": "Directo", "minimo": 1, "optimo": 1, "activo": 1, "obligatorio": 1}
+                    ],
+                    "staff_areas": [
+                        {"area": "Volcado", "tipo_personal": "Directo", "disponible": 0, "activo": 1},
+                        {"area": "Alimentación", "tipo_personal": "Directo", "disponible": 1, "activo": 1},
+                    ],
+                    "production_staff_area_equivalences": [
+                        {"area_requerida": "Volcado", "area_personal": "Alimentación", "prioridad": 1, "activa": 1}
+                    ],
+                },
+            }
+        )
+
+    rows_by_area = {row["Área / puesto"]: row for row in result["rows"]}
+    assert rows_by_area["Volcado"]["Disponible"] == 1
+    assert not any(inc["Tipo incidencia"] == "Falta personal mínimo" and inc["Confección"] == "Volcado" for inc in result["incidencias"])
+    assert "AREA_REQUERIDA=Volcado" in caplog.text
+    assert "AREAS_EQUIVALENTES=['Alimentación']" in caplog.text
+    assert "DISPONIBILIDAD_ENCONTRADA=1" in caplog.text
+
+
+def test_staff_equivalence_default_migrates_alimentacion_volcado_orientation(monkeypatch, tmp_path):
+    import db.connection as connection
+    from db.production_settings_repository import ProductionSettingsRepository
+
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    repo = ProductionSettingsRepository()
+    repo.ensure_staff_area_equivalences_schema()
+    with connection.get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO production_staff_area_equivalences (area_requerida,area_personal,prioridad,activa,observaciones,updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("Alimentación", "Volcado", 1, 1, "", "old"),
+        )
+
+    rows = repo.get_staff_area_equivalences(active_only=True)
+
+    assert any(row["area_requerida"] == "Volcado" and row["area_personal"] == "Alimentación" for row in rows)
+    assert not any(row["area_requerida"] == "Alimentación" and row["area_personal"] == "Volcado" for row in rows)
+
 def test_staff_polyvalence_master_migrates_and_persists(monkeypatch, tmp_path):
     import db.connection as connection
     from db.production_settings_repository import ProductionSettingsRepository
