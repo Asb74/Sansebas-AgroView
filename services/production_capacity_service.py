@@ -670,7 +670,42 @@ class ProductionCapacityService:
         return numero_maquinas > 0 and cap_ref > 0
 
     def _load_forecast_orders(self, filters: dict) -> list[dict]:
-        return cargar_pedidos_previstos_filtrados(filters, respetar_incluir=True)
+        campana_actual = self._single_forecast_context_value(filters, "campana")
+        cultivo_actual = self._single_forecast_context_value(filters, "cultivo")
+        empresa_actual = self._single_forecast_context_value(filters, "empresa")
+        logger.info(
+            "CAPACIDAD PREVISTOS CONTEXTO | campaña=%r | cultivo=%r | empresa=%r",
+            campana_actual,
+            cultivo_actual,
+            empresa_actual,
+        )
+        return cargar_pedidos_previstos_filtrados(
+            filters,
+            respetar_incluir=True,
+            cultivo_actual=cultivo_actual,
+            campana_actual=campana_actual,
+            empresa_actual=empresa_actual,
+        )
+
+    @staticmethod
+    def _single_forecast_context_value(filters: dict | None, key: str) -> str:
+        if not isinstance(filters, dict):
+            return ""
+        raw = filters.get(key, [])
+        values = raw if isinstance(raw, (list, tuple, set)) else [raw]
+        selected = []
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                selected.append(text)
+        if len(selected) != 1:
+            return ""
+        value = selected[0]
+        if value.upper() == "TODOS":
+            return ""
+        return value
 
     def _line_cfg(self, code: str, inputs: dict) -> dict:
         return next((r for r in inputs["lines"] if str(r.get("codigo", "")).strip() == code), {})
