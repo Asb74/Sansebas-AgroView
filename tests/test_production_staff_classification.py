@@ -291,3 +291,45 @@ def test_staffing_requirements_do_not_fallback_available_by_tipo_personal(monkey
     assert rows_by_area["Tría"]["Disponible"] == 0
     assert rows_by_area["Tría"]["Disponible"] != 18
     assert any(inc["Tipo incidencia"] == "Área sin personal configurado" and inc["Confección"] == "Tría" for inc in result["incidencias"])
+
+
+def test_staffing_requirements_uses_only_real_equivalent_staff_areas(monkeypatch, caplog):
+    import logging
+    import sys
+    import types
+
+    planning_service = types.ModuleType("services.planning_service")
+    planning_service.PlanningService = object
+    monkeypatch.setitem(sys.modules, "services.planning_service", planning_service)
+
+    from services.production_capacity_service import ProductionCapacityService
+
+    service = ProductionCapacityService.__new__(ProductionCapacityService)
+    with caplog.at_level(logging.DEBUG, logger="services.production_capacity_service"):
+        result = service.calculate_staffing_requirements(
+            {
+                "line_rows": [{"Línea productiva": "ENCAJADO", "Ocupación %": 71.43}],
+                "inputs": {
+                    "flow_staffing": [
+                        {"linea_productiva": "ENCAJADO", "area_puesto": "Tría", "tipo_personal": "Directo", "minimo": 2, "optimo": 4, "activo": 1, "escala_con_ocupacion": 1, "factor_ocupacion": 1, "obligatorio": 1},
+                        {"linea_productiva": "ENCAJADO", "area_puesto": "Encajado", "tipo_personal": "Directo", "minimo": 6, "optimo": 12, "activo": 1, "escala_con_ocupacion": 1, "factor_ocupacion": 1, "obligatorio": 1},
+                    ],
+                    "staff_areas": [
+                        {"area": "Tría principal", "tipo_personal": "Directo", "disponible": 3, "activo": 1},
+                        {"area": "Tría mallas", "tipo_personal": "Directo", "disponible": 2, "activo": 1},
+                        {"area": "Encajado", "tipo_personal": "Directo", "disponible": 8, "activo": 1},
+                        {"area": "Otra área directa", "tipo_personal": "Directo", "disponible": 18, "activo": 1},
+                    ],
+                    "personnel": {"personal_directo": 31, "personal_soporte": 0, "personal_indirecto": 0},
+                },
+            }
+        )
+
+    rows_by_area = {row["Área / puesto"]: row for row in result["rows"]}
+    assert rows_by_area["Tría"]["Disponible"] == 5
+    assert rows_by_area["Tría"]["Disponible"] != 18
+    assert rows_by_area["Encajado"]["Disponible"] == 8
+    assert not any(inc["Tipo incidencia"] == "Área sin personal configurado" and inc["Confección"] == "Tría" for inc in result["incidencias"])
+    assert "puesto=Tría" in caplog.text
+    assert "area_encontrada=Tría principal + Tría mallas" in caplog.text
+    assert "equivalencia=True" in caplog.text

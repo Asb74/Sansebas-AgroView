@@ -282,6 +282,13 @@ DEFAULT_PHYSICAL_RESOURCES = [
 DEFAULT_RESOURCE_COMPATIBILITIES = [("PESADORA_1","tipo_malla","Girsac",1,""),("PESADORA_2","tipo_malla","Girsac",1,""),("PESADORA_3","tipo_malla","Girsac",1,""),("PESADORA_3","tipo_malla","Tradicional",1,""),("PESADORA_4","tipo_malla","Girsac",1,""),("PESADORA_4","tipo_malla","Tradicional",1,"")]
 DEFAULT_RESOURCE_FEEDS = [("COMPACTA","CALIBRADOR_PRINCIPAL",1,0,1,""),("CALIBRADOR_PRINCIPAL","PESADORA_1",4,0,1,""),("CALIBRADOR_PRINCIPAL","PESADORA_2",4,0,1,""),("CALIBRADOR_PRINCIPAL","PESADORA_3",4,0,1,""),("CALIBRADOR_PRINCIPAL","PESADORA_4",4,0,1,""),("COMPACTA","AWETTA",1,0,1,"Awetta puede alimentarse desde compacta cuando está disponible.")]
 DEFAULT_RESOURCE_AVAILABILITY = [("AWETTA","CITRICOS",1,"Libre para apoyo si no hay otros cultivos.",1,""),("AWETTA","MANDARINAS",1,"Libre para apoyo si no hay otros cultivos.",1,""),("AWETTA","CAQUI",0,"Ocupada por caqui / no disponible para apoyo cítricos.",1,""),("AWETTA","FRUTA_HUESO",0,"Ocupada por fruta de hueso.",1,"")]
+DEFAULT_STAFF_FLEXIBILITY = [
+    ("Encargado", "Carretillero", 1, 1, 0.8, 1, "Cobertura alternativa futura; no suma disponibilidad base."),
+    ("Recepción", "Mesas / Encajado", 2, 2, 0.85, 1, "Usar solo con déficit real en mesas/encajado."),
+    ("Etiquetado", "Loteado", 1, 2, 0.9, 1, "Polivalencia bidireccional documentada para fase posterior."),
+    ("Loteado", "Etiquetado", 1, 2, 0.9, 1, "Polivalencia bidireccional documentada para fase posterior."),
+    ("Carretillero", "Volcado", 2, 1, 0.75, 1, "Usar solo si sobra carretillero y falta volcado."),
+]
 
 
 class ProductionSettingsRepository:
@@ -300,6 +307,7 @@ class ProductionSettingsRepository:
         self.ensure_resource_compatibilities_defaults()
         self.ensure_resource_feeds_defaults()
         self.ensure_resource_availability_defaults()
+        self.ensure_staff_flexibility_defaults()
         self.ensure_flow_staffing_defaults()
 
     def ensure_schema(self) -> None:
@@ -1568,6 +1576,50 @@ class ProductionSettingsRepository:
             for row in rows:
                 conn.execute("INSERT INTO production_resource_availability (recurso_codigo,contexto,disponible,motivo,prioridad,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(recurso_codigo, contexto) DO UPDATE SET disponible=excluded.disponible,motivo=excluded.motivo,prioridad=excluded.prioridad,observaciones=excluded.observaciones,updated_at=excluded.updated_at", (row["recurso_codigo"], row["contexto"], int(row.get("disponible", 1)), row.get("motivo", ""), int(row.get("prioridad", 1)), row.get("observaciones", ""), now))
 
+
+    def ensure_staff_flexibility_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS production_staff_flexibility (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_area TEXT NOT NULL,
+                    target_area TEXT NOT NULL,
+                    priority INTEGER NOT NULL DEFAULT 1,
+                    max_people INTEGER NOT NULL DEFAULT 0,
+                    efficiency_factor REAL NOT NULL DEFAULT 1.0,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    notes TEXT,
+                    updated_at TEXT,
+                    UNIQUE(source_area, target_area)
+                )
+                """
+            )
+
+    def ensure_staff_flexibility_defaults(self) -> None:
+        self.ensure_staff_flexibility_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            for row in DEFAULT_STAFF_FLEXIBILITY:
+                conn.execute(
+                    """
+                    INSERT INTO production_staff_flexibility (
+                        source_area, target_area, priority, max_people, efficiency_factor, active, notes, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source_area, target_area) DO NOTHING
+                    """,
+                    (*row, now),
+                )
+
+    def get_staff_flexibility(self, active_only: bool = True) -> list[dict]:
+        self.ensure_staff_flexibility_defaults()
+        sql = "SELECT * FROM production_staff_flexibility"
+        if active_only:
+            sql += " WHERE active = 1"
+        sql += " ORDER BY priority, id"
+        with get_connection() as conn:
+            return [dict(r) for r in conn.execute(sql).fetchall()]
 
     def reset_resources_flows_defaults(self) -> None:
         self.ensure_physical_resources_schema()
