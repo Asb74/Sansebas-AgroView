@@ -10,6 +10,7 @@ import traceback
 from typing import Any
 
 from config import DB_CALIDAD, DB_DIR, DB_EEPPL, DB_FRUTA, DB_LOTEADO, DB_PEDIDOS
+from services.pedidos_previstos_service import cargar_pedidos_previstos_filtrados
 
 
 logger = logging.getLogger(__name__)
@@ -1351,6 +1352,7 @@ class PlanningRepository:
         campo_map: dict[tuple, float] = {}
         campo_real_map: dict[tuple, float] = {}
         pedidos_map: dict[tuple, float] = {}
+        pedidos_origen_map: dict[tuple, set[str]] = {}
 
         for row in detalle_rows:
             campana_stock = row.get("Campaña", row.get("Campana", ""))
@@ -1409,6 +1411,18 @@ class PlanningRepository:
                 row.get("Marca", ""), id_confeccion, confeccion,
             )
             pedidos_map[key] = pedidos_map.get(key, 0.0) + float(row.get("Kg pendiente", 0) or 0)
+            pedidos_origen_map.setdefault(key, set()).add("REAL")
+
+        for row in cargar_pedidos_previstos_filtrados(filters, respetar_incluir=True):
+            id_confeccion = normalizar_codigo_confeccion(row.get("IdConfeccion", row.get("codigo_base_packaging", "")))
+            confeccion = str(row.get("Confección", row.get("confeccion_prevista", "")) or "").strip()
+            key = (
+                row.get("Cultivo", ""), row.get("Campaña", ""), row.get("Grupo varietal", ""),
+                row.get("Variedad Coop", row.get("Variedad", "")), row.get("Calibre", ""), row.get("Categoría", row.get("Categoria", "")),
+                row.get("Marca", ""), id_confeccion, confeccion,
+            )
+            pedidos_map[key] = pedidos_map.get(key, 0.0) + float(row.get("Kg pendiente", row.get("kg_estimados", 0)) or 0)
+            pedidos_origen_map.setdefault(key, set()).add("PREVISTO")
 
         keys = set(commercial_map.keys()) | set(pedidos_map.keys())
         calibre_map = self.get_mcalibres_map()
@@ -1549,8 +1563,13 @@ class PlanningRepository:
                     aviso = "Faltante comercial sin base industrial"
                 if kg_entrada_estimada > 0 and not campo_tiene_desglose and not calibre:
                     aviso = (aviso + " | " if aviso else "") + "Entrada estimada sin desglose por calibre"
+            origenes_demanda = pedidos_origen_map.get(key, set())
             if kg_pendiente <= 0:
                 tipo_linea = "Sobrante comercial" if diff > 0 else "Industrial disponible"
+            elif origenes_demanda == {"PREVISTO"}:
+                tipo_linea = "Pedido previsto"
+            elif "PREVISTO" in origenes_demanda:
+                tipo_linea = "Pedido + previsto"
             else:
                 tipo_linea = "Pedido"
             if tipo_linea == "Sobrante comercial":
@@ -1616,7 +1635,7 @@ class PlanningRepository:
                 "Aviso": aviso,
                 "Variedad stock": " | ".join(sorted(v for v in variedades_stock_industrial if v)),
             })
-        tipo_prioridad = {"Pedido": 0, "Sobrante comercial": 2, "Industrial disponible": 3}
+        tipo_prioridad = {"Pedido": 0, "Pedido + previsto": 0, "Pedido previsto": 1, "Sobrante comercial": 2, "Industrial disponible": 3}
         estado_pedido_prioridad = {"Faltante comercial": 0, "Ajustado": 1, "Cubierto comercialmente": 1, "Sobrante comercial": 1}
         data.sort(
             key=lambda r: (
