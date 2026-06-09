@@ -87,6 +87,8 @@ class ProductionSettingsScreen(ttk.Frame):
         self._line_capacity_config_tree: ttk.Treeview | None = None
         self._line_required_resources_tree: ttk.Treeview | None = None
         self._staff_area_equivalences_tree: ttk.Treeview | None = None
+        self._capacity_productive_notebook: ttk.Notebook | None = None
+        self._capacity_master_actions: dict[str, tuple[str, object, object]] = {}
         self._new_caliber_counter = 1
         self._build_ui()
         self._load_general_settings()
@@ -1765,9 +1767,16 @@ class ProductionSettingsScreen(ttk.Frame):
     def _build_capacity_productive_tab(self, parent: ttk.Frame) -> None:
         parent.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(1, weight=1)
-        self._build_tab_toolbar(parent, help_command=self._show_capacity_productive_help)
+        self._build_tab_toolbar(
+            parent,
+            help_command=self._show_capacity_productive_help,
+            export_command=self._export_active_capacity_master_excel,
+            import_command=self._import_active_capacity_master_excel,
+        )
         inner = ttk.Notebook(parent)
         inner.grid(row=1, column=0, sticky="nsew")
+        self._capacity_productive_notebook = inner
+        self._capacity_master_actions = {}
         specs = [
             ("Familias productivas", "_productive_families_tree", ("id", "codigo", "descripcion", "orden", "activa", "observaciones", "updated_at"), {"id": 40, "codigo": 140, "descripcion": 220, "orden": 70, "activa": 70, "observaciones": 260, "updated_at": 180}, "productive_families", self.service.get_productive_families, self.service.save_productive_families, self.service.reset_productive_families_defaults),
             ("Configuración líneas capacidad", "_line_capacity_config_tree", ("id", "linea_productiva", "familia_productiva", "puesto_productivo_principal", "modo_uso_recursos", "usar_capacidad_agregada", "activa", "observaciones", "updated_at"), {"id": 40, "linea_productiva": 170, "familia_productiva": 140, "puesto_productivo_principal": 190, "modo_uso_recursos": 140, "usar_capacidad_agregada": 160, "activa": 70, "observaciones": 250, "updated_at": 180}, "line_capacity_config", self.service.get_line_capacity_config, self.service.save_line_capacity_config, self.service.reset_line_capacity_config_defaults),
@@ -1779,6 +1788,7 @@ class ProductionSettingsScreen(ttk.Frame):
             frame.grid_columnconfigure(0, weight=1)
             frame.grid_rowconfigure(0, weight=1)
             inner.add(frame, text=title)
+            self._capacity_master_actions[title] = (key, loader, saver)
             self._build_capacity_master_block(frame, title, attr, columns, widths, key, loader, saver, resetter)
 
     def _build_capacity_master_block(self, parent, title, tree_attr, columns, widths, master_key, loader, saver, resetter) -> None:
@@ -1796,22 +1806,20 @@ class ProductionSettingsScreen(ttk.Frame):
         editor = ttk.LabelFrame(parent, text=f"Editar {title}", padding=8)
         editor.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         editor.grid_columnconfigure(1, weight=1)
+        editor.grid_columnconfigure(3, weight=1)
         editor_vars = {col: tk.StringVar(value="") for col in columns if col != "id"}
         for idx, col in enumerate([c for c in columns if c != "id"]):
             ttk.Label(editor, text=col).grid(row=idx // 2, column=(idx % 2) * 2, sticky="w", padx=(0, 8), pady=2)
             ttk.Entry(editor, textvariable=editor_vars[col]).grid(row=idx // 2, column=(idx % 2) * 2 + 1, sticky="ew", padx=(0, 12), pady=2)
         tree._editor_vars = editor_vars  # type: ignore[attr-defined]
         tree.bind("<<TreeviewSelect>>", lambda _e, t=tree, cols=columns: self._on_capacity_master_selected(t, cols))
-        btns = ttk.Frame(parent)
-        btns.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(btns, text="Nuevo", command=lambda t=tree, cols=columns: self._capacity_master_new_row(t, cols)).pack(side="left", padx=3)
-        ttk.Button(btns, text="Aplicar cambios", command=lambda t=tree, cols=columns: self._capacity_master_apply_row(t, cols)).pack(side="left", padx=3)
-        ttk.Button(btns, text="Eliminar", command=lambda t=tree: self._delete_selected(t, "Seleccione un registro para eliminar.")).pack(side="left", padx=3)
-        ttk.Button(btns, text="Guardar cambios", command=lambda t=tree, cols=columns, sv=saver, ld=loader, k=master_key: self._save_capacity_master(t, cols, sv, ld, k)).pack(side="left", padx=3)
-        ttk.Button(btns, text="Restaurar valores por defecto", command=lambda rs=resetter: self._reset_capacity_master(rs)).pack(side="left", padx=3)
-        ttk.Button(btns, text="Exportar Excel", command=lambda k=master_key, ld=loader: self._export_master_excel(k, ld)).pack(side="left", padx=3)
-        ttk.Button(btns, text="Importar Excel", command=lambda k=master_key, sv=saver: self._import_master_excel(k, sv, self._load_capacity_productive_settings)).pack(side="left", padx=3)
-        ttk.Button(btns, text="Descripción de campos", command=self._show_capacity_productive_help).pack(side="left", padx=3)
+        btns = ttk.Frame(editor)
+        btns.grid(row=(len(columns) - 2) // 2 + 1, column=0, columnspan=4, sticky="w", pady=(6, 0))
+        ttk.Button(btns, text="Nuevo", command=lambda t=tree, cols=columns: self._capacity_master_new_row(t, cols)).pack(side="left", padx=4)
+        ttk.Button(btns, text="Aplicar cambios", command=lambda t=tree, cols=columns: self._capacity_master_apply_row(t, cols)).pack(side="left", padx=4)
+        ttk.Button(btns, text="Eliminar", command=lambda t=tree: self._delete_selected(t, "Seleccione un registro para eliminar.")).pack(side="left", padx=4)
+        ttk.Button(btns, text="Guardar cambios", command=lambda t=tree, cols=columns, sv=saver, ld=loader, k=master_key: self._save_capacity_master(t, cols, sv, ld, k)).pack(side="left", padx=4)
+        ttk.Button(btns, text="Restaurar valores por defecto", command=lambda rs=resetter: self._reset_capacity_master(rs)).pack(side="left", padx=4)
 
     def _on_capacity_master_selected(self, tree, columns) -> None:
         if not tree.selection():
@@ -1862,6 +1870,32 @@ class ProductionSettingsScreen(ttk.Frame):
             tree.delete(*tree.get_children())
             for row in loader():
                 tree.insert("", "end", values=[row.get(col, "") for col in columns])
+
+
+    def _get_active_capacity_master_actions(self):
+        if not self._capacity_productive_notebook:
+            return None
+        selected = self._capacity_productive_notebook.select()
+        if not selected:
+            return None
+        title = self._capacity_productive_notebook.tab(selected, "text")
+        return self._capacity_master_actions.get(title)
+
+    def _export_active_capacity_master_excel(self) -> None:
+        actions = self._get_active_capacity_master_actions()
+        if not actions:
+            messagebox.showerror("Capacidad productiva", "Seleccione un maestro de capacidad para exportar.", parent=self)
+            return
+        master_key, loader, _saver = actions
+        self._export_master_excel(master_key, loader)
+
+    def _import_active_capacity_master_excel(self) -> None:
+        actions = self._get_active_capacity_master_actions()
+        if not actions:
+            messagebox.showerror("Capacidad productiva", "Seleccione un maestro de capacidad para importar.", parent=self)
+            return
+        master_key, _loader, saver = actions
+        self._import_master_excel(master_key, saver, self._load_capacity_productive_settings)
 
     def _show_capacity_productive_help(self) -> None:
         show_tab_help(self, title="Descripción de campos - Capacidad productiva", heading="Capacidad productiva", intro="Estos maestros describen la realidad operativa usada por el motor de capacidad sin reglas fijas en código.", help_items=get_help_items(PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP))
