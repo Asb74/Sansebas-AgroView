@@ -11,7 +11,7 @@ from services.production_settings_service import ProductionSettingsService
 from utils.master_excel_io import export_master_to_excel, import_master_from_excel
 from utils.help_dialog import show_tab_help
 from utils.production_master_excel_configs import PRODUCTION_MASTER_EXCEL_CONFIGS
-from utils.production_help_texts import PRODUCTION_CALIBER_FACTORS_HELP, PRODUCTION_CALIBER_FACTORS_HELP_KEYS, PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_LINES_HELP_KEYS, PRODUCTION_PACKAGING_HELP, PRODUCTION_PACKAGING_HELP_KEYS, PRODUCTION_PACKAGING_MAPPING_HELP, PRODUCTION_PACKAGING_MAPPING_HELP_KEYS, PRODUCTION_PENALTIES_HELP, PRODUCTION_PENALTIES_HELP_KEYS, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERFORMANCE_HELP_KEYS, PRODUCTION_PERSONAL_HELP, PRODUCTION_PERSONAL_HELP_KEYS, PRODUCTION_FLOW_STAFFING_HELP, PRODUCTION_FLOW_STAFFING_HELP_KEYS, PRODUCTION_SEMAPHORE_HELP, PRODUCTION_SEMAPHORE_HELP_KEYS, PRODUCTION_RESOURCES_HELP, PRODUCTION_RESOURCES_HELP_KEYS, get_help_items
+from utils.production_help_texts import PRODUCTION_CALIBER_FACTORS_HELP, PRODUCTION_CALIBER_FACTORS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP, PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_LINES_HELP_KEYS, PRODUCTION_PACKAGING_HELP, PRODUCTION_PACKAGING_HELP_KEYS, PRODUCTION_PACKAGING_MAPPING_HELP, PRODUCTION_PACKAGING_MAPPING_HELP_KEYS, PRODUCTION_PENALTIES_HELP, PRODUCTION_PENALTIES_HELP_KEYS, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERFORMANCE_HELP_KEYS, PRODUCTION_PERSONAL_HELP, PRODUCTION_PERSONAL_HELP_KEYS, PRODUCTION_FLOW_STAFFING_HELP, PRODUCTION_FLOW_STAFFING_HELP_KEYS, PRODUCTION_SEMAPHORE_HELP, PRODUCTION_SEMAPHORE_HELP_KEYS, PRODUCTION_RESOURCES_HELP, PRODUCTION_RESOURCES_HELP_KEYS, get_help_items
 from widgets.screen_header import ScreenHeader
 
 
@@ -83,6 +83,10 @@ class ProductionSettingsScreen(ttk.Frame):
         self._resource_feeds_editor_vars: dict[str, tk.Variable] = {}
         self._resource_availability_editor_vars: dict[str, tk.Variable] = {}
         self._caliber_editor_vars: dict[str, tk.Variable] = {}
+        self._productive_families_tree: ttk.Treeview | None = None
+        self._line_capacity_config_tree: ttk.Treeview | None = None
+        self._line_required_resources_tree: ttk.Treeview | None = None
+        self._staff_area_equivalences_tree: ttk.Treeview | None = None
         self._new_caliber_counter = 1
         self._build_ui()
         self._load_general_settings()
@@ -100,6 +104,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._load_penalty_settings()
         self._load_semaphore_settings()
         self._load_caliber_factors_settings()
+        self._load_capacity_productive_settings()
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
@@ -127,6 +132,8 @@ class ProductionSettingsScreen(ttk.Frame):
         notebook.add(lines_tab, text="Máquinas / líneas")
         resources_tab = ttk.Frame(notebook, padding=12)
         notebook.add(resources_tab, text="Recursos y flujos")
+        capacity_tab = ttk.Frame(notebook, padding=12)
+        notebook.add(capacity_tab, text="Capacidad productiva")
         base_packaging_tab = ttk.Frame(notebook, padding=12)
         notebook.add(base_packaging_tab, text="Confecciones base")
         mapping_tab = ttk.Frame(notebook, padding=12)
@@ -146,6 +153,7 @@ class ProductionSettingsScreen(ttk.Frame):
         self._build_packaging_tab(packaging_tab)
         self._build_lines_tab(lines_tab)
         self._build_resources_flows_tab(resources_tab)
+        self._build_capacity_productive_tab(capacity_tab)
         self._build_base_packaging_tab(base_packaging_tab)
         self._build_packaging_mapping_tab(mapping_tab)
         self._build_performance_tab(performance_tab)
@@ -1752,6 +1760,112 @@ class ProductionSettingsScreen(ttk.Frame):
         self.service.save_resource_availability(merged_avail)
         self._load_physical_resources_settings(); self._load_resource_compatibilities_settings(); self._load_resource_feeds_settings(); self._load_resource_availability_settings()
 
+
+
+    def _build_capacity_productive_tab(self, parent: ttk.Frame) -> None:
+        parent.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(1, weight=1)
+        self._build_tab_toolbar(parent, help_command=self._show_capacity_productive_help)
+        inner = ttk.Notebook(parent)
+        inner.grid(row=1, column=0, sticky="nsew")
+        specs = [
+            ("Familias productivas", "_productive_families_tree", ("id", "codigo", "descripcion", "orden", "activa", "observaciones", "updated_at"), {"id": 40, "codigo": 140, "descripcion": 220, "orden": 70, "activa": 70, "observaciones": 260, "updated_at": 180}, "productive_families", self.service.get_productive_families, self.service.save_productive_families, self.service.reset_productive_families_defaults),
+            ("Configuración líneas capacidad", "_line_capacity_config_tree", ("id", "linea_productiva", "familia_productiva", "puesto_productivo_principal", "modo_uso_recursos", "usar_capacidad_agregada", "activa", "observaciones", "updated_at"), {"id": 40, "linea_productiva": 170, "familia_productiva": 140, "puesto_productivo_principal": 190, "modo_uso_recursos": 140, "usar_capacidad_agregada": 160, "activa": 70, "observaciones": 250, "updated_at": 180}, "line_capacity_config", self.service.get_line_capacity_config, self.service.save_line_capacity_config, self.service.reset_line_capacity_config_defaults),
+            ("Recursos requeridos por línea", "_line_required_resources_tree", ("id", "linea_productiva", "recurso_codigo", "obligatorio", "modo_uso", "reparte_kg", "orden", "activo", "observaciones", "updated_at"), {"id": 40, "linea_productiva": 170, "recurso_codigo": 180, "obligatorio": 90, "modo_uso": 110, "reparte_kg": 90, "orden": 70, "activo": 70, "observaciones": 250, "updated_at": 180}, "line_required_resources", self.service.get_line_required_resources, self.service.save_line_required_resources, self.service.reset_line_required_resources_defaults),
+            ("Equivalencias de puestos", "_staff_area_equivalences_tree", ("id", "area_requerida", "area_personal", "prioridad", "activa", "observaciones", "updated_at"), {"id": 40, "area_requerida": 190, "area_personal": 190, "prioridad": 80, "activa": 70, "observaciones": 260, "updated_at": 180}, "staff_area_equivalences", self.service.get_staff_area_equivalences, self.service.save_staff_area_equivalences, self.service.reset_staff_area_equivalences_defaults),
+        ]
+        for title, attr, columns, widths, key, loader, saver, resetter in specs:
+            frame = ttk.Frame(inner, padding=8)
+            frame.grid_columnconfigure(0, weight=1)
+            frame.grid_rowconfigure(0, weight=1)
+            inner.add(frame, text=title)
+            self._build_capacity_master_block(frame, title, attr, columns, widths, key, loader, saver, resetter)
+
+    def _build_capacity_master_block(self, parent, title, tree_attr, columns, widths, master_key, loader, saver, resetter) -> None:
+        tree = ttk.Treeview(parent, columns=columns, show="headings", height=12)
+        for col in columns:
+            tree.heading(col, text=col)
+            tree.column(col, width=widths.get(col, 110), anchor="w")
+        ys = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+        xs = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
+        tree.grid(row=0, column=0, sticky="nsew")
+        ys.grid(row=0, column=1, sticky="ns")
+        xs.grid(row=1, column=0, sticky="ew")
+        setattr(self, tree_attr, tree)
+        editor = ttk.LabelFrame(parent, text=f"Editar {title}", padding=8)
+        editor.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        editor.grid_columnconfigure(1, weight=1)
+        editor_vars = {col: tk.StringVar(value="") for col in columns if col != "id"}
+        for idx, col in enumerate([c for c in columns if c != "id"]):
+            ttk.Label(editor, text=col).grid(row=idx // 2, column=(idx % 2) * 2, sticky="w", padx=(0, 8), pady=2)
+            ttk.Entry(editor, textvariable=editor_vars[col]).grid(row=idx // 2, column=(idx % 2) * 2 + 1, sticky="ew", padx=(0, 12), pady=2)
+        tree._editor_vars = editor_vars  # type: ignore[attr-defined]
+        tree.bind("<<TreeviewSelect>>", lambda _e, t=tree, cols=columns: self._on_capacity_master_selected(t, cols))
+        btns = ttk.Frame(parent)
+        btns.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        ttk.Button(btns, text="Nuevo", command=lambda t=tree, cols=columns: self._capacity_master_new_row(t, cols)).pack(side="left", padx=3)
+        ttk.Button(btns, text="Aplicar cambios", command=lambda t=tree, cols=columns: self._capacity_master_apply_row(t, cols)).pack(side="left", padx=3)
+        ttk.Button(btns, text="Eliminar", command=lambda t=tree: self._delete_selected(t, "Seleccione un registro para eliminar.")).pack(side="left", padx=3)
+        ttk.Button(btns, text="Guardar cambios", command=lambda t=tree, cols=columns, sv=saver, ld=loader, k=master_key: self._save_capacity_master(t, cols, sv, ld, k)).pack(side="left", padx=3)
+        ttk.Button(btns, text="Restaurar valores por defecto", command=lambda rs=resetter: self._reset_capacity_master(rs)).pack(side="left", padx=3)
+        ttk.Button(btns, text="Exportar Excel", command=lambda k=master_key, ld=loader: self._export_master_excel(k, ld)).pack(side="left", padx=3)
+        ttk.Button(btns, text="Importar Excel", command=lambda k=master_key, sv=saver: self._import_master_excel(k, sv, self._load_capacity_productive_settings)).pack(side="left", padx=3)
+        ttk.Button(btns, text="Descripción de campos", command=self._show_capacity_productive_help).pack(side="left", padx=3)
+
+    def _on_capacity_master_selected(self, tree, columns) -> None:
+        if not tree.selection():
+            return
+        vals = tree.item(tree.selection()[0], "values")
+        for idx, col in enumerate(columns):
+            if col == "id":
+                continue
+            tree._editor_vars[col].set(vals[idx] if idx < len(vals) else "")  # type: ignore[attr-defined]
+
+    def _capacity_master_new_row(self, tree, columns) -> None:
+        values = [""] + [tree._editor_vars[col].get() for col in columns if col != "id"]  # type: ignore[attr-defined]
+        tree.insert("", "end", values=values)
+
+    def _capacity_master_apply_row(self, tree, columns) -> None:
+        if not tree.selection():
+            return
+        current = list(tree.item(tree.selection()[0], "values"))
+        values = []
+        for idx, col in enumerate(columns):
+            values.append(current[idx] if col == "id" and idx < len(current) else tree._editor_vars[col].get())  # type: ignore[attr-defined]
+        tree.item(tree.selection()[0], values=values)
+
+    def _save_capacity_master(self, tree, columns, saver, loader, master_key: str) -> None:
+        rows = []
+        for item in tree.get_children():
+            values = tree.item(item, "values")
+            rows.append({col: values[idx] if idx < len(values) else "" for idx, col in enumerate(columns) if col != "id"})
+        saver(rows)
+        self._load_capacity_productive_settings()
+        messagebox.showinfo("Configuración productiva", f"Maestro {master_key} guardado correctamente.", parent=self)
+
+    def _reset_capacity_master(self, resetter) -> None:
+        resetter()
+        self._load_capacity_productive_settings()
+        messagebox.showinfo("Configuración productiva", "Valores por defecto restaurados.", parent=self)
+
+    def _load_capacity_productive_settings(self) -> None:
+        mapping = [
+            (self._productive_families_tree, self.service.get_productive_families, ("id", "codigo", "descripcion", "orden", "activa", "observaciones", "updated_at")),
+            (self._line_capacity_config_tree, self.service.get_line_capacity_config, ("id", "linea_productiva", "familia_productiva", "puesto_productivo_principal", "modo_uso_recursos", "usar_capacidad_agregada", "activa", "observaciones", "updated_at")),
+            (self._line_required_resources_tree, self.service.get_line_required_resources, ("id", "linea_productiva", "recurso_codigo", "obligatorio", "modo_uso", "reparte_kg", "orden", "activo", "observaciones", "updated_at")),
+            (self._staff_area_equivalences_tree, self.service.get_staff_area_equivalences, ("id", "area_requerida", "area_personal", "prioridad", "activa", "observaciones", "updated_at")),
+        ]
+        for tree, loader, columns in mapping:
+            if not tree:
+                continue
+            tree.delete(*tree.get_children())
+            for row in loader():
+                tree.insert("", "end", values=[row.get(col, "") for col in columns])
+
+    def _show_capacity_productive_help(self) -> None:
+        show_tab_help(self, title="Descripción de campos - Capacidad productiva", heading="Capacidad productiva", intro="Estos maestros describen la realidad operativa usada por el motor de capacidad sin reglas fijas en código.", help_items=get_help_items(PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP))
+
     def _build_tab_toolbar(self, parent, help_command, export_command=None, import_command=None):
         bar = ttk.Frame(parent)
         bar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
@@ -1921,6 +2035,10 @@ class ProductionSettingsScreen(ttk.Frame):
             "resource_compatibilities": get_help_items(PRODUCTION_RESOURCES_HELP_KEYS, PRODUCTION_RESOURCES_HELP),
             "resource_feeds": get_help_items(PRODUCTION_RESOURCES_HELP_KEYS, PRODUCTION_RESOURCES_HELP),
             "resource_availability": get_help_items(PRODUCTION_RESOURCES_HELP_KEYS, PRODUCTION_RESOURCES_HELP),
+            "productive_families": get_help_items(PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP),
+            "line_capacity_config": get_help_items(PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP),
+            "line_required_resources": get_help_items(PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP),
+            "staff_area_equivalences": get_help_items(PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP),
         }
         return by_key.get(master_key, [])
 

@@ -282,6 +282,46 @@ DEFAULT_PHYSICAL_RESOURCES = [
 DEFAULT_RESOURCE_COMPATIBILITIES = [("PESADORA_1","tipo_malla","Girsac",1,""),("PESADORA_2","tipo_malla","Girsac",1,""),("PESADORA_3","tipo_malla","Girsac",1,""),("PESADORA_3","tipo_malla","Tradicional",1,""),("PESADORA_4","tipo_malla","Girsac",1,""),("PESADORA_4","tipo_malla","Tradicional",1,"")]
 DEFAULT_RESOURCE_FEEDS = [("COMPACTA","CALIBRADOR_PRINCIPAL",1,0,1,""),("CALIBRADOR_PRINCIPAL","PESADORA_1",4,0,1,""),("CALIBRADOR_PRINCIPAL","PESADORA_2",4,0,1,""),("CALIBRADOR_PRINCIPAL","PESADORA_3",4,0,1,""),("CALIBRADOR_PRINCIPAL","PESADORA_4",4,0,1,""),("COMPACTA","AWETTA",1,0,1,"Awetta puede alimentarse desde compacta cuando está disponible.")]
 DEFAULT_RESOURCE_AVAILABILITY = [("AWETTA","CITRICOS",1,"Libre para apoyo si no hay otros cultivos.",1,""),("AWETTA","MANDARINAS",1,"Libre para apoyo si no hay otros cultivos.",1,""),("AWETTA","CAQUI",0,"Ocupada por caqui / no disponible para apoyo cítricos.",1,""),("AWETTA","FRUTA_HUESO",0,"Ocupada por fruta de hueso.",1,"")]
+
+DEFAULT_PRODUCTIVE_FAMILIES = [
+    {"codigo": "Malla", "descripcion": "Formatos de malla", "orden": 1, "activa": 1, "observaciones": ""},
+    {"codigo": "Encajado", "descripcion": "Formatos encajados", "orden": 2, "activa": 1, "observaciones": ""},
+    {"codigo": "Granel", "descripcion": "Formatos a granel manual", "orden": 3, "activa": 1, "observaciones": ""},
+    {"codigo": "Granelera", "descripcion": "Formatos de granelera", "orden": 4, "activa": 1, "observaciones": ""},
+    {"codigo": "Otros", "descripcion": "Otros formatos productivos", "orden": 99, "activa": 1, "observaciones": ""},
+]
+
+DEFAULT_LINE_CAPACITY_CONFIG = [
+    {"linea_productiva": "ENCAJADO", "familia_productiva": "Encajado", "puesto_productivo_principal": "Encajado", "modo_uso_recursos": "informativo", "usar_capacidad_agregada": 1, "activa": 1, "observaciones": ""},
+    {"linea_productiva": "MALLAS_TRADICIONAL", "familia_productiva": "Malla", "puesto_productivo_principal": "Mallas", "modo_uso_recursos": "informativo", "usar_capacidad_agregada": 1, "activa": 1, "observaciones": ""},
+    {"linea_productiva": "MALLAS_GIRSAC", "familia_productiva": "Malla", "puesto_productivo_principal": "Mallas", "modo_uso_recursos": "informativo", "usar_capacidad_agregada": 1, "activa": 1, "observaciones": ""},
+    {"linea_productiva": "GRANEL_MANUAL", "familia_productiva": "Granel", "puesto_productivo_principal": "Granel manual", "modo_uso_recursos": "informativo", "usar_capacidad_agregada": 1, "activa": 1, "observaciones": ""},
+    {"linea_productiva": "GRANELERA", "familia_productiva": "Granelera", "puesto_productivo_principal": "Granelera", "modo_uso_recursos": "informativo", "usar_capacidad_agregada": 1, "activa": 1, "observaciones": ""},
+]
+
+DEFAULT_LINE_REQUIRED_RESOURCES = [
+    {"linea_productiva": "ENCAJADO", "recurso_codigo": "CALIBRADOR_PRINCIPAL", "obligatorio": 1, "modo_uso": "informativo", "reparte_kg": 0, "orden": 1, "activo": 1, "observaciones": ""},
+    {"linea_productiva": "MALLAS_TRADICIONAL", "recurso_codigo": "CALIBRADOR_PRINCIPAL", "obligatorio": 1, "modo_uso": "informativo", "reparte_kg": 0, "orden": 1, "activo": 1, "observaciones": ""},
+    {"linea_productiva": "MALLAS_TRADICIONAL", "recurso_codigo": "PESADORA_3", "obligatorio": 0, "modo_uso": "informativo", "reparte_kg": 1, "orden": 2, "activo": 1, "observaciones": ""},
+    {"linea_productiva": "MALLAS_TRADICIONAL", "recurso_codigo": "PESADORA_4", "obligatorio": 0, "modo_uso": "informativo", "reparte_kg": 1, "orden": 3, "activo": 1, "observaciones": ""},
+    {"linea_productiva": "MALLAS_GIRSAC", "recurso_codigo": "CALIBRADOR_PRINCIPAL", "obligatorio": 1, "modo_uso": "informativo", "reparte_kg": 0, "orden": 1, "activo": 1, "observaciones": ""},
+    {"linea_productiva": "MALLAS_GIRSAC", "recurso_codigo": "PESADORA_1", "obligatorio": 0, "modo_uso": "informativo", "reparte_kg": 1, "orden": 2, "activo": 1, "observaciones": ""},
+    {"linea_productiva": "MALLAS_GIRSAC", "recurso_codigo": "PESADORA_2", "obligatorio": 0, "modo_uso": "informativo", "reparte_kg": 1, "orden": 3, "activo": 1, "observaciones": ""},
+    {"linea_productiva": "MALLAS_GIRSAC", "recurso_codigo": "PESADORA_3", "obligatorio": 0, "modo_uso": "informativo", "reparte_kg": 1, "orden": 4, "activo": 1, "observaciones": ""},
+    {"linea_productiva": "MALLAS_GIRSAC", "recurso_codigo": "PESADORA_4", "obligatorio": 0, "modo_uso": "informativo", "reparte_kg": 1, "orden": 5, "activo": 1, "observaciones": ""},
+    {"linea_productiva": "GRANEL_MANUAL", "recurso_codigo": "CALIBRADOR_PRINCIPAL", "obligatorio": 1, "modo_uso": "informativo", "reparte_kg": 0, "orden": 1, "activo": 1, "observaciones": ""},
+    {"linea_productiva": "GRANELERA", "recurso_codigo": "CALIBRADOR_PRINCIPAL", "obligatorio": 1, "modo_uso": "informativo", "reparte_kg": 0, "orden": 1, "activo": 1, "observaciones": ""},
+]
+
+DEFAULT_STAFF_AREA_EQUIVALENCES = [
+    {"area_requerida": "Tría", "area_personal": "Tría principal", "prioridad": 1, "activa": 1, "observaciones": ""},
+    {"area_requerida": "Tría", "area_personal": "Tría mallas", "prioridad": 2, "activa": 1, "observaciones": ""},
+    {"area_requerida": "Loteado / paletizado", "area_personal": "Loteado", "prioridad": 1, "activa": 1, "observaciones": ""},
+    {"area_requerida": "Carretillero", "area_personal": "Carretilleros", "prioridad": 1, "activa": 1, "observaciones": ""},
+    {"area_requerida": "Encargado", "area_personal": "Encargados", "prioridad": 1, "activa": 1, "observaciones": ""},
+    {"area_requerida": "Alimentación", "area_personal": "Volcado", "prioridad": 1, "activa": 1, "observaciones": ""},
+]
+
 DEFAULT_STAFF_FLEXIBILITY = [
     ("Encargado", "Carretillero", 1, 1, 0.8, 1, "Cobertura alternativa futura; no suma disponibilidad base."),
     ("Recepción", "Mesas / Encajado", 2, 2, 0.85, 1, "Usar solo con déficit real en mesas/encajado."),
@@ -308,6 +348,10 @@ class ProductionSettingsRepository:
         self.ensure_resource_feeds_defaults()
         self.ensure_resource_availability_defaults()
         self.ensure_staff_flexibility_defaults()
+        self.ensure_productive_families_defaults()
+        self.ensure_line_capacity_config_defaults()
+        self.ensure_line_required_resources_defaults()
+        self.ensure_staff_area_equivalences_defaults()
         self.ensure_flow_staffing_defaults()
 
     def ensure_schema(self) -> None:
@@ -1576,6 +1620,214 @@ class ProductionSettingsRepository:
             for row in rows:
                 conn.execute("INSERT INTO production_resource_availability (recurso_codigo,contexto,disponible,motivo,prioridad,observaciones,updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(recurso_codigo, contexto) DO UPDATE SET disponible=excluded.disponible,motivo=excluded.motivo,prioridad=excluded.prioridad,observaciones=excluded.observaciones,updated_at=excluded.updated_at", (row["recurso_codigo"], row["contexto"], int(row.get("disponible", 1)), row.get("motivo", ""), int(row.get("prioridad", 1)), row.get("observaciones", ""), now))
 
+
+
+    def ensure_productive_families_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS production_productive_families (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    codigo TEXT NOT NULL UNIQUE,
+                    descripcion TEXT,
+                    orden INTEGER NOT NULL DEFAULT 0,
+                    activa INTEGER NOT NULL DEFAULT 1,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+            """)
+
+    def ensure_productive_families_defaults(self) -> None:
+        self.ensure_productive_families_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            for row in DEFAULT_PRODUCTIVE_FAMILIES:
+                conn.execute("""
+                    INSERT INTO production_productive_families (codigo,descripcion,orden,activa,observaciones,updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(codigo) DO NOTHING
+                """, (row["codigo"], row.get("descripcion", ""), int(row.get("orden", 0)), int(row.get("activa", 1)), row.get("observaciones", ""), now))
+
+    def get_productive_families(self, active_only: bool = False) -> list[dict]:
+        self.ensure_productive_families_defaults()
+        sql = "SELECT * FROM production_productive_families"
+        if active_only:
+            sql += " WHERE activa = 1"
+        sql += " ORDER BY orden, id"
+        with get_connection() as conn:
+            return [dict(r) for r in conn.execute(sql).fetchall()]
+
+    def save_productive_families(self, rows: list[dict]) -> None:
+        self.ensure_productive_families_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_productive_families")
+            for row in rows:
+                conn.execute("""
+                    INSERT INTO production_productive_families (codigo,descripcion,orden,activa,observaciones,updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (row["codigo"], row.get("descripcion", ""), int(float(row.get("orden", 0) or 0)), int(row.get("activa", 1) or 0), row.get("observaciones", ""), now))
+
+    def reset_productive_families_defaults(self) -> None:
+        self.ensure_productive_families_schema()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_productive_families")
+        self.ensure_productive_families_defaults()
+
+    def ensure_line_capacity_config_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS production_line_capacity_config (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    linea_productiva TEXT NOT NULL UNIQUE,
+                    familia_productiva TEXT NOT NULL,
+                    puesto_productivo_principal TEXT,
+                    modo_uso_recursos TEXT NOT NULL DEFAULT 'informativo',
+                    usar_capacidad_agregada INTEGER NOT NULL DEFAULT 1,
+                    activa INTEGER NOT NULL DEFAULT 1,
+                    observaciones TEXT,
+                    updated_at TEXT
+                )
+            """)
+
+    def ensure_line_capacity_config_defaults(self) -> None:
+        self.ensure_line_capacity_config_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            for row in DEFAULT_LINE_CAPACITY_CONFIG:
+                conn.execute("""
+                    INSERT INTO production_line_capacity_config (linea_productiva,familia_productiva,puesto_productivo_principal,modo_uso_recursos,usar_capacidad_agregada,activa,observaciones,updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(linea_productiva) DO NOTHING
+                """, (row["linea_productiva"], row["familia_productiva"], row.get("puesto_productivo_principal", ""), row.get("modo_uso_recursos", "informativo"), int(row.get("usar_capacidad_agregada", 1)), int(row.get("activa", 1)), row.get("observaciones", ""), now))
+
+    def get_line_capacity_config(self, active_only: bool = False) -> list[dict]:
+        self.ensure_line_capacity_config_defaults()
+        sql = "SELECT * FROM production_line_capacity_config"
+        if active_only:
+            sql += " WHERE activa = 1"
+        sql += " ORDER BY linea_productiva"
+        with get_connection() as conn:
+            return [dict(r) for r in conn.execute(sql).fetchall()]
+
+    def save_line_capacity_config(self, rows: list[dict]) -> None:
+        self.ensure_line_capacity_config_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_line_capacity_config")
+            for row in rows:
+                conn.execute("""
+                    INSERT INTO production_line_capacity_config (linea_productiva,familia_productiva,puesto_productivo_principal,modo_uso_recursos,usar_capacidad_agregada,activa,observaciones,updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (row["linea_productiva"], row.get("familia_productiva", ""), row.get("puesto_productivo_principal", ""), row.get("modo_uso_recursos", "informativo"), int(row.get("usar_capacidad_agregada", 1) or 0), int(row.get("activa", 1) or 0), row.get("observaciones", ""), now))
+
+    def reset_line_capacity_config_defaults(self) -> None:
+        self.ensure_line_capacity_config_schema()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_line_capacity_config")
+        self.ensure_line_capacity_config_defaults()
+
+    def ensure_line_required_resources_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS production_line_required_resources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    linea_productiva TEXT NOT NULL,
+                    recurso_codigo TEXT NOT NULL,
+                    obligatorio INTEGER NOT NULL DEFAULT 1,
+                    modo_uso TEXT NOT NULL DEFAULT 'informativo',
+                    reparte_kg INTEGER NOT NULL DEFAULT 0,
+                    orden INTEGER NOT NULL DEFAULT 0,
+                    activo INTEGER NOT NULL DEFAULT 1,
+                    observaciones TEXT,
+                    updated_at TEXT,
+                    UNIQUE(linea_productiva, recurso_codigo)
+                )
+            """)
+
+    def ensure_line_required_resources_defaults(self) -> None:
+        self.ensure_line_required_resources_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            for row in DEFAULT_LINE_REQUIRED_RESOURCES:
+                conn.execute("""
+                    INSERT INTO production_line_required_resources (linea_productiva,recurso_codigo,obligatorio,modo_uso,reparte_kg,orden,activo,observaciones,updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(linea_productiva, recurso_codigo) DO NOTHING
+                """, (row["linea_productiva"], row["recurso_codigo"], int(row.get("obligatorio", 1)), row.get("modo_uso", "informativo"), int(row.get("reparte_kg", 0)), int(row.get("orden", 0)), int(row.get("activo", 1)), row.get("observaciones", ""), now))
+
+    def get_line_required_resources(self, active_only: bool = False) -> list[dict]:
+        self.ensure_line_required_resources_defaults()
+        sql = "SELECT * FROM production_line_required_resources"
+        if active_only:
+            sql += " WHERE activo = 1"
+        sql += " ORDER BY linea_productiva, orden, id"
+        with get_connection() as conn:
+            return [dict(r) for r in conn.execute(sql).fetchall()]
+
+    def save_line_required_resources(self, rows: list[dict]) -> None:
+        self.ensure_line_required_resources_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_line_required_resources")
+            for row in rows:
+                conn.execute("""
+                    INSERT INTO production_line_required_resources (linea_productiva,recurso_codigo,obligatorio,modo_uso,reparte_kg,orden,activo,observaciones,updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (row["linea_productiva"], row["recurso_codigo"], int(row.get("obligatorio", 1) or 0), row.get("modo_uso", "informativo"), int(row.get("reparte_kg", 0) or 0), int(float(row.get("orden", 0) or 0)), int(row.get("activo", 1) or 0), row.get("observaciones", ""), now))
+
+    def reset_line_required_resources_defaults(self) -> None:
+        self.ensure_line_required_resources_schema()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_line_required_resources")
+        self.ensure_line_required_resources_defaults()
+
+    def ensure_staff_area_equivalences_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS production_staff_area_equivalences (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    area_requerida TEXT NOT NULL,
+                    area_personal TEXT NOT NULL,
+                    prioridad INTEGER NOT NULL DEFAULT 1,
+                    activa INTEGER NOT NULL DEFAULT 1,
+                    observaciones TEXT,
+                    updated_at TEXT,
+                    UNIQUE(area_requerida, area_personal)
+                )
+            """)
+
+    def ensure_staff_area_equivalences_defaults(self) -> None:
+        self.ensure_staff_area_equivalences_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            for row in DEFAULT_STAFF_AREA_EQUIVALENCES:
+                conn.execute("""
+                    INSERT INTO production_staff_area_equivalences (area_requerida,area_personal,prioridad,activa,observaciones,updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(area_requerida, area_personal) DO NOTHING
+                """, (row["area_requerida"], row["area_personal"], int(row.get("prioridad", 1)), int(row.get("activa", 1)), row.get("observaciones", ""), now))
+
+    def get_staff_area_equivalences(self, active_only: bool = False) -> list[dict]:
+        self.ensure_staff_area_equivalences_defaults()
+        sql = "SELECT * FROM production_staff_area_equivalences"
+        if active_only:
+            sql += " WHERE activa = 1"
+        sql += " ORDER BY area_requerida, prioridad, id"
+        with get_connection() as conn:
+            return [dict(r) for r in conn.execute(sql).fetchall()]
+
+    def save_staff_area_equivalences(self, rows: list[dict]) -> None:
+        self.ensure_staff_area_equivalences_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_staff_area_equivalences")
+            for row in rows:
+                conn.execute("""
+                    INSERT INTO production_staff_area_equivalences (area_requerida,area_personal,prioridad,activa,observaciones,updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """, (row["area_requerida"], row["area_personal"], int(float(row.get("prioridad", 1) or 1)), int(row.get("activa", 1) or 0), row.get("observaciones", ""), now))
+
+    def reset_staff_area_equivalences_defaults(self) -> None:
+        self.ensure_staff_area_equivalences_schema()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM production_staff_area_equivalences")
+        self.ensure_staff_area_equivalences_defaults()
 
     def ensure_staff_flexibility_schema(self) -> None:
         with get_connection() as conn:

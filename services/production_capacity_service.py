@@ -15,32 +15,8 @@ logger = logging.getLogger(__name__)
 
 class ProductionCapacityService:
     PEDIDOS_PREVISTOS_PATH = PEDIDOS_PREVISTOS_JSON_PATH
-    FAMILIES = ["Malla", "Encajado", "Granel", "Granelera", "Otros"]
     RESOURCE_USAGE_INFORMATIVE = "informative"
     RESOURCE_USAGE_RESTRICTIVE = "restrictive"
-    DEFAULT_RESOURCE_USAGE_MODE_BY_LINE = {
-        "MALLAS_TRADICIONAL": RESOURCE_USAGE_INFORMATIVE,
-        "MALLAS_GIRSAC": RESOURCE_USAGE_INFORMATIVE,
-    }
-    # Diseño mínimo hasta añadir un campo configurable en el maestro de Dotación flujos.
-    # La capacidad_kg_h_referencia de Máquinas / líneas se interpreta como kg/h/persona
-    # del puesto productivo principal, no como kg/h de línea completa ni de máquina.
-    DEFAULT_MAIN_PRODUCTIVE_STAFF_AREA_BY_LINE = {
-        "ENCAJADO": "Encajado",
-        "MALLAS_TRADICIONAL": "Mallas",
-        "MALLAS_GIRSAC": "Mallas",
-        "GRANEL_MANUAL": "Granel manual",
-        "GRANELERA": "Granelera",
-    }
-    # Equivalencias estrictas de puesto para resolver nombres operativos del flujo
-    # contra el maestro de Personal sin convertir el tipo_personal en bolsa de personas.
-    # Ejemplo: Tría puede estar dada de alta de forma más específica como Tría principal
-    # o Tría mallas, pero nunca debe caer a todo el personal Directo.
-    STAFF_AREA_EQUIVALENCES = {
-        "tria": ("tria", "tria principal", "tria mallas"),
-        "tria principal": ("tria principal", "tria"),
-        "tria mallas": ("tria mallas", "tria"),
-    }
     # Maestro futuro: production_staff_flexibility. En esta fase solo se carga/documenta
     # para diseñar coberturas alternativas posteriores. Cuando se active, deberá cubrir
     # déficits de target_area con sobrantes reales de source_area, consumir esas personas
@@ -68,6 +44,10 @@ class ProductionCapacityService:
             "resource_compatibilities": self.prod_repo.get_resource_compatibilities(),
             "resource_feeds": self.prod_repo.get_resource_feeds(),
             "resource_availability": self.prod_repo.get_resource_availability(),
+            "productive_families": self.prod_repo.get_productive_families(active_only=True),
+            "line_capacity_config": self.prod_repo.get_line_capacity_config(active_only=True),
+            "line_required_resources": self.prod_repo.get_line_required_resources(active_only=True),
+            "staff_area_equivalences": self.prod_repo.get_staff_area_equivalences(active_only=True),
             "staff_flexibility": self.prod_repo.get_staff_flexibility(),
             "semaphore_rules": self.prod_repo.get_semaphore_rules(),
             "general_settings": self.prod_repo.get_general_settings(),
@@ -185,8 +165,11 @@ class ProductionCapacityService:
                     main_staff_match == "equivalence",
                 )
                 main_staff_real = main_staff_available
-                if not main_staff_area:
-                    incidencias.append(self._inc("Puesto principal no configurado", order, f"Línea {linea} sin puesto productivo principal resoluble en dotación flujos", "Configurar puesto principal de la línea en Dotación flujos"))
+                capacity_issue = str(main_staff.get("_capacity_issue", "") or "")
+                if capacity_issue:
+                    incidencias.append(self._inc(capacity_issue, order, f"Línea {linea}: {capacity_issue}", "Configurar la línea en Capacidad productiva"))
+                elif not main_staff_area:
+                    incidencias.append(self._inc("Línea sin puesto productivo principal", order, f"Línea {linea} sin puesto productivo principal", "Configurar puesto productivo principal en Capacidad productiva"))
                 elif main_staff_match == "none":
                     incidencias.append(self._inc("Puesto principal sin disponibilidad exacta", order, f"Línea {linea} / {main_staff_area} no existe en maestro Personal", "Configurar disponibilidad exacta del puesto principal en Personal"))
                 elif main_staff_available <= 0:
@@ -254,7 +237,8 @@ class ProductionCapacityService:
 
         staffing_by_family = self._staffing_estimate_by_family(mapped, staffing_rows or []) if staffing_rows is not None else {}
         rows = []
-        for fam in self.FAMILIES:
+        families = self._productive_family_names(inputs, by.keys())
+        for fam in families:
             d = by[fam]
             horas_disp = self._family_hours_available(d["lineas"], inputs)
             occ = (d["horas"] / horas_disp * 100.0) if horas_disp > 0 else 0
@@ -336,6 +320,7 @@ class ProductionCapacityService:
 
     def calculate_staffing_requirements(self, capacity_result: dict) -> dict:
         inputs = capacity_result.get("inputs", {})
+        self._current_capacity_inputs = inputs
         line_rows = capacity_result.get("line_rows", [])
         line_occ = {str(r.get("Línea productiva", "")).strip(): float(r.get("Ocupación %", 0) or 0) for r in line_rows}
         used_lines = {line for line, occ in line_occ.items() if line}
@@ -465,84 +450,84 @@ class ProductionCapacityService:
         kg = float(productive_mapping.get("kg", 0) or 0)
         tipo_malla = str(productive_mapping.get("tipo_malla", "") or "").strip()
         resource_index = {str(r.get("codigo", "") or "").strip(): r for r in inputs.get("physical_resources", [])}
+        line = str(line_code or "").strip()
+        configured_rows = [
+            row for row in inputs.get("line_required_resources", [])
+            if str(row.get("linea_productiva", "") or "").strip() == line
+            and int(row.get("activo", 1) or 0) == 1
+        ]
+        configured_rows.sort(key=lambda r: (int(r.get("orden", 0) or 0), str(r.get("recurso_codigo", "") or "")))
+        if not configured_rows:
+            return [{
+                "codigo": line,
+                "tipo_recurso": "No configurado",
+                "familia_operativa": "",
+                "capacidad_kg_h": 0,
+                "numero_unidades": 0,
+                "personal_minimo": 0,
+                "personal_optimo": 0,
+                "activo": 0,
+                "linea_productiva": line,
+                "kg_asignados": 0.0,
+                "_incidencias": [{"tipo": "Línea sin recursos requeridos configurados", "motivo": f"Línea {line or 'VACÍA'} sin recursos requeridos activos en production_line_required_resources", "accion": "Configurar recursos requeridos por línea en Capacidad productiva"}],
+                "_solo_incidencia": True,
+            }]
 
-        line_upper = str(line_code or "").strip().upper()
-        candidates = {
-            "MALLAS_TRADICIONAL": ["CALIBRADOR_PRINCIPAL", "PESADORA_3", "PESADORA_4"],
-            "MALLAS_GIRSAC": ["CALIBRADOR_PRINCIPAL", "PESADORA_1", "PESADORA_2", "PESADORA_3", "PESADORA_4"],
-            "ENCAJADO": ["CALIBRADOR_PRINCIPAL", "ENCAJADO", "FINAL_LINEA"],
-            "GRANEL_MANUAL": ["CALIBRADOR_PRINCIPAL", "GRANEL_MANUAL"],
-            "GRANELERA": ["CALIBRADOR_PRINCIPAL", "GRANELERA_1", "GRANELERA_2"],
-        }.get(line_upper, ["CALIBRADOR_PRINCIPAL", line_code])
-
-        compatible_codes = []
-        non_split_codes = []
-        configured_related_codes = []
-        compatibility_rules_found = False
+        split_codes = []
+        fixed_codes = []
         rows_by_code: dict[str, dict] = {}
-        for code in candidates:
+        compatibility_rules_found = False
+        for cfg in configured_rows:
+            code = str(cfg.get("recurso_codigo", "") or "").strip()
+            if not code:
+                continue
             row = dict(resource_index.get(code, {}))
             incidencias = []
             if not row:
                 row = {"codigo": code, "tipo_recurso": "No configurado", "familia_operativa": "", "capacidad_kg_h": 0, "numero_unidades": 0, "personal_minimo": 0, "personal_optimo": 0, "activo": 0}
-                incidencias.append({"tipo": "Recurso físico no configurado", "motivo": f"Recurso {code} no existe en production_physical_resources", "accion": "Configurar recurso físico o ajustar regla de asignación"})
-            else:
-                configured_related_codes.append(code)
-                if int(row.get("activo", 0) or 0) != 1:
-                    incidencias.append({"tipo": "Recurso inactivo", "motivo": f"Recurso {code} inactivo", "accion": "Activar recurso o reasignar carga"})
+                incidencias.append({"tipo": "Recurso físico no configurado", "motivo": f"Recurso {code} no existe en production_physical_resources", "accion": "Configurar recurso físico o ajustar Recursos requeridos por línea"})
+            elif int(row.get("activo", 0) or 0) != 1:
+                incidencias.append({"tipo": "Recurso inactivo", "motivo": f"Recurso {code} inactivo", "accion": "Activar recurso o reasignar carga"})
 
+            include = True
             if str(row.get("tipo_recurso", "")).strip().lower() == "pesadora" or code.startswith("PESADORA_"):
                 if self._resource_has_compatibility_rule(code, "tipo_malla", tipo_malla, inputs):
                     compatibility_rules_found = True
                 if self._is_resource_compatible(code, "tipo_malla", tipo_malla, inputs):
-                    compatible_codes.append(code)
+                    pass
                 else:
                     incidencias.append({"tipo": "Recurso no compatible", "motivo": f"{code} no compatible con tipo_malla={tipo_malla or 'VACÍO'}", "accion": "Revisar compatibilidades de recursos"})
-                    # No incluir pesadoras no compatibles en el cálculo operativo.
-                    rows_by_code[code] = {"row": row, "incidencias": incidencias, "include": False}
-                    continue
-            else:
-                non_split_codes.append(code)
+                    include = False
 
             availability_issue = self._resource_availability_issue(code, inputs)
             if availability_issue:
                 incidencias.append(availability_issue)
-            rows_by_code[code] = {"row": row, "incidencias": incidencias, "include": True}
+            if int(cfg.get("reparte_kg", 0) or 0) == 1:
+                split_codes.append(code)
+            else:
+                fixed_codes.append(code)
+            rows_by_code[code] = {"row": row, "incidencias": incidencias, "include": include, "config": cfg}
 
-        if not configured_related_codes:
-            fallback_row = {"codigo": line_code, "tipo_recurso": "No configurado", "familia_operativa": "", "capacidad_kg_h": 0, "numero_unidades": 0, "personal_minimo": 0, "personal_optimo": 0, "activo": 0}
-            rows_by_code[line_code] = {"row": fallback_row, "incidencias": [{"tipo": "Sin recursos físicos relacionados", "motivo": f"No existe ningún recurso físico relacionado con {line_code}", "accion": "Configurar recursos físicos relacionados en Recursos y flujos"}], "include": False}
-        if tipo_malla and compatible_codes == [] and any(code.startswith("PESADORA_") for code in candidates) and not compatibility_rules_found:
-            fallback_code = f"{line_code}:tipo_malla"
+        if tipo_malla and split_codes and not any(rows_by_code[c].get("include") for c in split_codes) and not compatibility_rules_found:
+            fallback_code = f"{line}:tipo_malla"
             fallback_row = {"codigo": fallback_code, "tipo_recurso": "Compatibilidad", "familia_operativa": "", "capacidad_kg_h": 0, "numero_unidades": 0, "personal_minimo": 0, "personal_optimo": 0, "activo": 0}
-            rows_by_code[fallback_code] = {"row": fallback_row, "incidencias": [{"tipo": "Tipo malla sin compatibilidad", "motivo": f"tipo_malla={tipo_malla} no tiene ninguna compatibilidad definida", "accion": "Definir compatibilidades en Recursos y flujos"}], "include": False}
+            rows_by_code[fallback_code] = {"row": fallback_row, "incidencias": [{"tipo": "Tipo malla sin compatibilidad", "motivo": f"tipo_malla={tipo_malla} no tiene ninguna compatibilidad definida", "accion": "Definir compatibilidades en Recursos y flujos"}], "include": False, "config": {}}
 
         out: list[dict] = []
-        active_compatible = [code for code in compatible_codes if int(rows_by_code[code]["row"].get("activo", 0) or 0) == 1]
-        split_kg = kg / len(active_compatible) if active_compatible else 0.0
-        for code in non_split_codes + compatible_codes:
+        active_split = [code for code in split_codes if rows_by_code.get(code, {}).get("include") and int(rows_by_code[code]["row"].get("activo", 0) or 0) == 1]
+        split_kg = kg / len(active_split) if active_split else 0.0
+        for code in fixed_codes + split_codes:
             payload = rows_by_code.get(code)
             if not payload or not payload.get("include"):
                 continue
             row = dict(payload["row"])
-            assigned_kg = split_kg if code in compatible_codes else kg
-            out.append({
-                **row,
-                "linea_productiva": line_code,
-                "kg_asignados": assigned_kg,
-                "_incidencias": list(payload["incidencias"]),
-            })
+            assigned_kg = split_kg if code in split_codes else kg
+            out.append({**row, "linea_productiva": line, "kg_asignados": assigned_kg, "_incidencias": list(payload["incidencias"])})
         for code, payload in rows_by_code.items():
             if payload.get("include"):
                 continue
             for inc in payload.get("incidencias", []):
-                out.append({
-                    **payload["row"],
-                    "linea_productiva": line_code,
-                    "kg_asignados": 0.0,
-                    "_incidencias": [inc],
-                    "_solo_incidencia": True,
-                })
+                out.append({**payload["row"], "linea_productiva": line, "kg_asignados": 0.0, "_incidencias": [inc], "_solo_incidencia": True})
         return out
 
     def calculate_resource_capacity_usage(self, resource_rows: list[dict], kg: float, horas_utiles_dia: float, usage_mode: str | None = None) -> list[dict]:
@@ -633,28 +618,24 @@ class ProductionCapacityService:
 
 
     def _main_productive_staffing_for_line(self, line_code: str, inputs: dict) -> dict:
-        """Return the active staffing row that drives kg/h/person capacity for a line.
-
-        Current flow staffing schema has no explicit configurable flag for the
-        principal productive station. Prefer exact configured area names from the
-        active flow staffing master and keep the fallback mapping centralized so
-        it can be replaced by a future master column without changing formulas.
-        """
         line = str(line_code or "").strip()
         if not line:
             return {}
-        expected_area = self.DEFAULT_MAIN_PRODUCTIVE_STAFF_AREA_BY_LINE.get(line.upper(), "")
+        capacity_cfg = self._line_capacity_cfg(line, inputs)
+        expected_area = str(capacity_cfg.get("puesto_productivo_principal", "") or "").strip() if capacity_cfg else ""
+        if not capacity_cfg:
+            return {"_capacity_issue": "Línea sin configuración de capacidad"}
+        if not expected_area:
+            return {"_capacity_issue": "Línea sin puesto productivo principal"}
         expected_norm = self._normalize_staff_name(expected_area)
-        active_rows = [
-            row for row in inputs.get("flow_staffing", [])
-            if str(row.get("linea_productiva", "") or "").strip() == line
-            and int(row.get("activo", 1) or 0) == 1
-        ]
-        if expected_norm:
-            for row in active_rows:
-                if self._normalize_staff_name(str(row.get("area_puesto", "") or "")) == expected_norm:
-                    return row
-        return {}
+        for row in inputs.get("flow_staffing", []):
+            if str(row.get("linea_productiva", "") or "").strip() != line:
+                continue
+            if int(row.get("activo", 1) or 0) != 1:
+                continue
+            if self._normalize_staff_name(str(row.get("area_puesto", "") or "")) == expected_norm:
+                return row
+        return {"area_puesto": expected_area, "minimo": 0, "optimo": 0, "_capacity_issue": "Puesto principal no existe en dotación flujos"}
 
     def _staff_availability_indexes(self, inputs: dict) -> tuple[dict[str, int], dict[str, str], dict[str, str]]:
         area_availability: dict[str, int] = {}
@@ -680,7 +661,7 @@ class ProductionCapacityService:
         area_norm = self._normalize_staff_name(area)
         if area_norm in area_type:
             return area_type[area_norm], "area"
-        for equivalent_norm in self._staff_equivalent_names(area_norm):
+        for equivalent_norm in self._staff_equivalent_names(area_norm, getattr(self, "_current_capacity_inputs", None)):
             if equivalent_norm != area_norm and equivalent_norm in area_type:
                 return area_type[equivalent_norm], "equivalence"
         # tipo_personal clasifica/resume el puesto requerido, pero no asigna
@@ -693,7 +674,7 @@ class ProductionCapacityService:
         if area_norm in area_availability:
             return area_availability[area_norm], "area", area_names.get(area_norm, area_norm)
         equivalent_matches = [
-            norm for norm in self._staff_equivalent_names(area_norm)
+            norm for norm in self._staff_equivalent_names(area_norm, getattr(self, "_current_capacity_inputs", None))
             if norm != area_norm and norm in area_availability
         ]
         if equivalent_matches:
@@ -702,25 +683,29 @@ class ProductionCapacityService:
             return available, "equivalence", matched
         return 0, "none", ""
 
-    def _staff_equivalent_names(self, area_norm: str) -> tuple[str, ...]:
+    def _staff_equivalent_names(self, area_norm: str, inputs: dict | None = None) -> tuple[str, ...]:
         if not area_norm:
             return ()
-        return self.STAFF_AREA_EQUIVALENCES.get(area_norm, (area_norm,))
+        if inputs is None:
+            return (area_norm,)
+        equivalents = [area_norm]
+        for row in inputs.get("staff_area_equivalences", []):
+            if int(row.get("activa", 1) or 0) != 1:
+                continue
+            required_norm = self._normalize_staff_name(str(row.get("area_requerida", "") or ""))
+            if required_norm != area_norm:
+                continue
+            personal_norm = self._normalize_staff_name(str(row.get("area_personal", "") or ""))
+            if personal_norm and personal_norm not in equivalents:
+                equivalents.append(personal_norm)
+        return tuple(equivalents)
 
     def _normalize_staff_name(self, value: str) -> str:
         text = unicodedata.normalize("NFKD", str(value or ""))
         text = "".join(ch for ch in text if not unicodedata.combining(ch))
         text = text.lower().replace("/", " ")
         text = re.sub(r"[^a-z0-9]+", " ", text)
-        synonyms = {
-            "alimentacion": "volcado",
-            "calibradores": "calibrador",
-            "carretilleros": "carretillero",
-            "encargados": "encargado",
-            "paletizacion": "loteado",
-            "paletizado": "loteado",
-        }
-        tokens = [synonyms.get(token, token) for token in text.split()]
+        tokens = text.split()
         deduped_tokens = list(dict.fromkeys(tokens))
         return " ".join(deduped_tokens).strip()
 
@@ -776,6 +761,21 @@ class ProductionCapacityService:
                 return {"tipo": "Recurso no disponible por contexto", "motivo": f"{recurso_codigo}: {motivo}", "accion": "Revisar disponibilidad del recurso o el contexto de planificación"}
         return None
 
+
+    def _productive_family_names(self, inputs: dict, observed: object) -> list[str]:
+        families = [str(r.get("codigo", "") or "").strip() for r in inputs.get("productive_families", []) if int(r.get("activa", 1) or 0) == 1 and str(r.get("codigo", "") or "").strip()]
+        for fam in observed:
+            if fam and fam not in families:
+                families.append(str(fam))
+        return families
+
+    def _line_capacity_cfg(self, line_code: str, inputs: dict) -> dict:
+        target = str(line_code or "").strip()
+        for row in inputs.get("line_capacity_config", []):
+            if str(row.get("linea_productiva", "") or "").strip() == target and int(row.get("activa", 1) or 0) == 1:
+                return row
+        return {}
+
     def _normalize_resource_usage_mode(self, mode: str | None) -> str:
         value = str(mode or "").strip().lower()
         if value in {self.RESOURCE_USAGE_INFORMATIVE, "informativo"}:
@@ -785,13 +785,10 @@ class ProductionCapacityService:
         return self.RESOURCE_USAGE_RESTRICTIVE
 
     def _resource_usage_mode(self, line_code: str, inputs: dict) -> str:
-        cfg = self._line_cfg(line_code, inputs)
-        configured = cfg.get("resource_usage_mode", cfg.get("modo_uso_recursos", "")) if cfg else ""
+        cfg = self._line_capacity_cfg(line_code, inputs)
+        configured = cfg.get("modo_uso_recursos", "") if cfg else ""
         if str(configured or "").strip():
             return self._normalize_resource_usage_mode(str(configured))
-        if self._line_has_valid_aggregate_capacity(cfg):
-            default = self.DEFAULT_RESOURCE_USAGE_MODE_BY_LINE.get(str(line_code or "").strip().upper(), self.RESOURCE_USAGE_RESTRICTIVE)
-            return self._normalize_resource_usage_mode(default)
         return self.RESOURCE_USAGE_RESTRICTIVE
 
     def _line_has_valid_aggregate_capacity(self, cfg: dict) -> bool:
