@@ -2,17 +2,16 @@ from __future__ import annotations
 
 from collections import defaultdict
 from math import ceil
-from pathlib import Path
-import json
 import re
 import unicodedata
 
 from db.production_settings_repository import ProductionSettingsRepository
 from services.planning_service import PlanningService
+from services.pedidos_previstos_service import PEDIDOS_PREVISTOS_PATH as PEDIDOS_PREVISTOS_JSON_PATH, cargar_pedidos_previstos_filtrados
 
 
 class ProductionCapacityService:
-    PEDIDOS_PREVISTOS_PATH = Path("runtime_config/pedidos_previstos.json")
+    PEDIDOS_PREVISTOS_PATH = PEDIDOS_PREVISTOS_JSON_PATH
     FAMILIES = ["Malla", "Encajado", "Granel", "Granelera", "Otros"]
     RESOURCE_USAGE_INFORMATIVE = "informative"
     RESOURCE_USAGE_RESTRICTIVE = "restrictive"
@@ -659,12 +658,7 @@ class ProductionCapacityService:
         return numero_maquinas > 0 and cap_ref > 0
 
     def _load_forecast_orders(self, filters: dict) -> list[dict]:
-        if not self.PEDIDOS_PREVISTOS_PATH.exists():
-            return []
-        payload = json.loads(self.PEDIDOS_PREVISTOS_PATH.read_text(encoding="utf-8"))
-        if not payload.get("incluir_en_simulacion", True):
-            return []
-        return [r for r in payload.get("pedidos", []) if str(r.get("estado", "")).upper() != "DESCARTADO"]
+        return cargar_pedidos_previstos_filtrados(filters, respetar_incluir=True)
 
     def _line_cfg(self, code: str, inputs: dict) -> dict:
         return next((r for r in inputs["lines"] if str(r.get("codigo", "")).strip() == code), {})

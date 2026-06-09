@@ -12,6 +12,13 @@ import unicodedata
 from services.operational_quality_service import OperationalQualityService
 from services.planning_service import PlanningService
 from services.production_settings_service import ProductionSettingsService
+from services.pedidos_previstos_service import (
+    PEDIDOS_PREVISTOS_PATH,
+    cargar_pedidos_previstos,
+    guardar_pedidos_previstos,
+    pedido_previsto_a_demanda,
+    filtrar_pedidos_previstos,
+)
 from db.planning_repository import PlanningRepository
 from widgets.data_table import DataTable
 from widgets.date_picker import DatePickerPopup
@@ -68,7 +75,6 @@ logger = logging.getLogger(__name__)
 
 PRIORIDADES_PEDIDOS_PATH = Path("runtime_config/prioridades_pedidos.json")
 COMPATIBILIDADES_OPERATIVAS_PATH = Path("runtime_config/compatibilidades_operativas.json")
-PEDIDOS_PREVISTOS_PATH = Path("runtime_config/pedidos_previstos.json")
 _planning_service = PlanningService()
 _production_settings_service = ProductionSettingsService()
 SIMULACION_PERMITIR_SOLAPE_PARCIAL = True
@@ -76,88 +82,16 @@ SIMULACION_USAR_FACTOR_CALIBRE_AGRUPADO = True
 SIMULACION_USAR_STOCK_COMPLETO_CALIBRE_ADMITIDO = False
 
 
-def _default_pedidos_previstos_payload() -> dict:
-    return {"incluir_en_simulacion": True, "pedidos": []}
-
-
 def _cargar_pedidos_previstos() -> dict:
-    payload = _default_pedidos_previstos_payload()
-    try:
-        if not PEDIDOS_PREVISTOS_PATH.exists():
-            return payload
-        raw = json.loads(PEDIDOS_PREVISTOS_PATH.read_text(encoding="utf-8")) or {}
-        payload["incluir_en_simulacion"] = bool(raw.get("incluir_en_simulacion", True))
-        payload["pedidos"] = list(raw.get("pedidos", []))
-    except Exception:
-        logger.exception("No se pudieron cargar pedidos previstos")
-    logger.info("Pedidos previstos cargados: %s", len(payload["pedidos"]))
-    return payload
+    return cargar_pedidos_previstos()
 
 
 def _guardar_pedidos_previstos(payload: dict) -> None:
-    PEDIDOS_PREVISTOS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PEDIDOS_PREVISTOS_PATH.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    guardar_pedidos_previstos(payload)
 
 
 def _pedido_previsto_a_simulacion(p: dict, cultivo_actual: str = "", campana_actual: str = "", empresa_actual: str = "") -> dict:
-    kg = _to_float(p.get("kg_estimados", 0))
-    cultivo = str(p.get("cultivo", p.get("Cultivo", "")) or "").strip() or str(cultivo_actual or "").strip()
-    campana = str(p.get("campana", p.get("Campaña", p.get("Campana", ""))) or "").strip() or str(campana_actual or "").strip()
-    empresa = str(p.get("empresa", p.get("EMPRESA", p.get("Empresa", ""))) or "").strip() or str(empresa_actual or "").strip()
-    grupo_confeccion = str(p.get("grupo_confeccion", p.get("Grupo confección", p.get("GrupoConfeccion", ""))) or "").strip()
-    perfil_confeccion = str(p.get("perfil_confeccion", p.get("Perfil confección", "")) or "").strip()
-    fecha_salida = str(p.get("fecha_salida", p.get("Fecha salida", p.get("FechaSalida", ""))) or "").strip()
-    semana = ""
-    fecha_dt = _parse_fecha_salida(fecha_salida)
-    if fecha_dt:
-        iso = fecha_dt.isocalendar()
-        semana = f"{iso.year}-W{iso.week:02d}"
-    logger.info(
-        "Pedido previsto normalizado filtros cultivo=%s campana=%s empresa=%s id=%s variedad=%s grupo=%s calibre=%s kg=%s",
-        cultivo,
-        campana,
-        empresa,
-        p.get("id_previsto", ""),
-        p.get("variedad", ""),
-        p.get("grupo_varietal", ""),
-        p.get("calibre", ""),
-        kg,
-    )
-    return {
-        "IdPedidoLora": p.get("id_previsto", ""),
-        "Fecha salida": fecha_salida,
-        "FechaSalida": fecha_salida,
-        "fecha_salida": fecha_salida,
-        "Semana": semana,
-        "Cultivo": cultivo,
-        "cultivo": cultivo,
-        "Campaña": campana,
-        "Campana": campana,
-        "campana": campana,
-        "EMPRESA": empresa,
-        "Empresa": empresa,
-        "Cliente": p.get("cliente", ""),
-        "Grupo varietal": p.get("grupo_varietal", ""),
-        "Variedad": p.get("variedad", ""),
-        "Variedad Coop": p.get("variedad", ""),
-        "Calibre": p.get("calibre", ""),
-        "Categoría": p.get("categoria", ""),
-        "Categoria": p.get("categoria", ""),
-        "Grupo confección": grupo_confeccion,
-        "GrupoConfeccion": grupo_confeccion,
-        "grupo_confeccion": grupo_confeccion,
-        "Perfil confección": perfil_confeccion,
-        "perfil_confeccion": perfil_confeccion,
-        "Kg pendientes": kg,
-        "Kg pendiente": kg,
-        "Kg pedidos pendientes": kg,
-        "kg_pendiente": kg,
-        "kg_pendientes": kg,
-        "Línea": 0,
-        "origen_demanda": "PREVISTO",
-        "Tipo línea": "Pedido previsto",
-        "kg_necesario": kg,
-    }
+    return pedido_previsto_a_demanda(p, cultivo_actual=cultivo_actual, campana_actual=campana_actual, empresa_actual=empresa_actual)
 
 
 def _cargar_catalogo_pedidos_previstos_base(
@@ -1848,6 +1782,236 @@ def calcular_horizonte_cobertura(
     return {"fecha_limite_cubierta": fecha_limite_display, "dias_autonomia": dias_autonomia, "estado_horizonte": estado_horizonte, "pedidos_cubiertos": sum(1 for s in simulaciones if s.get('estado_global') in {'CUBIERTO EXACTO', 'CUBIERTO FLEXIBLE'}), "pedidos_parciales": sum(1 for s in simulaciones if s.get('estado_global') == 'PARCIAL'), "pedidos_insuficientes": sum(1 for s in simulaciones if s.get('estado_global') == 'INSUFICIENTE'), "kg_pendientes_total": kg_pend_total, "kg_asignados_total": kg_asig_total, "kg_faltantes_total": kg_falt_total, "primer_fallo": primer_fallo or {}, "resumen_por_fecha": resumen_por_fecha, "faltantes_por_calibre": sorted(faltantes_rows, key=lambda r: (r["Primera fecha afectada"] or "9999-99-99", -r["Kg faltantes"])), "stock_restante_por_calibre": stock_restante, "recomendaciones": recomendaciones, "hay_fechas_validas": hay_fechas_validas}
 
 
+def construir_panel_pedidos_previstos(
+    parent_frame: tk.Misc,
+    *,
+    owner: tk.Misc | None = None,
+    cultivo_actual: str = "",
+    filters_payload: dict | None = None,
+    refresh_command=None,
+    refresh_button_text: str = "Refrescar simulación/planificación",
+) -> dict:
+    """Construye el formulario compartido de pedidos previstos sobre la fuente JSON única."""
+    pedidos_previstos_payload = _cargar_pedidos_previstos()
+    pedidos_previstos = list(pedidos_previstos_payload.get("pedidos", []))
+    catalogos_previstos = cargar_catalogos_pedidos_previstos(str(cultivo_actual or "").strip())
+    valores_base = {
+        "cliente": list(catalogos_previstos.get("clientes", [])),
+        "variedad": list(catalogos_previstos.get("variedades", [])),
+        "calibre": list(catalogos_previstos.get("calibres", [])),
+        "categoria": list(catalogos_previstos.get("categorias", [])),
+        "grupo_confeccion": list(catalogos_previstos.get("grupos_confeccion", [])),
+    }
+    variedad_meta = dict(catalogos_previstos.get("variedad_meta", {}))
+    base_packaging_rows = _production_settings_service.get_base_packaging(active_only=True)
+    base_packaging_by_desc = {str(r.get("descripcion", "")).strip(): r for r in base_packaging_rows if str(r.get("descripcion", "")).strip()}
+    base_packaging_by_code = {str(r.get("codigo", "")).strip(): r for r in base_packaging_rows if str(r.get("codigo", "")).strip()}
+
+    form_previstos = ttk.LabelFrame(parent_frame, text="Pedido previsto")
+    form_previstos.pack(fill="x", pady=(0, 6))
+    incluir_previstos_var = tk.BooleanVar(value=bool(pedidos_previstos_payload.get("incluir_en_simulacion", True)))
+    form_vars = {
+        "fecha_salida": tk.StringVar(),
+        "cliente": tk.StringVar(),
+        "variedad": tk.StringVar(),
+        "grupo_varietal": tk.StringVar(value="DESCONOCIDO"),
+        "calibre": tk.StringVar(),
+        "categoria": tk.StringVar(),
+        "marca": tk.StringVar(),
+        "grupo_confeccion": tk.StringVar(),
+        "perfil_confeccion": tk.StringVar(),
+        "confeccion_prevista": tk.StringVar(),
+        "codigo_base_packaging": tk.StringVar(),
+        "kg_estimados": tk.StringVar(),
+        "palets_estimados": tk.StringVar(),
+        "estado": tk.StringVar(value="BORRADOR"),
+        "observaciones": tk.StringVar(),
+    }
+    editing_index: dict[str, int | None] = {"value": None}
+    visible_index: list[int] = []
+
+    def _current_filters() -> dict:
+        return filters_payload() if callable(filters_payload) else (filters_payload or {})
+
+    def _single_filter_value(key: str) -> str:
+        vals = _current_filters().get(key, [])
+        if not isinstance(vals, list):
+            vals = [vals]
+        vals = [str(v or "").strip() for v in vals if str(v or "").strip() and str(v or "").strip().upper() != "TODOS"]
+        return vals[0] if len(vals) == 1 else ""
+
+    def _cultivo_default() -> str:
+        return str(cultivo_actual or "").strip() or _single_filter_value("cultivo")
+
+    ttk.Checkbutton(form_previstos, text="Incluir pedidos previstos en simulación", variable=incluir_previstos_var, command=lambda: _guardar_previstos()).grid(row=0, column=0, columnspan=6, sticky="w", padx=6, pady=(4, 6))
+    ttk.Label(form_previstos, text="Fecha salida").grid(row=1, column=0, sticky="w", padx=6, pady=2)
+    ttk.Entry(form_previstos, textvariable=form_vars["fecha_salida"], width=14).grid(row=1, column=1, sticky="w", padx=6, pady=2)
+    fecha_btn = ttk.Button(form_previstos, text="📅")
+    fecha_btn.grid(row=1, column=2, sticky="w", padx=(0, 6), pady=2)
+    fecha_btn.configure(command=lambda: DatePickerPopup(parent_frame.winfo_toplevel(), target_var=form_vars["fecha_salida"], anchor_widget=fecha_btn))
+    campos_combo = [("Cliente", "cliente"), ("Variedad", "variedad"), ("Calibre", "calibre"), ("Categoría", "categoria"), ("Grupo confección", "grupo_confeccion")]
+    for idx, (lbl, key) in enumerate(campos_combo):
+        r = 1 + (idx // 3)
+        c = 3 * (idx % 3)
+        ttk.Label(form_previstos, text=lbl).grid(row=r, column=c + 3, sticky="w", padx=6, pady=2)
+        ttk.Combobox(form_previstos, textvariable=form_vars[key], values=list(valores_base[key]), width=22).grid(row=r, column=c + 4, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Marca").grid(row=2, column=6, sticky="w", padx=6, pady=2)
+    ttk.Entry(form_previstos, textvariable=form_vars["marca"], width=18).grid(row=2, column=7, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Confección prevista").grid(row=3, column=0, sticky="w", padx=6, pady=2)
+    ttk.Combobox(form_previstos, textvariable=form_vars["confeccion_prevista"], values=sorted(base_packaging_by_desc.keys()), width=30).grid(row=3, column=1, columnspan=2, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Grupo varietal").grid(row=4, column=0, sticky="w", padx=6, pady=2)
+    ttk.Entry(form_previstos, textvariable=form_vars["grupo_varietal"], state="readonly", width=22).grid(row=4, column=1, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Perfil confección").grid(row=4, column=3, sticky="w", padx=6, pady=2)
+    ttk.Entry(form_previstos, textvariable=form_vars["perfil_confeccion"], state="readonly", width=22).grid(row=4, column=4, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Kg estimados").grid(row=4, column=5, sticky="w", padx=6, pady=2)
+    ttk.Entry(form_previstos, textvariable=form_vars["kg_estimados"], width=14).grid(row=4, column=6, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Palets estimados").grid(row=4, column=7, sticky="w", padx=6, pady=2)
+    ttk.Entry(form_previstos, textvariable=form_vars["palets_estimados"], width=14).grid(row=4, column=8, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Estado").grid(row=5, column=0, sticky="w", padx=6, pady=2)
+    ttk.Combobox(form_previstos, textvariable=form_vars["estado"], values=["BORRADOR", "CONFIRMADO_COMERCIAL", "DESCARTADO"], state="readonly", width=24).grid(row=5, column=1, sticky="w", padx=6, pady=2)
+    ttk.Label(form_previstos, text="Observaciones").grid(row=5, column=3, sticky="w", padx=6, pady=2)
+    ttk.Entry(form_previstos, textvariable=form_vars["observaciones"], width=46).grid(row=5, column=4, columnspan=3, sticky="we", padx=6, pady=2)
+
+    prev_buttons = ttk.Frame(form_previstos)
+    prev_buttons.grid(row=6, column=0, columnspan=8, sticky="w", padx=6, pady=(4, 6))
+    prev_cols = ["Estado", "Fecha salida", "Cliente", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "Confección prevista", "Grupo confección", "Perfil confección", "Kg estimados", "Palets estimados", "Observaciones"]
+    prev_tbl = DataTable(parent_frame, prev_cols)
+    prev_tbl.pack(fill="both", expand=True)
+    prev_tbl.tree.tag_configure("estado_borrador", background="#EEF1F4")
+    prev_tbl.tree.tag_configure("estado_confirmado", background="#DDF4EE")
+    prev_tbl.tree.tag_configure("estado_descartado", background="#F3DDDD")
+
+    def _rows_previstos() -> list[dict]:
+        visible_index.clear()
+        filtros_actuales = _current_filters()
+        out = []
+        for idx, p in enumerate(pedidos_previstos):
+            if filtros_actuales and not filtrar_pedidos_previstos([p], filtros_actuales, cultivo_actual=_cultivo_default(), campana_actual=_single_filter_value("campana"), empresa_actual=_single_filter_value("empresa"), incluir_descartados=True):
+                continue
+            visible_index.append(idx)
+            estado = _norm_text(p.get("estado", "BORRADOR"))
+            tag = "estado_borrador" if estado == "BORRADOR" else "estado_confirmado" if estado == "CONFIRMADO_COMERCIAL" else "estado_descartado"
+            out.append({
+                "Estado": p.get("estado", "BORRADOR"), "Fecha salida": p.get("fecha_salida", ""), "Cliente": p.get("cliente", ""),
+                "Grupo varietal": p.get("grupo_varietal", ""), "Variedad": p.get("variedad", ""), "Calibre": p.get("calibre", ""), "Categoría": p.get("categoria", ""), "Marca": p.get("marca", ""),
+                "Confección prevista": p.get("confeccion_prevista", p.get("descripcion_base_packaging", "")), "Grupo confección": p.get("grupo_confeccion", ""), "Perfil confección": p.get("perfil_confeccion", ""),
+                "Kg estimados": formatear_kg(p.get("kg_estimados", 0)), "Palets estimados": p.get("palets_estimados", ""), "Observaciones": p.get("observaciones", ""),
+                "__tags__": (tag,),
+            })
+        return out
+
+    def _guardar_previstos() -> None:
+        pedidos_previstos_payload["incluir_en_simulacion"] = bool(incluir_previstos_var.get())
+        pedidos_previstos_payload["pedidos"] = pedidos_previstos
+        _guardar_pedidos_previstos(pedidos_previstos_payload)
+
+    def _limpiar_formulario() -> None:
+        editing_index["value"] = None
+        for k, v in form_vars.items():
+            v.set("BORRADOR" if k == "estado" else "DESCONOCIDO" if k == "grupo_varietal" else "")
+
+    def _resolver_variedad_meta(*_args) -> None:
+        variedad = form_vars["variedad"].get().strip()
+        meta = variedad_meta.get(variedad, {}) if variedad else {}
+        grupo = str(meta.get("grupo", "") or "").strip()
+        subgrupo = str(meta.get("subgrupo", "") or "").strip()
+        grupo_varietal = str(meta.get("grupo_varietal", "") or "").strip() or (" ".join(f"{grupo} {subgrupo}".split()) if grupo else "DESCONOCIDO")
+        form_vars["grupo_varietal"].set(grupo_varietal)
+
+    def _resolver_perfil_confeccion(*_args) -> None:
+        form_vars["perfil_confeccion"].set(detectar_perfil_confeccion_desde_grupo(form_vars["grupo_confeccion"].get().strip()))
+
+    form_vars["variedad"].trace_add("write", _resolver_variedad_meta)
+    form_vars["grupo_confeccion"].trace_add("write", _resolver_perfil_confeccion)
+
+    def _save_form() -> None:
+        try:
+            kg_estimados = _to_float(form_vars["kg_estimados"].get().replace(",", "."))
+            palets_estimados = _to_float(form_vars["palets_estimados"].get().replace(",", ".")) if form_vars["palets_estimados"].get().strip() else ""
+            fecha = form_vars["fecha_salida"].get().strip()
+            datetime.strptime(fecha, "%Y-%m-%d")
+        except Exception:
+            messagebox.showerror("Pedidos previstos", "Fecha salida debe tener formato YYYY-MM-DD.", parent=owner or parent_frame)
+            return
+        if not fecha or not form_vars["variedad"].get().strip() or not form_vars["calibre"].get().strip() or not form_vars["grupo_confeccion"].get().strip() or kg_estimados <= 0:
+            messagebox.showerror("Pedidos previstos", "Campos obligatorios: Fecha salida, Variedad, Calibre, Grupo confección y Kg estimados > 0.", parent=owner or parent_frame)
+            return
+        rec = {k: v.get().strip() for k, v in form_vars.items()}
+        base_sel = base_packaging_by_desc.get(rec.get("confeccion_prevista", "")) or base_packaging_by_code.get(rec.get("codigo_base_packaging", ""))
+        if base_sel:
+            rec.update({
+                "codigo_base_packaging": str(base_sel.get("codigo", "")).strip(),
+                "descripcion_base_packaging": str(base_sel.get("descripcion", "")).strip(),
+                "kg_formato": float(base_sel.get("kg_formato", 0) or 0),
+                "familia_productiva": str(base_sel.get("familia_productiva", "")).strip(),
+                "subtipo_productivo": str(base_sel.get("subtipo_productivo", "")).strip(),
+                "tipo_malla": str(base_sel.get("tipo_malla", "")).strip(),
+                "linea_productiva": str(base_sel.get("linea_productiva", "")).strip(),
+            })
+            rec["grupo_confeccion"] = rec.get("grupo_confeccion") or str(base_sel.get("grupo_confeccion", "")).strip()
+            rec["perfil_confeccion"] = rec.get("perfil_confeccion") or str(base_sel.get("perfil_confeccion", "")).strip()
+        rec["kg_estimados"] = kg_estimados
+        rec["palets_estimados"] = palets_estimados
+        rec["cultivo"] = rec.get("cultivo") or _cultivo_default()
+        rec["campana"] = rec.get("campana") or _single_filter_value("campana")
+        rec["empresa"] = rec.get("empresa") or _single_filter_value("empresa")
+        if editing_index["value"] is None:
+            rec["id_previsto"] = f"PV-{date.today().strftime('%Y%m%d')}-{len(pedidos_previstos)+1:04d}"
+            pedidos_previstos.append(rec)
+        else:
+            rec["id_previsto"] = pedidos_previstos[editing_index["value"]].get("id_previsto", "")
+            pedidos_previstos[editing_index["value"]] = rec
+        _guardar_previstos()
+        prev_tbl.set_rows(_rows_previstos())
+        _limpiar_formulario()
+
+    def _delete_selected() -> None:
+        if editing_index["value"] is None:
+            return
+        pedidos_previstos.pop(editing_index["value"])
+        _guardar_previstos()
+        prev_tbl.set_rows(_rows_previstos())
+        _limpiar_formulario()
+
+    def _duplicar() -> None:
+        if editing_index["value"] is None:
+            return
+        rec = dict(pedidos_previstos[editing_index["value"]])
+        rec["id_previsto"] = f"PV-{date.today().strftime('%Y%m%d')}-{len(pedidos_previstos)+1:04d}"
+        pedidos_previstos.append(rec)
+        _guardar_previstos()
+        prev_tbl.set_rows(_rows_previstos())
+
+    def _refresh() -> None:
+        _guardar_previstos()
+        if refresh_command:
+            refresh_command()
+
+    def refresh_rows() -> None:
+        prev_tbl.set_rows(_rows_previstos())
+
+    prev_tbl.set_rows(_rows_previstos())
+    ttk.Button(prev_buttons, text="Nuevo", command=_limpiar_formulario).pack(side="left", padx=2)
+    ttk.Button(prev_buttons, text="Guardar", command=_save_form).pack(side="left", padx=2)
+    ttk.Button(prev_buttons, text="Duplicar", command=_duplicar).pack(side="left", padx=2)
+    ttk.Button(prev_buttons, text="Eliminar", command=_delete_selected).pack(side="left", padx=2)
+    ttk.Button(prev_buttons, text="Limpiar formulario", command=_limpiar_formulario).pack(side="left", padx=2)
+    ttk.Button(prev_buttons, text=refresh_button_text, command=_refresh).pack(side="left", padx=2)
+
+    def _on_prev_select(_evt=None):
+        sel = prev_tbl.tree.selection()
+        if not sel:
+            return
+        visible_pos = prev_tbl.tree.index(sel[0])
+        if visible_pos < 0 or visible_pos >= len(visible_index):
+            return
+        editing_index["value"] = visible_index[visible_pos]
+        rec = pedidos_previstos[editing_index["value"]]
+        for k, v in form_vars.items():
+            v.set(str(rec.get(k, "")))
+    prev_tbl.tree.bind("<<TreeviewSelect>>", _on_prev_select)
+    return {"refresh_rows": refresh_rows, "table": prev_tbl}
+
 def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None, pedidos_detalle_horizonte: list[dict] | None = None, cultivo_actual: str = "", campana_actual: str = "", empresa_actual: str = "", filters_payload: dict | None = None, mode_refresh: bool = False, sim_window: tk.Toplevel | None = None) -> None:
     popup = sim_window if mode_refresh and sim_window is not None else tk.Toplevel(parent)
     if mode_refresh:
@@ -2788,190 +2952,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     reglas_rows = [{"Tipo regla": "CALIBRE", "Pedido": r.get("calibre_pedido", ""), "Stock compatible": r.get("calibre_stock", ""), "Penalización": r.get("penalizacion", 0), "Activo": "Sí" if r.get("activo", True) else "No"} for r in reglas.get("calibres", [])]
     reglas_tbl.set_rows(reglas_rows)
 
-    cultivo_catalogo = str(cultivo_actual or "").strip()
-    catalogos_previstos = cargar_catalogos_pedidos_previstos(cultivo_catalogo)
-    valores_base = {
-        "cliente": list(catalogos_previstos.get("clientes", [])),
-        "variedad": list(catalogos_previstos.get("variedades", [])),
-        "calibre": list(catalogos_previstos.get("calibres", [])),
-        "categoria": list(catalogos_previstos.get("categorias", [])),
-        "grupo_confeccion": list(catalogos_previstos.get("grupos_confeccion", [])),
-        "perfil_confeccion": [],
-        "grupo_varietal": [],
-    }
-    variedad_meta = dict(catalogos_previstos.get("variedad_meta", {}))
-    base_packaging_rows = _production_settings_service.get_base_packaging(active_only=True)
-    base_packaging_by_desc = {str(r.get("descripcion", "")).strip(): r for r in base_packaging_rows if str(r.get("descripcion", "")).strip()}
-    base_packaging_by_code = {str(r.get("codigo", "")).strip(): r for r in base_packaging_rows if str(r.get("codigo", "")).strip()}
-
-    form_previstos = ttk.LabelFrame(previstos_tab, text="Pedido previsto")
-    form_previstos.pack(fill="x", pady=(0, 6))
-    incluir_previstos_var = tk.BooleanVar(value=bool(pedidos_previstos_payload.get("incluir_en_simulacion", True)))
-    form_vars = {
-        "fecha_salida": tk.StringVar(),
-        "cliente": tk.StringVar(),
-        "variedad": tk.StringVar(),
-        "grupo_varietal": tk.StringVar(value="DESCONOCIDO"),
-        "calibre": tk.StringVar(),
-        "categoria": tk.StringVar(),
-        "grupo_confeccion": tk.StringVar(),
-        "perfil_confeccion": tk.StringVar(),
-        "confeccion_prevista": tk.StringVar(),
-        "codigo_base_packaging": tk.StringVar(),
-        "kg_estimados": tk.StringVar(),
-        "palets_estimados": tk.StringVar(),
-        "estado": tk.StringVar(value="BORRADOR"),
-        "observaciones": tk.StringVar(),
-    }
-    editing_index: dict[str, int | None] = {"value": None}
-    ttk.Checkbutton(form_previstos, text="Incluir pedidos previstos en simulación", variable=incluir_previstos_var).grid(row=0, column=0, columnspan=6, sticky="w", padx=6, pady=(4, 6))
-    ttk.Label(form_previstos, text="Fecha salida").grid(row=1, column=0, sticky="w", padx=6, pady=2)
-    ttk.Entry(form_previstos, textvariable=form_vars["fecha_salida"], width=14).grid(row=1, column=1, sticky="w", padx=6, pady=2)
-    fecha_btn = ttk.Button(form_previstos, text="📅")
-    fecha_btn.grid(row=1, column=2, sticky="w", padx=(0, 6), pady=2)
-    fecha_btn.configure(command=lambda: DatePickerPopup(previstos_tab.winfo_toplevel(), target_var=form_vars["fecha_salida"], anchor_widget=fecha_btn))
-    campos_combo = [("Cliente", "cliente"), ("Variedad", "variedad"), ("Calibre", "calibre"), ("Categoría", "categoria"), ("Grupo confección", "grupo_confeccion")]
-    for idx, (lbl, key) in enumerate(campos_combo):
-        r = 1 + (idx // 3)
-        c = 3 * (idx % 3)
-        ttk.Label(form_previstos, text=lbl).grid(row=r, column=c + 3, sticky="w", padx=6, pady=2)
-        ttk.Combobox(form_previstos, textvariable=form_vars[key], values=list(valores_base[key]), width=22).grid(row=r, column=c + 4, sticky="w", padx=6, pady=2)
-    ttk.Label(form_previstos, text="Confección prevista").grid(row=2, column=0, sticky="w", padx=6, pady=2)
-    ttk.Combobox(form_previstos, textvariable=form_vars["confeccion_prevista"], values=sorted(base_packaging_by_desc.keys()), width=30).grid(row=2, column=1, columnspan=2, sticky="w", padx=6, pady=2)
-    ttk.Label(form_previstos, text="Grupo varietal").grid(row=3, column=0, sticky="w", padx=6, pady=2)
-    ttk.Entry(form_previstos, textvariable=form_vars["grupo_varietal"], state="readonly", width=22).grid(row=3, column=1, sticky="w", padx=6, pady=2)
-    ttk.Label(form_previstos, text="Perfil confección").grid(row=3, column=3, sticky="w", padx=6, pady=2)
-    ttk.Entry(form_previstos, textvariable=form_vars["perfil_confeccion"], state="readonly", width=22).grid(row=3, column=4, sticky="w", padx=6, pady=2)
-    ttk.Label(form_previstos, text="Kg estimados").grid(row=3, column=5, sticky="w", padx=6, pady=2)
-    ttk.Entry(form_previstos, textvariable=form_vars["kg_estimados"], width=14).grid(row=3, column=6, sticky="w", padx=6, pady=2)
-    ttk.Label(form_previstos, text="Palets estimados").grid(row=3, column=7, sticky="w", padx=6, pady=2)
-    ttk.Entry(form_previstos, textvariable=form_vars["palets_estimados"], width=14).grid(row=3, column=8, sticky="w", padx=6, pady=2)
-    ttk.Label(form_previstos, text="Estado").grid(row=4, column=0, sticky="w", padx=6, pady=2)
-    ttk.Combobox(form_previstos, textvariable=form_vars["estado"], values=["BORRADOR", "CONFIRMADO_COMERCIAL", "DESCARTADO"], state="readonly", width=24).grid(row=4, column=1, sticky="w", padx=6, pady=2)
-    ttk.Label(form_previstos, text="Observaciones").grid(row=4, column=3, sticky="w", padx=6, pady=2)
-    ttk.Entry(form_previstos, textvariable=form_vars["observaciones"], width=46).grid(row=4, column=4, columnspan=3, sticky="we", padx=6, pady=2)
-
-    prev_buttons = ttk.Frame(form_previstos)
-    prev_buttons.grid(row=5, column=0, columnspan=7, sticky="w", padx=6, pady=(4, 6))
-    prev_cols = ["Estado", "Fecha salida", "Cliente", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Confección prevista", "Grupo confección", "Perfil confección", "Kg estimados", "Palets estimados", "Observaciones"]
-    prev_tbl = DataTable(previstos_tab, prev_cols)
-    prev_tbl.pack(fill="both", expand=True)
-    prev_tbl.tree.tag_configure("estado_borrador", background="#EEF1F4")
-    prev_tbl.tree.tag_configure("estado_confirmado", background="#DDF4EE")
-    prev_tbl.tree.tag_configure("estado_descartado", background="#F3DDDD")
-
-    def _rows_previstos() -> list[dict]:
-        out = []
-        for p in pedidos_previstos:
-            estado = _norm_text(p.get("estado", "BORRADOR"))
-            tag = "estado_borrador" if estado == "BORRADOR" else "estado_confirmado" if estado == "CONFIRMADO_COMERCIAL" else "estado_descartado"
-            out.append({
-                "Estado": p.get("estado", "BORRADOR"), "Fecha salida": p.get("fecha_salida", ""), "Cliente": p.get("cliente", ""),
-                "Grupo varietal": p.get("grupo_varietal", ""), "Variedad": p.get("variedad", ""), "Calibre": p.get("calibre", ""),
-                "Categoría": p.get("categoria", ""), "Grupo confección": p.get("grupo_confeccion", ""), "Perfil confección": p.get("perfil_confeccion", ""),
-                "Kg estimados": formatear_kg(p.get("kg_estimados", 0)), "Palets estimados": p.get("palets_estimados", ""), "Observaciones": p.get("observaciones", ""),
-                "__tags__": (tag,),
-            })
-        return out
-
-    def _guardar_previstos() -> None:
-        pedidos_previstos_payload["incluir_en_simulacion"] = bool(incluir_previstos_var.get())
-        pedidos_previstos_payload["pedidos"] = pedidos_previstos
-        _guardar_pedidos_previstos(pedidos_previstos_payload)
-    def _limpiar_formulario() -> None:
-        editing_index["value"] = None
-        for k, v in form_vars.items():
-            v.set("BORRADOR" if k == "estado" else "DESCONOCIDO" if k == "grupo_varietal" else "")
-    def _resolver_variedad_meta(*_args) -> None:
-        variedad = form_vars["variedad"].get().strip()
-        meta = variedad_meta.get(variedad, {}) if variedad else {}
-        grupo = str(meta.get("grupo", "") or "").strip()
-        subgrupo = str(meta.get("subgrupo", "") or "").strip()
-        producto = str(meta.get("producto", "") or "").strip()
-        grupo_varietal = str(meta.get("grupo_varietal", "") or "").strip()
-        if not grupo_varietal:
-            grupo_varietal = " ".join(f"{grupo} {subgrupo}".split()) if grupo else "DESCONOCIDO"
-        form_vars["grupo_varietal"].set(grupo_varietal)
-        logger.info(
-            "Grupo varietal resuelto variedad=%s grupo=%s subgrupo=%s grupo_varietal=%s producto=%s",
-            variedad,
-            grupo,
-            subgrupo,
-            grupo_varietal,
-            producto,
-        )
-
-    def _resolver_perfil_confeccion(*_args) -> None:
-        grupo_conf = form_vars["grupo_confeccion"].get().strip()
-        form_vars["perfil_confeccion"].set(detectar_perfil_confeccion_desde_grupo(grupo_conf))
-
-    form_vars["variedad"].trace_add("write", _resolver_variedad_meta)
-    form_vars["grupo_confeccion"].trace_add("write", _resolver_perfil_confeccion)
-    def _save_form() -> None:
-        try:
-            kg_estimados = _to_float(form_vars["kg_estimados"].get().replace(",", "."))
-            palets_estimados = _to_float(form_vars["palets_estimados"].get().replace(",", ".")) if form_vars["palets_estimados"].get().strip() else ""
-            fecha = form_vars["fecha_salida"].get().strip()
-            datetime.strptime(fecha, "%Y-%m-%d")
-        except Exception:
-            messagebox.showerror("Pedidos previstos", "Fecha salida debe tener formato YYYY-MM-DD.")
-            return
-        if not fecha or not form_vars["variedad"].get().strip() or not form_vars["calibre"].get().strip() or not form_vars["grupo_confeccion"].get().strip() or kg_estimados <= 0:
-            messagebox.showerror("Pedidos previstos", "Campos obligatorios: Fecha salida, Variedad, Calibre, Grupo confección y Kg estimados > 0.")
-            return
-        rec = {k: v.get().strip() for k, v in form_vars.items()}
-        base_sel = base_packaging_by_desc.get(rec.get("confeccion_prevista", "")) or base_packaging_by_code.get(rec.get("codigo_base_packaging", ""))
-        if base_sel:
-            rec["codigo_base_packaging"] = str(base_sel.get("codigo", "")).strip()
-            rec["descripcion_base_packaging"] = str(base_sel.get("descripcion", "")).strip()
-            rec["kg_formato"] = float(base_sel.get("kg_formato", 0) or 0)
-            rec["familia_productiva"] = str(base_sel.get("familia_productiva", "")).strip()
-            rec["subtipo_productivo"] = str(base_sel.get("subtipo_productivo", "")).strip()
-            rec["tipo_malla"] = str(base_sel.get("tipo_malla", "")).strip()
-            rec["linea_productiva"] = str(base_sel.get("linea_productiva", "")).strip()
-            if not rec.get("grupo_confeccion"):
-                rec["grupo_confeccion"] = str(base_sel.get("grupo_confeccion", "")).strip()
-            if not rec.get("perfil_confeccion"):
-                rec["perfil_confeccion"] = str(base_sel.get("perfil_confeccion", "")).strip()
-        rec["kg_estimados"] = kg_estimados
-        rec["palets_estimados"] = palets_estimados
-        if editing_index["value"] is None:
-            rec["id_previsto"] = f"PV-{date.today().strftime('%Y%m%d')}-{len(pedidos_previstos)+1:04d}"
-            pedidos_previstos.append(rec)
-        else:
-            rec["id_previsto"] = pedidos_previstos[editing_index["value"]].get("id_previsto", "")
-            pedidos_previstos[editing_index["value"]] = rec
-        _guardar_previstos()
-        logger.info("Pedido previsto guardado id=%s fecha=%s variedad=%s calibre=%s kg=%s", rec.get("id_previsto", ""), rec["fecha_salida"], rec["variedad"], rec["calibre"], rec["kg_estimados"])
-        prev_tbl.set_rows(_rows_previstos())
-        _limpiar_formulario()
-    def _delete_selected() -> None:
-        if editing_index["value"] is None:
-            return
-        rec = pedidos_previstos.pop(editing_index["value"])
-        logger.info("Pedido previsto eliminado id=%s", rec.get("id_previsto", ""))
-        _guardar_previstos()
-        prev_tbl.set_rows(_rows_previstos())
-        _limpiar_formulario()
-    def _duplicar() -> None:
-        if editing_index["value"] is None:
-            return
-        rec = dict(pedidos_previstos[editing_index["value"]])
-        rec["id_previsto"] = f"PV-{date.today().strftime('%Y%m%d')}-{len(pedidos_previstos)+1:04d}"
-        pedidos_previstos.append(rec)
-        _guardar_previstos()
-        prev_tbl.set_rows(_rows_previstos())
-
-    def _refrescar_simulacion() -> None:
+    def _refrescar_simulacion_previstos() -> None:
         logger.info("Refrescando simulación por cambio en pedidos previstos")
-        _guardar_previstos()
         ctx = getattr(popup, "_sim_context", {})
-        logger.info(
-            "Refresco simulación reutilizando contexto cultivo=%s campana=%s empresa=%s",
-            ctx.get("cultivo_actual", ""),
-            ctx.get("campana_actual", ""),
-            ctx.get("empresa_actual", ""),
-        )
         abrir_simulacion_asignacion(
             parent,
             pedidos,
@@ -2988,22 +2971,11 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         )
         logger.info("Refresco simulación completado correctamente")
 
-    prev_tbl.set_rows(_rows_previstos())
-    ttk.Button(prev_buttons, text="Nuevo", command=_limpiar_formulario).pack(side="left", padx=2)
-    ttk.Button(prev_buttons, text="Guardar", command=_save_form).pack(side="left", padx=2)
-    ttk.Button(prev_buttons, text="Duplicar", command=_duplicar).pack(side="left", padx=2)
-    ttk.Button(prev_buttons, text="Eliminar", command=_delete_selected).pack(side="left", padx=2)
-    ttk.Button(prev_buttons, text="Limpiar formulario", command=_limpiar_formulario).pack(side="left", padx=2)
-    ttk.Button(prev_buttons, text="Refrescar simulación", command=_refrescar_simulacion).pack(side="left", padx=2)
-    def _on_prev_select(_evt=None):
-        sel = prev_tbl.tree.selection()
-        if not sel:
-            return
-        idx = prev_tbl.tree.index(sel[0])
-        if idx < 0 or idx >= len(pedidos_previstos):
-            return
-        editing_index["value"] = idx
-        rec = pedidos_previstos[idx]
-        for k, v in form_vars.items():
-            v.set(str(rec.get(k, "")))
-    prev_tbl.tree.bind("<<TreeviewSelect>>", _on_prev_select)
+    construir_panel_pedidos_previstos(
+        previstos_tab,
+        owner=popup,
+        cultivo_actual=cultivo_actual,
+        filters_payload=filters_payload,
+        refresh_command=_refrescar_simulacion_previstos,
+        refresh_button_text="Refrescar simulación",
+    )

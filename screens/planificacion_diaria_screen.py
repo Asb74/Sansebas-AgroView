@@ -10,7 +10,7 @@ from widgets.data_table import DataTable
 from widgets.screen_header import ScreenHeader
 from widgets.date_picker import DatePickerPopup
 from widgets.multi_select_filter import MultiSelectFilter
-from services.simulacion_asignacion import abrir_simulacion_asignacion
+from services.simulacion_asignacion import abrir_simulacion_asignacion, construir_panel_pedidos_previstos
 from screens.operational_quality_settings_screen import OperationalQualitySettingsScreen
 from services.production_capacity_service import ProductionCapacityService
 
@@ -37,6 +37,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.stock_almacen_detalle_rows: list[dict] = []
         self.pedidos_pendientes_rows: list[dict] = []
         self.pedidos_pendientes_rows_raw: list[dict] = []
+        self.pedidos_previstos_panel: dict | None = None
         self.balance_rows: list[dict] = []
         self.balance_rows_all: list[dict] = []
         self.sim_policy_vars: dict[str, tk.BooleanVar] = {}
@@ -98,6 +99,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.tabs.add(self.almacen_tab, text="Stock almacén")
         self.pedidos_tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(self.pedidos_tab, text="Pedidos pendientes")
+        self.previstos_tab = ttk.Frame(self.tabs, padding=8)
+        self.tabs.add(self.previstos_tab, text="Pedidos previstos")
         self.balance_tab = ttk.Frame(self.tabs, padding=8)
         self.capacidad_tab = ttk.Frame(self.tabs, padding=8)
         self.tabs.add(self.balance_tab, text="Balance")
@@ -145,6 +148,14 @@ class PlanificacionDiariaScreen(ttk.Frame):
             ["Semana", "Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Cultivo", "Campaña", "Variedad Coop", "Grupo varietal", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Grupo confección", "Perfil confección", "Palets pedido", "Palets hechos", "Palets pendientes", "Cajas/palet", "Cajas pedido", "Cajas hechas", "Cajas pendientes", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Merma kg", "% hecho", "% merma", "Estado", "Aviso"],
         )
         self.pedidos_table.pack(fill="both", expand=True)
+
+        self.pedidos_previstos_panel = construir_panel_pedidos_previstos(
+            self.previstos_tab,
+            owner=self,
+            filters_payload=self._filters_payload,
+            refresh_command=lambda: self.load_data(save_filters=True),
+            refresh_button_text="Refrescar planificación",
+        )
 
         sim_frame = ttk.LabelFrame(self.balance_tab, text="Simulación / flexibilidad", padding=8)
         sim_frame.pack(fill="x", pady=(0, 6))
@@ -266,6 +277,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 self.pedidos_pendientes_rows_raw = []
                 logging.getLogger(__name__).warning("No se pudo cargar pedidos pendientes: %s", exc)
                 messagebox.showwarning("Pedidos pendientes", f"No se pudo cargar pedidos pendientes: {exc}")
+        elif tab_activa == "Pedidos previstos":
+            if self.pedidos_previstos_panel:
+                self.pedidos_previstos_panel["refresh_rows"]()
         elif tab_activa == "Balance":
             try:
                 self.balance_rows_all = self.service.load_balance_planificacion(payload, policy=self._build_sim_policy())
@@ -305,6 +319,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.almacen_table.set_rows(self.stock_almacen_rows)
         self.pedidos_table.set_rows(self.pedidos_pendientes_rows)
         self.balance_table.set_rows(self.balance_rows)
+        if tab_activa != "Pedidos previstos" and self.pedidos_previstos_panel:
+            self.pedidos_previstos_panel["refresh_rows"]()
         self.kpi_campo.set(
             f"Kg campo total: {sum(float(r.get('Kg campo', 0) or 0) for r in self.stock_campo_rows):,.2f} | "
             f"Nº partidas: {len(self.stock_campo_rows)} | Nº variedades: {len({r.get('Variedad') for r in self.stock_campo_rows})}"
@@ -366,10 +382,10 @@ class PlanificacionDiariaScreen(ttk.Frame):
             f"Kg faltantes: {sum(max(0.0, -float(r.get('Diferencia comercial', 0) or 0)) for r in faltantes):,.2f} | "
             f"Nº sobrantes: {len(sobrantes)} | "
             f"Kg disponibles para venta: {sum(max(0.0, float(r.get('Diferencia comercial', 0) or 0)) for r in sobrantes):,.2f} | "
-            f"Kg stock industrial almacén: {sum(float(r.get('Kg stock industrial almacén', 0) or 0) for r in rows if str(r.get('Tipo línea', '')) == 'Pedido'):,.2f} | "
-            f"Kg entrada estimada: {sum(float(r.get('Kg entrada estimada', 0) or 0) for r in rows if str(r.get('Tipo línea', '')) == 'Pedido'):,.2f} | "
-            f"Kg base total estimada: {sum(float(r.get('Kg base total estimada', 0) or 0) for r in rows if str(r.get('Tipo línea', '')) == 'Pedido'):,.2f} | "
-            f"Kg cobertura potencial total: {sum(float(r.get('Kg cobertura potencial total', 0) or 0) for r in rows if str(r.get('Tipo línea', '')) == 'Pedido'):,.2f}"
+            f"Kg stock industrial almacén: {sum(float(r.get('Kg stock industrial almacén', 0) or 0) for r in rows if str(r.get('Tipo línea', '')).startswith('Pedido')):,.2f} | "
+            f"Kg entrada estimada: {sum(float(r.get('Kg entrada estimada', 0) or 0) for r in rows if str(r.get('Tipo línea', '')).startswith('Pedido')):,.2f} | "
+            f"Kg base total estimada: {sum(float(r.get('Kg base total estimada', 0) or 0) for r in rows if str(r.get('Tipo línea', '')).startswith('Pedido')):,.2f} | "
+            f"Kg cobertura potencial total: {sum(float(r.get('Kg cobertura potencial total', 0) or 0) for r in rows if str(r.get('Tipo línea', '')).startswith('Pedido')):,.2f}"
         )
 
     def _on_balance_double_click(self, _event=None) -> None:
