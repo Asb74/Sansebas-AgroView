@@ -65,3 +65,38 @@ def test_staffing_requirements_prefer_staff_area_tipo_personal_over_flow_staffin
     assert rows_by_area["Volcado"]["Tipo personal"] == "Soporte"
     assert rows_by_area["Calidad"]["Tipo personal"] == "Soporte"
     assert rows_by_area["Carretillero"]["Tipo personal"] == "Indirecto"
+
+
+def test_staffing_requirements_do_not_scale_people_by_occupancy(monkeypatch):
+    import sys
+    import types
+
+    planning_service = types.ModuleType("services.planning_service")
+    planning_service.PlanningService = object
+    monkeypatch.setitem(sys.modules, "services.planning_service", planning_service)
+
+    from services.production_capacity_service import ProductionCapacityService
+
+    service = ProductionCapacityService.__new__(ProductionCapacityService)
+    result = service.calculate_staffing_requirements(
+        {
+            "line_rows": [{"Línea productiva": "ENCAJADO", "Ocupación %": 571.43}],
+            "inputs": {
+                "flow_staffing": [
+                    {"linea_productiva": "ENCAJADO", "area_puesto": "Encajado", "tipo_personal": "Directo", "minimo": 6, "optimo": 12, "activo": 1, "escala_con_ocupacion": 1, "factor_ocupacion": 1, "obligatorio": 1},
+                    {"linea_productiva": "ENCAJADO", "area_puesto": "Tría", "tipo_personal": "Directo", "minimo": 2, "optimo": 4, "activo": 1, "escala_con_ocupacion": 1, "factor_ocupacion": 1, "obligatorio": 1},
+                    {"linea_productiva": "ENCAJADO", "area_puesto": "Loteado", "tipo_personal": "Directo", "minimo": 1, "optimo": 2, "activo": 1, "escala_con_ocupacion": 1, "factor_ocupacion": 1, "obligatorio": 1},
+                    {"linea_productiva": "ENCAJADO", "area_puesto": "Encargado", "tipo_personal": "Indirecto", "minimo": 1, "optimo": 1, "activo": 1, "escala_con_ocupacion": 0, "factor_ocupacion": 1, "obligatorio": 1},
+                ],
+                "staff_areas": [],
+                "personnel": {"personal_directo": 0, "personal_soporte": 0, "personal_indirecto": 0},
+            },
+        }
+    )
+
+    rows_by_area = {row["Área / puesto"]: row for row in result["rows"]}
+    assert rows_by_area["Encajado"]["Necesario estimado"] == 12
+    assert rows_by_area["Tría"]["Necesario estimado"] == 4
+    assert rows_by_area["Loteado"]["Necesario estimado"] == 2
+    assert rows_by_area["Encargado"]["Necesario estimado"] == 1
+    assert result["summary"]["personal_necesario_estimado"] == 19

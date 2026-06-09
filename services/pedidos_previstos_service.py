@@ -137,7 +137,7 @@ def _pedido_previsto_log_context(row: dict) -> dict[str, Any]:
 
 def _log_pedido_previsto_incluido(row: dict) -> None:
     ctx = _pedido_previsto_log_context(row)
-    logger.info(
+    logger.debug(
         "PREVISTO INCLUIDO | id=%s | cliente=%s | kg_estimados=%s | cultivo=%s | campaña=%s | empresa=%s | semana=%s",
         ctx["id"],
         ctx["cliente"],
@@ -151,7 +151,7 @@ def _log_pedido_previsto_incluido(row: dict) -> None:
 
 def _log_pedido_previsto_descartado(row: dict, motivo: str, valor_pedido: Any, filtro: Any) -> None:
     ctx = _pedido_previsto_log_context(row)
-    logger.info(
+    logger.debug(
         "PREVISTO DESCARTADO | id=%s | cliente=%s | kg_estimados=%s | cultivo=%s | campaña=%s | empresa=%s | semana=%s | motivo=%s | valor_pedido=%r | filtro=%r",
         ctx["id"],
         ctx["cliente"],

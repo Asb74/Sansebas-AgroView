@@ -89,7 +89,7 @@ class ProductionCapacityService:
             for order in rows:
                 kg = float(order.get("Kg pendiente", order.get("kg_estimados", 0)) or 0)
                 if tipo == "Previsto":
-                    logger.info(
+                    logger.debug(
                         "CAPACIDAD PREVISTO | id=%s | codigo_base=%s | linea=%s | familia=%s | kg=%s",
                         order.get("id_previsto"),
                         order.get("codigo_base_packaging"),
@@ -260,16 +260,10 @@ class ProductionCapacityService:
             minimo = max(0, int(staff.get("minimo", 0) or 0))
             optimo = max(minimo, int(staff.get("optimo", 0) or 0))
             ocupacion = float(line_occ.get(linea, 0) or 0)
-            factor = float(staff.get("factor_ocupacion", 1.0) or 1.0)
             escala = int(staff.get("escala_con_ocupacion", 0) or 0) == 1
             obligatorio = int(staff.get("obligatorio", 1) or 0) == 1
-            if escala:
-                necesario = ceil(optimo * ocupacion / 100.0 * factor)
-                necesario = max(minimo, necesario)
-                if ocupacion <= 100:
-                    necesario = min(optimo, necesario)
-            else:
-                necesario = minimo
+            necesario = optimo if escala else minimo
+            necesario = max(minimo, necesario)
             disponible, match_kind = self._available_staff_for_area(area, tipo, area_availability, type_availability)
             diferencia = disponible - necesario
             if disponible >= necesario:
@@ -510,8 +504,9 @@ class ProductionCapacityService:
         horas = sum(m["horas"] for m in mapped)
         hdisp = sum(float(r.get("Horas disponibles línea", 0) or 0) for r in line_rows)
         occ = horas / hdisp * 100 if hdisp > 0 else 0
+        turnos_equivalentes = horas / hdisp if hdisp > 0 else 0
         per = inputs["personnel"]
-        return {"Kg reales pendientes": round(kg_real, 2), "Kg previstos": round(kg_prev, 2), "Kg total simulación": round(kg_real + kg_prev, 2), "Horas necesarias estimadas": round(horas, 2), "Horas disponibles": round(hdisp, 2), "Ocupación %": round(occ, 2), "Personal disponible total": int(per.get("personal_total", 0) or 0), "Personal directo disponible": int(per.get("personal_directo", 0) or 0), "Personal soporte disponible": int(per.get("personal_soporte", 0) or 0), "Personal indirecto disponible": int(per.get("personal_indirecto", 0) or 0), "Estado capacidad": self._state(occ, inputs["semaphore_rules"], "General")}
+        return {"Kg reales pendientes": round(kg_real, 2), "Kg previstos": round(kg_prev, 2), "Kg total simulación": round(kg_real + kg_prev, 2), "Horas necesarias estimadas": round(horas, 2), "Horas disponibles": round(hdisp, 2), "Ocupación %": round(occ, 2), "jornadas_equivalentes": round(turnos_equivalentes, 2), "turnos_equivalentes": round(turnos_equivalentes, 2), "Personal disponible total": int(per.get("personal_total", 0) or 0), "Personal directo disponible": int(per.get("personal_directo", 0) or 0), "Personal soporte disponible": int(per.get("personal_soporte", 0) or 0), "Personal indirecto disponible": int(per.get("personal_indirecto", 0) or 0), "Estado capacidad": self._state(occ, inputs["semaphore_rules"], "General")}
 
     def calculate_capacity_alerts(self, summary: dict, family_rows: list[dict], line_rows: list[dict], incidencias: list[dict], resource_rows: list[dict] | None = None, bottleneck: dict | None = None) -> list[dict]:
         out = list(incidencias)
@@ -673,7 +668,7 @@ class ProductionCapacityService:
         campana_actual = self._single_forecast_context_value(filters, "campana")
         cultivo_actual = self._single_forecast_context_value(filters, "cultivo")
         empresa_actual = self._single_forecast_context_value(filters, "empresa")
-        logger.info(
+        logger.debug(
             "CAPACIDAD PREVISTOS CONTEXTO | campaña=%r | cultivo=%r | empresa=%r",
             campana_actual,
             cultivo_actual,
