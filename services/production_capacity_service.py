@@ -72,6 +72,8 @@ class ProductionCapacityService:
             "personal_optimo_flujo": staffing["summary"]["personal_optimo_requerido"],
             "personal_estimado_flujo": staffing["summary"]["personal_necesario_estimado"],
             "deficit_personal_flujo": staffing["summary"]["deficit_personal"],
+            "personal_cubierto_polivalencia": staffing["summary"].get("personal_cubierto_polivalencia", 0),
+            "puestos_cubiertos_polivalencia": staffing["summary"].get("puestos_cubiertos_polivalencia", 0),
         })
         summary.update({
             "recurso_cuello_botella": bottleneck.get("Recurso", "") if bottleneck else "",
@@ -329,9 +331,13 @@ class ProductionCapacityService:
         used_lines = {line for line, occ in line_occ.items() if line}
         staff_rows = [r for r in inputs.get("flow_staffing", []) if str(r.get("linea_productiva", "")).strip() in used_lines]
         area_availability, area_type, area_names = self._staff_availability_indexes(inputs)
+        row_contexts: list[dict] = []
+        source_minimums = self._staff_minimums_by_area(staff_rows)
+        polyvalence_pool = self._staff_polyvalence_pool(inputs, area_availability, area_names, source_minimums)
+        polyvalence_rules = self._staff_polyvalence_rules_by_target(inputs)
         rows: list[dict] = []
         incidencias: list[dict] = []
-        totals = {"min": 0, "opt": 0, "est": 0, "deficit": 0}
+        totals = {"min": 0, "opt": 0, "est": 0, "deficit": 0, "poly_people": 0, "poly_posts": 0}
 
         for staff in staff_rows:
             linea = str(staff.get("linea_productiva", "")).strip()
@@ -345,47 +351,85 @@ class ProductionCapacityService:
             obligatorio = int(staff.get("obligatorio", 1) or 0) == 1
             necesario = optimo if escala else minimo
             necesario = max(minimo, necesario)
-            disponible, match_kind, matched_area = self._available_staff_for_area(area, area_availability, area_names)
+            disponible_base, match_kind, matched_area = self._available_staff_for_area(area, area_availability, area_names)
             logger.debug(
                 "CAPACIDAD PERSONAL REQUERIDO puesto=%s normalizado=%s area_encontrada=%s disponible=%s equivalencia=%s",
                 area,
                 self._normalize_staff_name(area),
                 matched_area or "-",
-                disponible,
+                disponible_base,
                 match_kind == "equivalence",
             )
-            diferencia = disponible - necesario
-            if disponible >= necesario:
+            row_contexts.append({
+                "linea": linea,
+                "area": area,
+                "tipo": tipo,
+                "minimo": minimo,
+                "optimo": optimo,
+                "ocupacion": ocupacion,
+                "obligatorio": obligatorio,
+                "necesario": necesario,
+                "disponible_base": disponible_base,
+                "match_kind": match_kind,
+            })
+
+        for context in row_contexts:
+            linea = context["linea"]
+            area = context["area"]
+            minimo = context["minimo"]
+            optimo = context["optimo"]
+            necesario = context["necesario"]
+            disponible_base = float(context["disponible_base"])
+            cobertura = 0.0
+            cobertura_personas = 0
+            origenes: list[str] = []
+            if disponible_base < optimo:
+                coverage = self._apply_staff_polyvalence_coverage(area, optimo - disponible_base, polyvalence_rules, polyvalence_pool)
+                cobertura = coverage["equivalent"]
+                cobertura_personas = coverage["people"]
+                origenes = coverage["origins"]
+            disponible_efectivo = disponible_base + cobertura
+            diferencia = disponible_efectivo - necesario
+            if disponible_efectivo >= necesario:
                 estado = "Verde"
                 tag = "tag_green"
-            elif disponible >= minimo:
+            elif disponible_efectivo >= minimo:
                 estado = "Amarillo"
                 tag = "tag_yellow"
             else:
-                estado = "Rojo" if obligatorio else "Amarillo"
-                tag = "tag_red" if obligatorio else "tag_yellow"
+                estado = "Rojo" if context["obligatorio"] else "Amarillo"
+                tag = "tag_red" if context["obligatorio"] else "tag_yellow"
             row = {
                 "Línea productiva": linea,
                 "Área / puesto": area,
-                "Tipo personal": tipo,
+                "Tipo personal": context["tipo"],
                 "Mínimo": minimo,
                 "Óptimo": optimo,
-                "Ocupación %": round(ocupacion, 2),
+                "Ocupación %": round(context["ocupacion"], 2),
                 "Necesario estimado": int(necesario),
-                "Disponible": int(disponible),
-                "Diferencia": int(diferencia),
+                "Disponible base": self._format_staff_quantity(disponible_base),
+                "Polivalente": self._format_staff_quantity(cobertura),
+                "Disponible efectivo": self._format_staff_quantity(disponible_efectivo),
+                "Origen polivalencia": "; ".join(origenes),
+                "Disponible": self._format_staff_quantity(disponible_efectivo),
+                "Diferencia": self._format_staff_quantity(diferencia),
                 "Estado": estado,
                 "__tags__": (tag,),
             }
             rows.append(row)
-            totals["min"] += minimo; totals["opt"] += optimo; totals["est"] += int(necesario); totals["deficit"] += max(0, -int(diferencia))
-            if match_kind == "none":
+            totals["min"] += minimo; totals["opt"] += optimo; totals["est"] += int(necesario); totals["deficit"] += max(0, ceil(-diferencia) if diferencia < 0 else 0)
+            if cobertura_personas > 0:
+                totals["poly_people"] += cobertura_personas
+                totals["poly_posts"] += 1
+            if context["match_kind"] == "none" and disponible_efectivo <= 0:
                 incidencias.append(self._staff_inc("Área sin personal configurado", linea, area, f"No hay disponibilidad real configurada para {area}", "Configurar personal por puesto exacto o equivalencia clara en maestro Personal"))
-            if disponible < minimo:
-                incidencias.append(self._staff_inc("Falta personal mínimo", linea, area, f"Disponible {disponible} < mínimo {minimo}", "Reforzar dotación mínima del puesto"))
-            elif disponible < optimo:
-                incidencias.append(self._staff_inc("Falta personal óptimo", linea, area, f"Disponible {disponible} < óptimo {optimo}", "Revisar dotación recomendada para rendimiento normal"))
-            if obligatorio and disponible < minimo:
+            if disponible_base < minimo and disponible_efectivo >= minimo and cobertura_personas > 0:
+                incidencias.append(self._staff_inc("Déficit cubierto por polivalencia", linea, area, f"{area} cubierto con {'; '.join(origenes)}", "Validar reasignación operativa antes de lanzar el flujo"))
+            if disponible_efectivo < minimo:
+                incidencias.append(self._staff_inc("Falta personal mínimo", linea, area, f"Disponible efectivo {self._format_staff_quantity(disponible_efectivo)} < mínimo {minimo}", "Reforzar dotación mínima del puesto"))
+            elif disponible_efectivo < optimo:
+                incidencias.append(self._staff_inc("Falta personal óptimo", linea, area, f"Disponible efectivo {self._format_staff_quantity(disponible_efectivo)} < óptimo {optimo}", "Revisar dotación recomendada para rendimiento normal"))
+            if context["obligatorio"] and disponible_efectivo < minimo:
                 incidencias.append(self._staff_inc("Dotación obligatoria no cubierta", linea, area, f"Puesto obligatorio {area} no cubre mínimo {minimo}", "Cubrir puesto imprescindible antes de lanzar el flujo"))
 
         return {
@@ -396,6 +440,8 @@ class ProductionCapacityService:
                 "personal_optimo_requerido": totals["opt"],
                 "personal_necesario_estimado": totals["est"],
                 "deficit_personal": totals["deficit"],
+                "personal_cubierto_polivalencia": totals["poly_people"],
+                "puestos_cubiertos_polivalencia": totals["poly_posts"],
             },
         }
 
@@ -639,6 +685,110 @@ class ProductionCapacityService:
             if self._normalize_staff_name(str(row.get("area_puesto", "") or "")) == expected_norm:
                 return row
         return {"area_puesto": expected_area, "minimo": 0, "optimo": 0, "_capacity_issue": "Puesto principal no existe en dotación flujos"}
+
+    def _staff_minimums_by_area(self, staff_rows: list[dict]) -> dict[str, int]:
+        minimums: dict[str, int] = defaultdict(int)
+        for row in staff_rows:
+            area_norm = self._normalize_staff_name(str(row.get("area_puesto", "") or ""))
+            if not area_norm:
+                continue
+            minimums[area_norm] += max(0, int(row.get("minimo", 0) or 0))
+        return dict(minimums)
+
+    def _staff_polyvalence_pool(self, inputs: dict, area_availability: dict[str, int], area_names: dict[str, str], source_minimums: dict[str, int]) -> dict[str, dict]:
+        source_names = set(source_minimums)
+        for row in self._staff_polyvalence_rows(inputs):
+            source = self._polyvalence_source(row)
+            source_norm = self._normalize_staff_name(source)
+            if source_norm:
+                source_names.add(source_norm)
+        pool: dict[str, dict] = {}
+        for source_norm in source_names:
+            source_label = area_names.get(source_norm, source_norm)
+            available, _match_kind, matched = self._available_staff_for_area(source_label, area_availability, area_names)
+            minimum = max(0, int(source_minimums.get(source_norm, 0) or 0))
+            pool[source_norm] = {
+                "label": matched or source_label,
+                "available": available,
+                "minimum": minimum,
+                "remaining": max(0, available - minimum),
+            }
+        return pool
+
+    def _staff_polyvalence_rules_by_target(self, inputs: dict) -> dict[str, list[dict]]:
+        rules: dict[str, list[dict]] = defaultdict(list)
+        for row in self._staff_polyvalence_rows(inputs):
+            target_norm = self._normalize_staff_name(self._polyvalence_target(row))
+            source_norm = self._normalize_staff_name(self._polyvalence_source(row))
+            if not target_norm or not source_norm:
+                continue
+            rule = dict(row)
+            rule["_source_norm"] = source_norm
+            rule["_target_norm"] = target_norm
+            rule["_source_label"] = self._polyvalence_source(row)
+            rule["_factor"] = self._normalize_productivity_factor(row)
+            rules[target_norm].append(rule)
+        for target_rules in rules.values():
+            target_rules.sort(key=lambda row: (int(float(row.get("prioridad", row.get("priority", 1)) or 1)), str(row.get("_source_label", ""))))
+        return dict(rules)
+
+    def _staff_polyvalence_rows(self, inputs: dict) -> list[dict]:
+        rows = inputs.get("staff_polyvalence")
+        if rows is None:
+            rows = inputs.get("staff_flexibility", [])
+        return [row for row in rows if self._is_active_row(row)]
+
+    def _apply_staff_polyvalence_coverage(self, area: str, deficit_equivalent: float, rules_by_target: dict[str, list[dict]], pool: dict[str, dict]) -> dict:
+        target_norm = self._normalize_staff_name(area)
+        equivalent = 0.0
+        people = 0
+        origin_counts: dict[str, dict] = {}
+        for rule in rules_by_target.get(target_norm, []):
+            if equivalent >= deficit_equivalent:
+                break
+            source_norm = rule.get("_source_norm", "")
+            source_pool = pool.get(source_norm)
+            factor = float(rule.get("_factor", 0) or 0)
+            if not source_pool or factor <= 0:
+                continue
+            while source_pool["remaining"] >= 1 and equivalent < deficit_equivalent:
+                source_pool["remaining"] -= 1
+                equivalent += factor
+                people += 1
+                label = str(source_pool.get("label") or rule.get("_source_label") or source_norm)
+                origin_counts.setdefault(label, {"people": 0, "equivalent": 0.0})
+                origin_counts[label]["people"] += 1
+                origin_counts[label]["equivalent"] += factor
+        origins = [f"{label}: {data['people']} persona" + ("s" if data["people"] != 1 else "") for label, data in origin_counts.items()]
+        return {"equivalent": equivalent, "people": people, "origins": origins}
+
+    def _polyvalence_source(self, row: dict) -> str:
+        return str(row.get("puesto_origen", row.get("source_area", row.get("area_origen", ""))) or "").strip()
+
+    def _polyvalence_target(self, row: dict) -> str:
+        return str(row.get("puesto_destino", row.get("target_area", row.get("area_destino", ""))) or "").strip()
+
+    def _normalize_productivity_factor(self, row: dict) -> float:
+        value = row.get("factor_productividad", row.get("efficiency_factor", row.get("factor", 100)))
+        try:
+            factor = float(value if value not in (None, "") else 100)
+        except (TypeError, ValueError):
+            factor = 1.0
+        if factor > 1:
+            factor = factor / 100.0
+        return max(0.0, factor)
+
+    def _is_active_row(self, row: dict) -> bool:
+        value = row.get("activa", row.get("active", row.get("activo", 1)))
+        if isinstance(value, str):
+            return value.strip().lower() not in {"0", "false", "no", "n", "inactivo", "inactiva"}
+        return int(value or 0) == 1
+
+    def _format_staff_quantity(self, value: float) -> int | float:
+        rounded = round(float(value or 0), 2)
+        if rounded.is_integer():
+            return int(rounded)
+        return rounded
 
     def _staff_availability_indexes(self, inputs: dict) -> tuple[dict[str, int], dict[str, str], dict[str, str]]:
         area_availability: dict[str, int] = {}
