@@ -330,6 +330,14 @@ DEFAULT_STAFF_FLEXIBILITY = [
     ("Carretillero", "Volcado", 2, 1, 0.75, 1, "Usar solo si sobra carretillero y falta volcado."),
 ]
 
+DEFAULT_STAFF_POLYVALENCE = [
+    {"puesto_origen": "Encargado", "puesto_destino": "Carretillero", "prioridad": 1, "factor_productividad": 80, "activa": 1, "observaciones": "Cobertura alternativa documentada."},
+    {"puesto_origen": "Recepción", "puesto_destino": "Mesas / Encajado", "prioridad": 2, "factor_productividad": 85, "activa": 1, "observaciones": "Usar solo con déficit real en mesas/encajado."},
+    {"puesto_origen": "Etiquetado", "puesto_destino": "Loteado", "prioridad": 1, "factor_productividad": 90, "activa": 1, "observaciones": "Polivalencia bidireccional documentada."},
+    {"puesto_origen": "Loteado", "puesto_destino": "Etiquetado", "prioridad": 1, "factor_productividad": 90, "activa": 1, "observaciones": "Polivalencia bidireccional documentada."},
+    {"puesto_origen": "Carretillero", "puesto_destino": "Volcado", "prioridad": 2, "factor_productividad": 75, "activa": 1, "observaciones": "Usar solo si sobra carretillero y falta volcado."},
+]
+
 
 class ProductionSettingsRepository:
     def __init__(self) -> None:
@@ -352,6 +360,7 @@ class ProductionSettingsRepository:
         self.ensure_line_capacity_config_defaults()
         self.ensure_line_required_resources_defaults()
         self.ensure_staff_area_equivalences_defaults()
+        self.ensure_staff_polyvalence_defaults()
         self.ensure_flow_staffing_defaults()
 
     def ensure_schema(self) -> None:
@@ -1828,6 +1837,59 @@ class ProductionSettingsRepository:
         with get_connection() as conn:
             conn.execute("DELETE FROM production_staff_area_equivalences")
         self.ensure_staff_area_equivalences_defaults()
+
+
+    def ensure_staff_polyvalence_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS capacity_productivity_staff_polyvalence (
+                    id INTEGER PRIMARY KEY,
+                    puesto_origen TEXT NOT NULL,
+                    puesto_destino TEXT NOT NULL,
+                    prioridad INTEGER DEFAULT 1,
+                    factor_productividad REAL DEFAULT 100,
+                    activa INTEGER DEFAULT 1,
+                    observaciones TEXT,
+                    updated_at TEXT,
+                    UNIQUE(puesto_origen, puesto_destino)
+                )
+            """)
+
+    def ensure_staff_polyvalence_defaults(self) -> None:
+        self.ensure_staff_polyvalence_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            for row in DEFAULT_STAFF_POLYVALENCE:
+                conn.execute("""
+                    INSERT INTO capacity_productivity_staff_polyvalence (puesto_origen,puesto_destino,prioridad,factor_productividad,activa,observaciones,updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(puesto_origen, puesto_destino) DO NOTHING
+                """, (row["puesto_origen"], row["puesto_destino"], int(row.get("prioridad", 1)), float(row.get("factor_productividad", 100)), int(row.get("activa", 1)), row.get("observaciones", ""), now))
+
+    def get_staff_polyvalence(self, active_only: bool = False) -> list[dict]:
+        self.ensure_staff_polyvalence_defaults()
+        sql = "SELECT * FROM capacity_productivity_staff_polyvalence"
+        if active_only:
+            sql += " WHERE activa = 1"
+        sql += " ORDER BY puesto_destino, prioridad, id"
+        with get_connection() as conn:
+            return [dict(r) for r in conn.execute(sql).fetchall()]
+
+    def save_staff_polyvalence(self, rows: list[dict]) -> None:
+        self.ensure_staff_polyvalence_schema()
+        now = datetime.utcnow().isoformat()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM capacity_productivity_staff_polyvalence")
+            for row in rows:
+                conn.execute("""
+                    INSERT INTO capacity_productivity_staff_polyvalence (puesto_origen,puesto_destino,prioridad,factor_productividad,activa,observaciones,updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (row["puesto_origen"], row["puesto_destino"], int(float(row.get("prioridad", 1) or 1)), float(row.get("factor_productividad", 100) or 100), int(row.get("activa", 1) or 0), row.get("observaciones", ""), now))
+
+    def reset_staff_polyvalence_defaults(self) -> None:
+        self.ensure_staff_polyvalence_schema()
+        with get_connection() as conn:
+            conn.execute("DELETE FROM capacity_productivity_staff_polyvalence")
+        self.ensure_staff_polyvalence_defaults()
 
     def ensure_staff_flexibility_schema(self) -> None:
         with get_connection() as conn:

@@ -81,3 +81,25 @@ def test_staff_equivalence_tria_comes_from_master(monkeypatch):
     assert available == 5
     assert match == "equivalence"
     assert matched == "Tría principal + Tría mallas"
+
+
+def test_staff_polyvalence_master_migrates_and_persists(monkeypatch, tmp_path):
+    import db.connection as connection
+    from db.production_settings_repository import ProductionSettingsRepository
+
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    repo = ProductionSettingsRepository()
+
+    default_rows = repo.get_staff_polyvalence()
+    assert default_rows
+    assert {"puesto_origen", "puesto_destino", "prioridad", "factor_productividad", "activa", "observaciones", "updated_at"}.issubset(default_rows[0])
+
+    repo.save_staff_polyvalence([
+        {"puesto_origen": "Origen custom", "puesto_destino": "Destino custom", "prioridad": 3, "factor_productividad": 88.5, "activa": 1, "observaciones": "Prueba"}
+    ])
+
+    custom_rows = [row for row in repo.get_staff_polyvalence() if row["puesto_origen"] == "Origen custom"]
+    assert len(custom_rows) == 1
+    assert custom_rows[0]["puesto_destino"] == "Destino custom"
+    assert custom_rows[0]["prioridad"] == 3
+    assert custom_rows[0]["factor_productividad"] == 88.5

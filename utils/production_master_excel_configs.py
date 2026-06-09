@@ -130,4 +130,14 @@ PRODUCTION_MASTER_EXCEL_CONFIGS.update({
         "required_columns": ["area_requerida", "area_personal", "prioridad", "activa"],
         "numeric_columns": ["prioridad"], "boolean_columns": ["activa"], "unique_key": "area_requerida|area_personal", "delete_missing_default": False,
     },
+    "staff_polyvalence": {
+        "key": "staff_polyvalence", "sheet_name": "PolivalenciasPersonal", "default_filename": "polivalencias_personal.xlsx",
+        "columns": ["id", "puesto_origen", "puesto_destino", "prioridad", "factor_productividad", "activa", "observaciones", "updated_at"],
+        "required_columns": ["puesto_origen", "puesto_destino", "prioridad", "factor_productividad", "activa"],
+        "numeric_columns": ["prioridad", "factor_productividad"], "boolean_columns": ["activa"], "unique_key": "puesto_origen|puesto_destino", "delete_missing_default": False,
+    },
+    "capacity_productive": {
+        "key": "capacity_productive", "sheet_name": "FamiliasProductivas", "default_filename": "CapacidadProductiva.xlsx",
+        "composite_sheets": ["FamiliasProductivas", "ConfigLineasCapacidad", "RecursosRequeridosLinea", "EquivalenciasPuestos", "PolivalenciasPersonal"],
+    },
 })
