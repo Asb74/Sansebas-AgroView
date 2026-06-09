@@ -122,6 +122,49 @@ def pedido_previsto_a_demanda(p: dict, cultivo_actual: str = "", campana_actual:
     }
 
 
+
+def _pedido_previsto_log_context(row: dict) -> dict[str, Any]:
+    return {
+        "id": row.get("id_previsto", row.get("IdPedidoLora", "")),
+        "cliente": row.get("cliente", row.get("Cliente", "")),
+        "kg": row.get("kg_estimados", row.get("Kg pendientes", "")),
+        "cultivo": row.get("cultivo", row.get("Cultivo", "")),
+        "campana": row.get("campana", row.get("Campaña", "")),
+        "empresa": row.get("empresa", row.get("Empresa", row.get("EMPRESA", ""))),
+        "semana": row.get("semana", row.get("Semana", "")),
+    }
+
+
+def _log_pedido_previsto_incluido(row: dict) -> None:
+    ctx = _pedido_previsto_log_context(row)
+    logger.info(
+        "PREVISTO INCLUIDO | id=%s | cliente=%s | kg_estimados=%s | cultivo=%s | campaña=%s | empresa=%s | semana=%s",
+        ctx["id"],
+        ctx["cliente"],
+        ctx["kg"],
+        ctx["cultivo"],
+        ctx["campana"],
+        ctx["empresa"],
+        ctx["semana"],
+    )
+
+
+def _log_pedido_previsto_descartado(row: dict, motivo: str, valor_pedido: Any, filtro: Any) -> None:
+    ctx = _pedido_previsto_log_context(row)
+    logger.info(
+        "PREVISTO DESCARTADO | id=%s | cliente=%s | kg_estimados=%s | cultivo=%s | campaña=%s | empresa=%s | semana=%s | motivo=%s | valor_pedido=%r | filtro=%r",
+        ctx["id"],
+        ctx["cliente"],
+        ctx["kg"],
+        ctx["cultivo"],
+        ctx["campana"],
+        ctx["empresa"],
+        ctx["semana"],
+        motivo,
+        valor_pedido,
+        filtro,
+    )
+
 def filtrar_pedidos_previstos(pedidos: list[dict], filters: dict | None = None, *, cultivo_actual: str = "", campana_actual: str = "", empresa_actual: str = "", incluir_descartados: bool = False) -> list[dict]:
     filters = filters or {}
     desde = _parse_fecha(filters.get("fecha_desde"))
@@ -129,13 +172,16 @@ def filtrar_pedidos_previstos(pedidos: list[dict], filters: dict | None = None, 
     selected = {k: _filter_values(filters, k) for k in ("campana", "cultivo", "empresa", "semana", "var_coop", "grupo_varietal", "marca")}
     out: list[dict] = []
     for pedido in pedidos:
-        if not incluir_descartados and _norm(pedido.get("estado", "")) == "DESCARTADO":
-            continue
         row = pedido_previsto_a_demanda(pedido, cultivo_actual=cultivo_actual, campana_actual=campana_actual, empresa_actual=empresa_actual)
+        if not incluir_descartados and _norm(pedido.get("estado", "")) == "DESCARTADO":
+            _log_pedido_previsto_descartado(row, "estado", pedido.get("estado", ""), "DESCARTADO")
+            continue
         fecha_dt = _parse_fecha(row.get("Fecha salida"))
         if desde and (not fecha_dt or fecha_dt < desde):
+            _log_pedido_previsto_descartado(row, "fecha_desde", row.get("Fecha salida", ""), filters.get("fecha_desde"))
             continue
         if hasta and (not fecha_dt or fecha_dt > hasta):
+            _log_pedido_previsto_descartado(row, "fecha_hasta", row.get("Fecha salida", ""), filters.get("fecha_hasta"))
             continue
         checks = {
             "campana": row.get("Campaña", ""),
@@ -146,8 +192,15 @@ def filtrar_pedidos_previstos(pedidos: list[dict], filters: dict | None = None, 
             "grupo_varietal": row.get("Grupo varietal", ""),
             "marca": row.get("Marca", ""),
         }
-        if any(vals and _norm(checks[key]) not in vals for key, vals in selected.items()):
+        descartado = False
+        for key, vals in selected.items():
+            if vals and _norm(checks[key]) not in vals:
+                _log_pedido_previsto_descartado(row, key, checks[key], ",".join(sorted(vals)))
+                descartado = True
+                break
+        if descartado:
             continue
+        _log_pedido_previsto_incluido(row)
         out.append(row)
     return out
 
