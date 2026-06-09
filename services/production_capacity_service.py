@@ -75,6 +75,13 @@ class ProductionCapacityService:
             "personal_cubierto_polivalencia": staffing["summary"].get("personal_cubierto_polivalencia", 0),
             "puestos_cubiertos_polivalencia": staffing["summary"].get("puestos_cubiertos_polivalencia", 0),
         })
+        bottleneck_rows = self.calculate_bottlenecks({
+            "line_rows": line,
+            "staffing_rows": staffing["rows"],
+            "mapped": mapped,
+            "inputs": inputs,
+        })
+        staffing_bottleneck = self._summarize_staff_bottlenecks(bottleneck_rows)
         summary.update({
             "recurso_cuello_botella": bottleneck.get("Recurso", "") if bottleneck else "",
             "ocupacion_cuello_botella_pct": bottleneck.get("Ocupación %", 0) if bottleneck else 0,
@@ -82,9 +89,13 @@ class ProductionCapacityService:
             "personal_minimo_recursos": personnel_resources["personal_minimo_recursos"],
             "personal_optimo_recursos": personnel_resources["personal_optimo_recursos"],
             "aviso_personal_recursos": personnel_resources["aviso_tecnico"],
+            "puesto_cuello_botella_principal": staffing_bottleneck.get("puesto", ""),
+            "linea_cuello_botella_principal": staffing_bottleneck.get("linea", ""),
+            "capacidad_alcanzable_pct": staffing_bottleneck.get("capacidad_pct", 0),
+            "kg_alcanzables_estimados": staffing_bottleneck.get("kg_alcanzables", 0),
         })
-        alerts = self.calculate_capacity_alerts(summary, fam, line, incidencias + resource_incidencias + staffing["incidencias"], resource_rows, bottleneck)
-        return {"summary": summary, "family_rows": fam, "line_rows": line, "resource_rows": resource_rows, "staffing_rows": staffing["rows"], "incidencias": alerts, "pedidos": mapped}
+        alerts = self.calculate_capacity_alerts(summary, fam, line, incidencias + resource_incidencias + staffing["incidencias"], resource_rows, bottleneck, bottleneck_rows)
+        return {"summary": summary, "family_rows": fam, "line_rows": line, "resource_rows": resource_rows, "staffing_rows": staffing["rows"], "bottleneck_rows": bottleneck_rows, "incidencias": alerts, "pedidos": mapped}
 
     def map_orders_to_productive_config(self, pedidos_reales: list[dict], pedidos_previstos: list[dict], inputs: dict) -> tuple[list[dict], list[dict]]:
         mapping = {str(r.get("codigo_mconfeccion", "")).strip(): r for r in inputs["packaging_mapping"]}
@@ -617,6 +628,146 @@ class ProductionCapacityService:
             })
         return out
 
+    def calculate_bottlenecks(self, capacity_result: dict) -> list[dict]:
+        """Estimate per-line human-capacity bottlenecks from already calculated staffing rows."""
+        line_rows = capacity_result.get("line_rows", []) or []
+        staffing_rows = capacity_result.get("staffing_rows", []) or []
+        mapped = capacity_result.get("mapped", []) or capacity_result.get("pedidos", []) or []
+        line_index = {str(row.get("Línea productiva", "") or "").strip(): row for row in line_rows}
+        optimum_context = self._line_optimum_context(mapped)
+        rows_by_line: dict[str, list[dict]] = defaultdict(list)
+        for row in staffing_rows:
+            line = str(row.get("Línea productiva", "") or "").strip()
+            if not line:
+                continue
+            optimo = self._to_float(row.get("Óptimo", 0))
+            # TODO maestro futuro: añadir campo limita_capacidad para excluir puestos no limitantes sin hardcodear áreas.
+            if optimo <= 0:
+                continue
+            efectivo = self._to_float(row.get("Disponible efectivo", row.get("Disponible", 0)))
+            minimo = self._to_float(row.get("Mínimo", 0))
+            factor = max(0.0, efectivo / optimo)
+            rows_by_line[line].append({"row": row, "factor": factor, "efectivo": efectivo, "minimo": minimo, "optimo": optimo})
+
+        bottlenecks: list[dict] = []
+        for line, candidates in rows_by_line.items():
+            if not candidates:
+                continue
+            limiting = min(candidates, key=lambda item: (item["factor"], str(item["row"].get("Área / puesto", ""))))
+            row = limiting["row"]
+            line_row = line_index.get(line, {})
+            kg_line = self._to_float(line_row.get("Kg", 0))
+            factor = limiting["factor"]
+            kg_reachable = kg_line * factor
+            kg_uncovered = max(0.0, kg_line - kg_reachable)
+            minimo = limiting["minimo"]
+            optimo = limiting["optimo"]
+            efectivo = limiting["efectivo"]
+            deficit_min = max(0.0, minimo - efectivo)
+            deficit_opt = max(0.0, optimo - efectivo)
+            estado, tag, action = self._bottleneck_status_action(efectivo, minimo, optimo)
+            hours_real = self._to_float(line_row.get("Horas necesarias", 0))
+            horas_teoricas = self._theoretical_optimum_hours(line, kg_line, hours_real, optimum_context)
+            horas_ajustadas = horas_teoricas / factor if factor > 0 else 0.0
+            puesto = str(row.get("Área / puesto", "") or "").strip()
+            main_post = str(optimum_context.get(line, {}).get("puesto_principal", "") or "").strip()
+            aviso = ""
+            if main_post and self._normalize_staff_name(puesto) != self._normalize_staff_name(main_post) and factor < 1:
+                aviso = "La producción puede verse limitada por un puesto auxiliar."
+            bottlenecks.append({
+                "Línea productiva": line,
+                "Puesto limitante": puesto,
+                "Tipo personal": row.get("Tipo personal", ""),
+                "Mínimo": self._format_bottleneck_quantity(minimo),
+                "Óptimo": self._format_bottleneck_quantity(optimo),
+                "Disponible base": row.get("Disponible base", 0),
+                "Polivalente": row.get("Polivalente", 0),
+                "Disponible efectivo": row.get("Disponible efectivo", row.get("Disponible", 0)),
+                "Déficit mínimo": self._format_bottleneck_quantity(deficit_min),
+                "Déficit óptimo": self._format_bottleneck_quantity(deficit_opt),
+                "Factor capacidad %": round(factor * 100.0, 2),
+                "Kg línea": round(kg_line, 2),
+                "Kg alcanzables estimados": round(kg_reachable, 2),
+                "Kg no cubiertos estimados": round(kg_uncovered, 2),
+                "Horas reales actuales": round(hours_real, 2),
+                "Horas teóricas óptimas": round(horas_teoricas, 2),
+                "Horas ajustadas cuello": round(horas_ajustadas, 2),
+                "Aviso": aviso,
+                "Estado": estado,
+                "Acción sugerida": action,
+                "__tags__": (tag,),
+            })
+        return sorted(bottlenecks, key=lambda row: (self._to_float(row.get("Factor capacidad %", 0)), row.get("Línea productiva", "")))
+
+    def _summarize_staff_bottlenecks(self, bottleneck_rows: list[dict]) -> dict:
+        if not bottleneck_rows:
+            return {"puesto": "", "linea": "", "capacidad_pct": 0, "kg_alcanzables": 0}
+        main = min(bottleneck_rows, key=lambda row: self._to_float(row.get("Factor capacidad %", 0)))
+        return {
+            "puesto": str(main.get("Puesto limitante", "") or ""),
+            "linea": str(main.get("Línea productiva", "") or ""),
+            "capacidad_pct": round(self._to_float(main.get("Factor capacidad %", 0)), 2),
+            "kg_alcanzables": round(sum(self._to_float(row.get("Kg alcanzables estimados", 0)) for row in bottleneck_rows), 2),
+        }
+
+    def _bottleneck_status_action(self, efectivo: float, minimo: float, optimo: float) -> tuple[str, str, str]:
+        if efectivo < minimo:
+            return "Rojo", "tag_red", "Cubrir dotación mínima antes de lanzar el flujo"
+        if efectivo < optimo:
+            return "Amarillo", "tag_yellow", "Reforzar puesto para alcanzar rendimiento óptimo"
+        return "Verde", "tag_green", "Sin acción requerida"
+
+    def _line_optimum_context(self, mapped: list[dict]) -> dict[str, dict]:
+        grouped: dict[str, dict] = defaultdict(lambda: {"base_weighted": 0.0, "opt_weighted": 0.0, "kg": 0.0, "puesto_principal": ""})
+        for item in mapped:
+            line = str(item.get("linea", item.get("Línea productiva", "")) or "").strip()
+            if not line:
+                continue
+            kg = self._to_float(item.get("kg", item.get("Kg", 0)))
+            weight = kg if kg > 0 else 1.0
+            grouped[line]["kg"] += weight
+            grouped[line]["base_weighted"] += self._to_float(item.get("rendimiento_base_kg_h_persona", 0)) * weight
+            grouped[line]["opt_weighted"] += self._to_float(item.get("personas_productivas_principales_optimo", 0)) * weight
+            if not grouped[line]["puesto_principal"]:
+                grouped[line]["puesto_principal"] = str(item.get("puesto_productivo_principal", "") or "").strip()
+        out: dict[str, dict] = {}
+        for line, data in grouped.items():
+            weight = data["kg"] or 1.0
+            out[line] = {
+                "rendimiento_base": data["base_weighted"] / weight,
+                "personas_optimas": data["opt_weighted"] / weight,
+                "puesto_principal": data["puesto_principal"],
+            }
+        return out
+
+    def _theoretical_optimum_hours(self, line: str, kg_line: float, hours_real: float, optimum_context: dict[str, dict]) -> float:
+        context = optimum_context.get(line, {})
+        capacity = self._to_float(context.get("rendimiento_base", 0)) * self._to_float(context.get("personas_optimas", 0))
+        if kg_line > 0 and capacity > 0:
+            return kg_line / capacity
+        return hours_real
+
+    def _to_float(self, value: object) -> float:
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value or "").strip()
+        if not text:
+            return 0.0
+        text = text.replace("%", "").replace(" ", "")
+        if "," in text and "." in text:
+            text = text.replace(",", "")
+        elif "," in text:
+            text = text.replace(",", ".")
+        try:
+            return float(text)
+        except ValueError:
+            return 0.0
+
+    def _format_bottleneck_quantity(self, value: float) -> int | float:
+        if abs(value - round(value)) < 0.000001:
+            return int(round(value))
+        return round(value, 2)
+
     def detect_bottleneck(self, resource_usage_rows: list[dict]) -> dict | None:
         candidates = [r for r in resource_usage_rows if str(r.get("Modo uso", "")).strip().lower() == "restrictivo" and float(r.get("Kg asignados", 0) or 0) > 0]
         if not candidates:
@@ -643,7 +794,7 @@ class ProductionCapacityService:
         per = inputs["personnel"]
         return {"Kg reales pendientes": round(kg_real, 2), "Kg previstos": round(kg_prev, 2), "Kg total simulación": round(kg_real + kg_prev, 2), "Horas necesarias estimadas": round(horas, 2), "Horas disponibles": round(hdisp, 2), "Ocupación %": round(occ, 2), "jornadas_equivalentes": round(turnos_equivalentes, 2), "turnos_equivalentes": round(turnos_equivalentes, 2), "Personal disponible total": int(per.get("personal_total", 0) or 0), "Personal directo disponible": int(per.get("personal_directo", 0) or 0), "Personal soporte disponible": int(per.get("personal_soporte", 0) or 0), "Personal indirecto disponible": int(per.get("personal_indirecto", 0) or 0), "Estado capacidad": self._state(occ, inputs["semaphore_rules"], "General")}
 
-    def calculate_capacity_alerts(self, summary: dict, family_rows: list[dict], line_rows: list[dict], incidencias: list[dict], resource_rows: list[dict] | None = None, bottleneck: dict | None = None) -> list[dict]:
+    def calculate_capacity_alerts(self, summary: dict, family_rows: list[dict], line_rows: list[dict], incidencias: list[dict], resource_rows: list[dict] | None = None, bottleneck: dict | None = None, bottleneck_rows: list[dict] | None = None) -> list[dict]:
         out = list(incidencias)
         for row in family_rows:
             if row["Ocupación %"] >= 100:
@@ -657,6 +808,22 @@ class ProductionCapacityService:
                 out.append({"Tipo incidencia": "Cuello de botella > 100%", "Pedido": "-", "Cliente": "-", "Confección": "-", "Línea productiva": bottleneck.get("Línea productiva", ""), "Motivo": bottleneck.get("motivo", f"Ocupación {occ:.2f}%"), "Acción sugerida": "Reducir kg asignados o ampliar capacidad del recurso"})
             elif occ >= 85:
                 out.append({"Tipo incidencia": "Cuello de botella > 85%", "Pedido": "-", "Cliente": "-", "Confección": "-", "Línea productiva": bottleneck.get("Línea productiva", ""), "Motivo": bottleneck.get("motivo", f"Ocupación {occ:.2f}%"), "Acción sugerida": "Vigilar recurso y preparar alternativa"})
+        for row in bottleneck_rows or []:
+            deficit_opt = self._to_float(row.get("Déficit óptimo", 0))
+            if deficit_opt <= 0:
+                continue
+            puesto = str(row.get("Puesto limitante", "") or "").strip()
+            efectivo = self._format_bottleneck_quantity(self._to_float(row.get("Disponible efectivo", 0)))
+            optimo = self._format_bottleneck_quantity(self._to_float(row.get("Óptimo", 0)))
+            out.append({
+                "Tipo incidencia": "Cuello de botella",
+                "Pedido": "-",
+                "Cliente": "-",
+                "Confección": puesto,
+                "Línea productiva": row.get("Línea productiva", ""),
+                "Motivo": f"{puesto} limita capacidad: disponible efectivo {efectivo} < óptimo {optimo}",
+                "Acción sugerida": "Reforzar puesto para alcanzar capacidad óptima" if row.get("Estado") != "Rojo" else "Cubrir dotación mínima antes de lanzar el flujo",
+            })
         personal_min = int(summary.get("personal_minimo_recursos", 0) or 0)
         personal_directo = int(summary.get("Personal directo disponible", 0) or 0)
         if personal_min > personal_directo:
