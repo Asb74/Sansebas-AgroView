@@ -13,7 +13,7 @@ def _service(monkeypatch):
     return ProductionCapacityService.__new__(ProductionCapacityService)
 
 
-def _staffing(monkeypatch, flow_staffing, staff_areas, staff_polyvalence=None):
+def _staffing(monkeypatch, flow_staffing, staff_areas, staff_polyvalence=None, staff_area_equivalences=None):
     service = _service(monkeypatch)
     return service.calculate_staffing_requirements(
         {
@@ -22,6 +22,8 @@ def _staffing(monkeypatch, flow_staffing, staff_areas, staff_polyvalence=None):
                 "flow_staffing": flow_staffing,
                 "staff_areas": staff_areas,
                 "staff_polyvalence": staff_polyvalence or [],
+                "staff_area_equivalences": staff_area_equivalences or [],
+                "production_staff_area_equivalences": staff_area_equivalences or [],
             },
         }
     )
@@ -137,3 +139,53 @@ def test_staff_polyvalence_productivity_factor_is_conservative_for_minimum(monke
     assert row["Disponible efectivo"] == 0.8
     assert row["Estado"] == "Rojo"
     assert any(inc["Tipo incidencia"] == "Falta personal mínimo" and inc["Confección"] == "Loteado" for inc in result["incidencias"])
+
+
+def test_staff_polyvalence_resolves_source_and_target_equivalences(monkeypatch):
+    result = _staffing(
+        monkeypatch,
+        [
+            {"linea_productiva": "ENCAJADO", "area_puesto": "Carretillero", "tipo_personal": "Indirecto", "minimo": 1, "optimo": 1, "activo": 1, "obligatorio": 1},
+            {"linea_productiva": "ENCAJADO", "area_puesto": "Encargado", "tipo_personal": "Indirecto", "minimo": 1, "optimo": 1, "activo": 1, "obligatorio": 1},
+        ],
+        [
+            {"area": "Carretilleros", "tipo_personal": "Indirecto", "disponible": 0, "activo": 1},
+            {"area": "Encargados", "tipo_personal": "Indirecto", "disponible": 3, "activo": 1},
+        ],
+        [{"puesto_origen": "Encargado", "puesto_destino": "Carretillero", "prioridad": 1, "factor_productividad": 80, "activa": 1}],
+        [
+            {"area_requerida": "Encargado", "area_personal": "Encargados", "prioridad": 1, "activa": 1},
+            {"area_requerida": "Carretillero", "area_personal": "Carretilleros", "prioridad": 1, "activa": 1},
+        ],
+    )
+
+    rows = {r["Área / puesto"]: r for r in result["rows"]}
+    assert rows["Encargado"]["Disponible base"] == 3
+    assert rows["Carretillero"]["Disponible base"] == 0
+    assert rows["Carretillero"]["Polivalente"] == 1.6
+    assert rows["Carretillero"]["Disponible efectivo"] == 1.6
+    assert rows["Carretillero"]["Estado"] == "Verde"
+
+
+def test_staff_polyvalence_target_rule_matches_real_equivalent_area(monkeypatch):
+    result = _staffing(
+        monkeypatch,
+        [
+            {"linea_productiva": "ENCAJADO", "area_puesto": "Carretilleros", "tipo_personal": "Indirecto", "minimo": 1, "optimo": 1, "activo": 1, "obligatorio": 1},
+            {"linea_productiva": "ENCAJADO", "area_puesto": "Encargado", "tipo_personal": "Indirecto", "minimo": 1, "optimo": 1, "activo": 1, "obligatorio": 1},
+        ],
+        [
+            {"area": "Carretilleros", "tipo_personal": "Indirecto", "disponible": 0, "activo": 1},
+            {"area": "Encargados", "tipo_personal": "Indirecto", "disponible": 3, "activo": 1},
+        ],
+        [{"puesto_origen": "Encargado", "puesto_destino": "Carretillero", "prioridad": 1, "factor_productividad": 100, "activa": 1}],
+        [
+            {"area_requerida": "Encargado", "area_personal": "Encargados", "prioridad": 1, "activa": 1},
+            {"area_requerida": "Carretillero", "area_personal": "Carretilleros", "prioridad": 1, "activa": 1},
+        ],
+    )
+
+    row = {r["Área / puesto"]: r for r in result["rows"]}["Carretilleros"]
+    assert row["Polivalente"] == 1
+    assert row["Disponible efectivo"] == 1
+    assert row["Estado"] == "Verde"

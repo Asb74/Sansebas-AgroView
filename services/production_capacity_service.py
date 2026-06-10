@@ -345,7 +345,7 @@ class ProductionCapacityService:
         row_contexts: list[dict] = []
         source_minimums = self._staff_minimums_by_area(staff_rows)
         polyvalence_pool = self._staff_polyvalence_pool(inputs, area_availability, area_names, source_minimums)
-        polyvalence_rules = self._staff_polyvalence_rules_by_target(inputs)
+        polyvalence_rules = self._staff_polyvalence_rules_by_target(inputs, area_availability, area_names)
         rows: list[dict] = []
         incidencias: list[dict] = []
         totals = {"min": 0, "opt": 0, "est": 0, "deficit": 0, "poly_people": 0, "poly_posts": 0}
@@ -869,35 +869,99 @@ class ProductionCapacityService:
             source_norm = self._normalize_staff_name(source)
             if source_norm:
                 source_names.add(source_norm)
+
         pool: dict[str, dict] = {}
         for source_norm in source_names:
             source_label = area_names.get(source_norm, source_norm)
-            available, _match_kind, matched = self._available_staff_for_area(source_label, area_availability, area_names)
-            minimum = max(0, int(source_minimums.get(source_norm, 0) or 0))
-            pool[source_norm] = {
+            matched_norms = self._staff_area_match_norms(source_norm, area_availability, inputs)
+            pool_key = self._staff_polyvalence_pool_key(source_norm, matched_norms)
+            available = sum(area_availability[norm] for norm in matched_norms) if matched_norms else 0
+            matched = " + ".join(area_names.get(norm, norm) for norm in matched_norms)
+            minimum = self._minimum_for_staff_equivalent_group(source_norm, source_minimums, inputs, matched_norms)
+
+            current = pool.get(pool_key)
+            if current:
+                current["minimum"] = max(current["minimum"], minimum)
+                current["remaining"] = max(0, current["available"] - current["minimum"])
+                continue
+
+            pool[pool_key] = {
                 "label": matched or source_label,
                 "available": available,
                 "minimum": minimum,
                 "remaining": max(0, available - minimum),
+                "resolved": matched or source_label,
             }
         return pool
 
-    def _staff_polyvalence_rules_by_target(self, inputs: dict) -> dict[str, list[dict]]:
+    def _staff_polyvalence_rules_by_target(self, inputs: dict, area_availability: dict[str, int] | None = None, area_names: dict[str, str] | None = None) -> dict[str, list[dict]]:
+        area_availability = area_availability or {}
+        area_names = area_names or {}
         rules: dict[str, list[dict]] = defaultdict(list)
         for row in self._staff_polyvalence_rows(inputs):
-            target_norm = self._normalize_staff_name(self._polyvalence_target(row))
-            source_norm = self._normalize_staff_name(self._polyvalence_source(row))
+            target = self._polyvalence_target(row)
+            source = self._polyvalence_source(row)
+            target_norm = self._normalize_staff_name(target)
+            source_norm = self._normalize_staff_name(source)
             if not target_norm or not source_norm:
                 continue
+
+            source_matched_norms = self._staff_area_match_norms(source_norm, area_availability, inputs)
+            target_matched_norms = self._staff_area_match_norms(target_norm, area_availability, inputs)
+            source_resolved = " + ".join(area_names.get(norm, norm) for norm in source_matched_norms) or source
+            target_resolved = " + ".join(area_names.get(norm, norm) for norm in target_matched_norms) or target
+
             rule = dict(row)
-            rule["_source_norm"] = source_norm
+            rule["_source_norm"] = self._staff_polyvalence_pool_key(source_norm, source_matched_norms)
             rule["_target_norm"] = target_norm
-            rule["_source_label"] = self._polyvalence_source(row)
+            rule["_source_label"] = source
+            rule["_target_label"] = target
+            rule["_source_resolved"] = source_resolved
+            rule["_target_resolved"] = target_resolved
             rule["_factor"] = self._normalize_productivity_factor(row)
-            rules[target_norm].append(rule)
+
+            logger.debug(
+                "POLIVALENCIA_ORIGEN=%s POLIVALENCIA_DESTINO=%s ORIGEN_RESUELTO=%s DESTINO_RESUELTO=%s",
+                source,
+                target,
+                source_resolved,
+                target_resolved,
+            )
+
+            for target_alias_norm in self._staff_polyvalence_target_norms(target_norm, inputs, target_matched_norms):
+                rules[target_alias_norm].append(dict(rule))
         for target_rules in rules.values():
             target_rules.sort(key=lambda row: (int(float(row.get("prioridad", row.get("priority", 1)) or 1)), str(row.get("_source_label", ""))))
         return dict(rules)
+
+
+    def _staff_area_match_norms(self, area_norm: str, area_availability: dict[str, int], inputs: dict | None = None) -> tuple[str, ...]:
+        if not area_norm:
+            return ()
+        equivalent_names = self._staff_equivalent_names(area_norm, inputs)
+        matched_norms: list[str] = []
+        if area_norm in area_availability:
+            matched_norms.append(area_norm)
+        for norm in equivalent_names:
+            if norm != area_norm and norm in area_availability and norm not in matched_norms:
+                matched_norms.append(norm)
+        return tuple(matched_norms)
+
+    def _staff_polyvalence_pool_key(self, source_norm: str, matched_norms: tuple[str, ...]) -> str:
+        return "|".join(matched_norms) if matched_norms else source_norm
+
+    def _minimum_for_staff_equivalent_group(self, source_norm: str, source_minimums: dict[str, int], inputs: dict | None, matched_norms: tuple[str, ...]) -> int:
+        minimum_norms = set(matched_norms)
+        minimum_norms.update(self._staff_equivalent_names(source_norm, inputs))
+        minimum_norms.add(source_norm)
+        return max(0, sum(int(source_minimums.get(norm, 0) or 0) for norm in minimum_norms))
+
+    def _staff_polyvalence_target_norms(self, target_norm: str, inputs: dict | None, matched_norms: tuple[str, ...]) -> tuple[str, ...]:
+        target_norms: list[str] = []
+        for norm in (target_norm, *self._staff_equivalent_names(target_norm, inputs), *matched_norms):
+            if norm and norm not in target_norms:
+                target_norms.append(norm)
+        return tuple(target_norms)
 
     def _staff_polyvalence_rows(self, inputs: dict) -> list[dict]:
         rows = inputs.get("staff_polyvalence")
@@ -926,6 +990,18 @@ class ProductionCapacityService:
                 origin_counts.setdefault(label, {"people": 0, "equivalent": 0.0})
                 origin_counts[label]["people"] += 1
                 origin_counts[label]["equivalent"] += factor
+                logger.debug(
+                    "POLIVALENCIA_ORIGEN=%s POLIVALENCIA_DESTINO=%s ORIGEN_RESUELTO=%s DESTINO_RESUELTO=%s DISPONIBLE_ORIGEN=%s MINIMO_ORIGEN=%s EXCEDENTE_ORIGEN=%s FACTOR=%s COBERTURA_APLICADA=%s",
+                    rule.get("_source_label", ""),
+                    rule.get("_target_label", area),
+                    rule.get("_source_resolved", source_pool.get("resolved", label)),
+                    rule.get("_target_resolved", area),
+                    source_pool.get("available", 0),
+                    source_pool.get("minimum", 0),
+                    max(0, float(source_pool.get("available", 0) or 0) - float(source_pool.get("minimum", 0) or 0)),
+                    factor,
+                    factor,
+                )
         origins = [f"{label}: {data['people']} persona" + ("s" if data["people"] != 1 else "") for label, data in origin_counts.items()]
         return {"equivalent": equivalent, "people": people, "origins": origins}
 
