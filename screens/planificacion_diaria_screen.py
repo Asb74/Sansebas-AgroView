@@ -1,8 +1,13 @@
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
+
+from openpyxl import Workbook
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 
 from services.planning_service import PlanningService
 from services.runtime_database_service import RuntimeDatabaseService
@@ -40,6 +45,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.pedidos_previstos_panel: dict | None = None
         self.balance_rows: list[dict] = []
         self.balance_rows_all: list[dict] = []
+        self.last_capacity_simulation: dict | None = None
+        self.last_capacity_payload: dict | None = None
         self.sim_policy_vars: dict[str, tk.BooleanVar] = {}
         self._build_ui()
         self._load_filters()
@@ -84,6 +91,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Button(btns, text="Limpiar filtros", command=self.reset_filters).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Reaplicar filtros", command=lambda: self.load_data(save_filters=True)).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Exportar Excel", command=self.export_excel).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Exportar diagnóstico", command=self.export_diagnostico).pack(side="left", padx=(0, 8))
         self._btn_actualizar_planificacion = ttk.Button(btns, text="Actualizar planificación", command=self._actualizar_planificacion)
         self._btn_actualizar_planificacion.pack(side="left", padx=(0, 8))
         self._btn_actualizar_foto = ttk.Button(btns, text="Actualizar foto local", command=self._actualizar_foto_local)
@@ -297,6 +305,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         elif tab_activa == "Capacidad productiva":
             try:
                 cap = self.capacity_service.build_capacity_simulation(payload, self.pedidos_modo_var.get())
+                self.last_capacity_simulation = cap
+                self.last_capacity_payload = dict(payload)
                 s = cap["summary"]
                 self.kpi_capacidad.set(
                     f"Kg reales pendientes: {s['Kg reales pendientes']:,.2f} | Kg previstos: {s['Kg previstos']:,.2f} | "
@@ -324,6 +334,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 self.capacidad_staffing_table.set_rows([])
                 self.capacidad_bottleneck_table.set_rows([])
                 self.capacidad_inc_table.set_rows([])
+                self.last_capacity_simulation = None
+                self.last_capacity_payload = None
                 messagebox.showwarning("Capacidad productiva", f"No se pudo calcular capacidad productiva: {exc}")
         self.campo_table.set_rows(self.stock_campo_rows)
         self.almacen_table.set_rows(self.stock_almacen_rows)
@@ -664,6 +676,138 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self._load_filter_options(contextual=True)
         self.filters_status_var.set("Sin filtros activos")
         self.load_data(save_filters=True)
+
+    def _diagnostico_resumen_rows(self, summary: dict) -> list[dict]:
+        return [
+            {"KPI": "Kg reales pendientes", "Valor": summary.get("Kg reales pendientes", 0)},
+            {"KPI": "Kg previstos", "Valor": summary.get("Kg previstos", 0)},
+            {"KPI": "Kg total simulación", "Valor": summary.get("Kg total simulación", 0)},
+            {"KPI": "Horas necesarias", "Valor": summary.get("Horas necesarias estimadas", summary.get("Horas necesarias", 0))},
+            {"KPI": "Horas disponibles", "Valor": summary.get("Horas disponibles", 0)},
+            {"KPI": "Ocupación %", "Valor": summary.get("Ocupación %", 0)},
+            {"KPI": "Turnos equivalentes", "Valor": summary.get("turnos_equivalentes", 0)},
+            {"KPI": "Personal total", "Valor": summary.get("Personal disponible total", 0)},
+            {"KPI": "Personal directo", "Valor": summary.get("Personal directo disponible", 0)},
+            {"KPI": "Personal soporte", "Valor": summary.get("Personal soporte disponible", 0)},
+            {"KPI": "Personal indirecto", "Valor": summary.get("Personal indirecto disponible", 0)},
+            {"KPI": "Estado capacidad", "Valor": summary.get("Estado capacidad", "")},
+        ]
+
+    def _diagnostico_filter_rows(self, payload: dict) -> list[dict]:
+        labels = {
+            "campana": "Campaña",
+            "cultivo": "Cultivo",
+            "empresa": "Empresa",
+            "semana": "Semana",
+            "var_coop": "Variedad Coop",
+            "grupo_varietal": "Grupo varietal",
+            "marca": "Marca",
+            "fecha_desde": "Fecha desde",
+            "fecha_hasta": "Fecha hasta",
+            "pedidos_modo": "Modo pedidos",
+        }
+        modo_label = next((label for label, value in self.PEDIDOS_MODOS if value == self.pedidos_modo_var.get()), self.pedidos_modo_var.get())
+        rows = []
+        for key, label in labels.items():
+            value = modo_label if key == "pedidos_modo" else payload.get(key, "")
+            if isinstance(value, list):
+                value = ", ".join(str(v) for v in value) if value else "TODOS"
+            rows.append({"Filtro": label, "Valor": value or "TODOS"})
+        rows.append({"Filtro": "Grupo confección pedidos", "Valor": ", ".join(self.pedidos_grupo_confeccion_filter.get_selected()) or "TODOS"})
+        rows.append({"Filtro": "Perfil confección pedidos", "Valor": ", ".join(self.pedidos_perfil_confeccion_filter.get_selected()) or "TODOS"})
+        return rows
+
+    def _diagnostico_pedidos_previstos_rows(self, cap: dict) -> list[dict]:
+        rows = []
+        for mapped in cap.get("pedidos", []):
+            if str(mapped.get("tipo_pedido", "")).strip() != "Previsto":
+                continue
+            pedido = mapped.get("pedido", {}) or {}
+            rows.append({
+                "Id previsto": pedido.get("id_previsto", pedido.get("IdPedidoLora", "")),
+                "Estado": pedido.get("estado", ""),
+                "Fecha salida": pedido.get("Fecha salida", pedido.get("fecha_salida", "")),
+                "Cliente": pedido.get("Cliente", pedido.get("cliente", "")),
+                "Cultivo": pedido.get("Cultivo", pedido.get("cultivo", "")),
+                "Campaña": pedido.get("Campaña", pedido.get("campana", "")),
+                "Empresa": pedido.get("Empresa", pedido.get("empresa", "")),
+                "Grupo varietal": pedido.get("Grupo varietal", pedido.get("grupo_varietal", "")),
+                "Variedad": pedido.get("Variedad", pedido.get("variedad", "")),
+                "Calibre": pedido.get("Calibre", pedido.get("calibre", "")),
+                "Categoría": pedido.get("Categoría", pedido.get("categoria", "")),
+                "Marca": pedido.get("Marca", pedido.get("marca", "")),
+                "Confección prevista": pedido.get("Confección", pedido.get("confeccion_prevista", pedido.get("descripcion_base_packaging", ""))),
+                "Grupo confección": pedido.get("Grupo confección", pedido.get("grupo_confeccion", "")),
+                "Perfil confección": pedido.get("Perfil confección", pedido.get("perfil_confeccion", "")),
+                "Kg estimados": mapped.get("kg", pedido.get("kg_estimados", 0)),
+                "Palets estimados": pedido.get("palets_estimados", ""),
+                "Familia productiva": mapped.get("familia", pedido.get("familia_productiva", "")),
+                "Línea productiva": mapped.get("linea", pedido.get("linea_productiva", "")),
+                "Observaciones": pedido.get("observaciones", ""),
+            })
+        return rows
+
+    def _current_capacity_simulation(self, payload: dict) -> dict:
+        if self.last_capacity_simulation is not None and self.last_capacity_payload == payload:
+            return self.last_capacity_simulation
+        cap = self.capacity_service.build_capacity_simulation(payload, self.pedidos_modo_var.get())
+        self.last_capacity_simulation = cap
+        self.last_capacity_payload = dict(payload)
+        return cap
+
+    def _write_excel_sheet(self, wb: Workbook, title: str, rows: list[dict], headers: list[str]) -> None:
+        ws = wb.create_sheet(title=title)
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.font = Font(bold=True)
+        for row in rows:
+            ws.append([row.get(h, "") for h in headers])
+        ws.auto_filter.ref = ws.dimensions
+        ws.freeze_panes = "A2"
+        for idx, header in enumerate(headers, start=1):
+            if any(token in header.lower() for token in ("kg", "hora", "ocupación", "%", "personal", "turnos", "palets", "cajas", "déficit", "factor", "capacidad")):
+                for row_idx in range(2, ws.max_row + 1):
+                    value = ws.cell(row_idx, idx).value
+                    if isinstance(value, (int, float)):
+                        ws.cell(row_idx, idx).number_format = "#,##0.00"
+        for column_cells in ws.columns:
+            max_len = max(len(str(cell.value or "")) for cell in column_cells)
+            ws.column_dimensions[get_column_letter(column_cells[0].column)].width = min(max_len + 2, 38)
+
+    def export_diagnostico(self) -> None:
+        payload = self._filters_payload()
+        try:
+            cap = self._current_capacity_simulation(payload)
+            pedidos_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, self.pedidos_modo_var.get())
+            pedidos_pendientes, _ = self._apply_pedidos_local_filters(pedidos_rows, pedidos_kpi)
+        except Exception as exc:
+            messagebox.showerror("Exportar diagnóstico", f"No se pudo preparar el diagnóstico: {exc}", parent=self)
+            return
+
+        default_name = f"Diagnostico_Planificacion_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        target = filedialog.asksaveasfilename(defaultextension=".xlsx", initialfile=default_name, filetypes=[("Excel", "*.xlsx")])
+        if not target:
+            return
+
+        sheets = [
+            ("Resumen_KPI", self._diagnostico_resumen_rows(cap.get("summary", {})), ["KPI", "Valor"]),
+            ("Familias", cap.get("family_rows", []), list(self.capacidad_family_table.columns)),
+            ("Lineas", cap.get("line_rows", []), list(self.capacidad_line_table.columns)),
+            ("Recursos", cap.get("resource_rows", []), list(self.capacidad_resource_table.columns)),
+            ("Personal_requerido", cap.get("staffing_rows", []), list(self.capacidad_staffing_table.columns)),
+            ("Cuellos_botella", cap.get("bottleneck_rows", []), list(self.capacidad_bottleneck_table.columns)),
+            ("Incidencias", cap.get("incidencias", []), list(self.capacidad_inc_table.columns)),
+            ("Pedidos_pendientes", pedidos_pendientes, list(self.pedidos_table.columns)),
+            ("Pedidos_previstos", self._diagnostico_pedidos_previstos_rows(cap), ["Id previsto", "Estado", "Fecha salida", "Cliente", "Cultivo", "Campaña", "Empresa", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "Confección prevista", "Grupo confección", "Perfil confección", "Kg estimados", "Palets estimados", "Familia productiva", "Línea productiva", "Observaciones"]),
+            ("Filtros_aplicados", self._diagnostico_filter_rows(payload), ["Filtro", "Valor"]),
+        ]
+        wb = Workbook()
+        wb.remove(wb.active)
+        for title, rows, headers in sheets:
+            self._write_excel_sheet(wb, title, rows, headers)
+        wb.save(Path(target))
+        messagebox.showinfo("Exportar diagnóstico", f"Archivo guardado en:\n{target}", parent=self)
+
 
     def export_excel(self) -> None:
         tab = self.tabs.tab(self.tabs.select(), "text")
