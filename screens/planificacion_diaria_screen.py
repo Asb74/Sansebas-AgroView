@@ -584,21 +584,16 @@ class PlanificacionDiariaScreen(ttk.Frame):
             messagebox.showwarning("Stock campo", "No se pudo localizar la partida seleccionada.", parent=self)
             return
 
-        _resumen, detalle_map = self.service.get_aprovechamiento_stock_campo(self.stock_campo_rows, self._filters_payload())
-        rows_real = detalle_map.get(boleta, [])
-
         popup = tk.Toplevel(self)
         popup.title(f"Aprovechamiento boleta {boleta}")
         popup.geometry("1200x650")
         view_mode = tk.StringVar(value="partida")
+        current_rows: list[dict] = []
 
         header = ttk.LabelFrame(popup, text="Partida seleccionada", padding=8)
         header.pack(fill="x", padx=8, pady=(8, 4))
-
-        ttk.Label(header, text=(f"Cultivo: {partida.get('Cultivo', '')} | Campaña: {partida.get('Campaña', '')} | Fecha carga: {partida.get('Fecha carga', '')} | "
-                                f"Semana: {partida.get('Semana', '')} | Socio: {partida.get('Socio', '')} | Variedad: {partida.get('Variedad', '')} | "
-                                f"Grupo varietal: {partida.get('Grupo varietal', '')} | Boleta: {partida.get('Boleta', '')} | Kg campo: {float(partida.get('Kg campo', 0) or 0):,.2f} | "
-                                f"Estado aprovechamiento: {partida.get('Estado aprovechamiento', 'Sin aprovechamiento')}"), wraplength=1150).pack(anchor="w")
+        header_lbl = ttk.Label(header, wraplength=1150)
+        header_lbl.pack(anchor="w")
 
         body = ttk.LabelFrame(popup, text="Detalle", padding=8)
         body.pack(fill="both", expand=True, padx=8, pady=(4, 8))
@@ -608,44 +603,174 @@ class PlanificacionDiariaScreen(ttk.Frame):
         tbl = DataTable(body, cols)
         tbl.pack(fill="both", expand=True)
 
-        def render() -> None:
-            if view_mode.get() == "partida":
-                body.configure(text="Vista por partida")
-                if not rows_real:
-                    msg.configure(text="Esta partida no tiene aprovechamiento real en PesosFres")
-                    tbl.set_rows([])
-                    return
-                msg.configure(text="")
-                rows = []
-                for r in rows_real:
-                    rows.append({
-                        "Boleta": boleta,
-                        "Calibre": r.get("Calibre", ""),
-                        "Categoría": r.get("Categoría", ""),
-                        "Kg real": r.get("Kg disponibles", 0),
-                        "% aprovechamiento": r.get("% aprovechamiento", 0),
-                        "Kg campo aplicado": r.get("Kg campo origen", 0),
-                        "Kg estimado": r.get("Kg disponibles", 0),
-                        "Origen": "REAL",
-                    })
-                tbl.set_rows(rows)
-            else:
-                body.configure(text="Vista aprovechamiento medio")
-                if not rows_real:
-                    msg.configure(text="Esta partida no tiene aprovechamiento real en PesosFres")
-                    tbl.set_rows([])
-                    return
-                msg.configure(text="")
-                rows = []
-                for r in rows_real:
-                    rows.append({
-                        "Boleta": boleta, "Calibre": r.get("Calibre", ""), "Categoría": r.get("Categoría", ""),
-                        "Kg real": r.get("Kg disponibles", 0), "% aprovechamiento": r.get("% aprovechamiento", 0),
-                        "Kg campo aplicado": r.get("Kg campo origen", 0), "Kg estimado": r.get("Kg disponibles", 0), "Origen": "REAL"
-                    })
-                tbl.set_rows(rows)
+        def load_rows() -> tuple[list[dict], bool]:
+            _resumen, detalle_map = self.service.get_aprovechamiento_stock_campo(self.stock_campo_rows, self._filters_payload())
+            rows = detalle_map.get(boleta, [])
+            tiene_real = any(str(r.get("Origen aprovechamiento", "")).upper() == "REAL" for r in rows)
+            return rows, tiene_real
 
-        ttk.Button(popup, text="Alternar vista", command=lambda: (view_mode.set("media" if view_mode.get()=="partida" else "partida"), render())).pack(anchor="e", padx=8, pady=(0, 8))
+        def selected_estimated_id() -> int | None:
+            sel_row = tbl.tree.selection()
+            if not sel_row:
+                return None
+            vals = tbl.tree.item(sel_row[0], "values")
+            if len(vals) < 8 or str(vals[7]).upper() != "ESTIMADO_MANUAL":
+                return None
+            calibre = str(vals[1])
+            categoria = str(vals[2])
+            for r in current_rows:
+                if str(r.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" and str(r.get("Calibre", "")) == calibre and str(r.get("Categoría", "")) == categoria:
+                    return int(r.get("Id")) if r.get("Id") else None
+            return None
+
+        def open_form(existing: dict | None = None) -> None:
+            rows_now, tiene_real_now = load_rows()
+            if tiene_real_now:
+                messagebox.showinfo("Aprovechamiento boleta", "El aprovechamiento real de PesosFres tiene prioridad", parent=popup)
+                return
+            form = tk.Toplevel(popup)
+            form.title("Editar estimado" if existing else "Añadir estimado")
+            form.geometry("420x310")
+            form.transient(popup)
+            form.grab_set()
+            calibre_var = tk.StringVar(value=str(existing.get("Calibre", "") if existing else ""))
+            categoria_var = tk.StringVar(value=str(existing.get("Categoría", "NORMAL") if existing else "NORMAL"))
+            pct_var = tk.StringVar(value=str(existing.get("% aprovechamiento", "") if existing else ""))
+            kg_campo = float(partida.get("Kg campo", 0) or 0)
+            obs_var = tk.StringVar(value=str(existing.get("Observaciones", "") if existing else ""))
+            kg_est_var = tk.StringVar(value="0.00")
+
+            frm = ttk.Frame(form, padding=12)
+            frm.pack(fill="both", expand=True)
+            for idx, (label, var) in enumerate((("Calibre", calibre_var), ("Categoría", categoria_var), ("% aprovechamiento", pct_var), ("Kg campo aplicado", tk.StringVar(value=f"{kg_campo:.2f}")), ("Kg estimado", kg_est_var), ("Observaciones", obs_var))):
+                ttk.Label(frm, text=label).grid(row=idx, column=0, sticky="w", pady=4)
+                state = "readonly" if label in {"Kg campo aplicado", "Kg estimado"} else "normal"
+                ttk.Entry(frm, textvariable=var, state=state).grid(row=idx, column=1, sticky="ew", pady=4)
+            frm.columnconfigure(1, weight=1)
+
+            def recalc(*_args) -> None:
+                try:
+                    pct = float(str(pct_var.get()).replace(",", "."))
+                except ValueError:
+                    pct = 0.0
+                kg_est_var.set(f"{kg_campo * pct / 100:.2f}")
+            pct_var.trace_add("write", recalc)
+            recalc()
+
+            def save() -> None:
+                calibre = calibre_var.get().strip()
+                categoria = categoria_var.get().strip().upper() or "NORMAL"
+                try:
+                    pct = float(pct_var.get().replace(",", "."))
+                except ValueError:
+                    messagebox.showwarning("Aprovechamiento estimado", "El porcentaje debe ser numérico.", parent=form)
+                    return
+                calibres_norm = self.service.normalizar_calibre_a_set(calibre)
+                if not calibres_norm:
+                    messagebox.showwarning("Aprovechamiento estimado", "Calibre obligatorio.", parent=form)
+                    return
+                if pct <= 0 or pct > 100:
+                    messagebox.showwarning("Aprovechamiento estimado", "El porcentaje debe ser > 0 y <= 100.", parent=form)
+                    return
+                existentes = [r for r in rows_now if str(r.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL"]
+                duplicados = []
+                edit_id = existing.get("Id") if existing else None
+                for r in existentes:
+                    if edit_id and str(r.get("Id")) == str(edit_id):
+                        continue
+                    r_cal = self.service.normalizar_calibre_a_set(str(r.get("Calibre", "")))
+                    if r_cal.intersection(calibres_norm) and str(r.get("Categoría", "")).upper() == categoria:
+                        duplicados.append(r.get("Calibre"))
+                if duplicados and not messagebox.askyesno("Duplicado", "Ya existe un estimado activo para el mismo calibre/categoría. ¿Deseas continuar?", parent=form):
+                    return
+                try:
+                    self.service.upsert_aprovechamiento_estimado({
+                        "Id": edit_id,
+                        "Boleta": boleta,
+                        "Campana": partida.get("Campaña", ""),
+                        "Cultivo": partida.get("Cultivo", ""),
+                        "Variedad": partida.get("Variedad", ""),
+                        "GrupoVarietal": partida.get("Grupo varietal", ""),
+                        "Categoria": categoria,
+                        "Calibre": calibre,
+                        "KgCampoAplicado": kg_campo,
+                        "Porcentaje": pct,
+                        "Observaciones": obs_var.get().strip(),
+                    })
+                except Exception as exc:
+                    messagebox.showerror("Aprovechamiento estimado", str(exc), parent=form)
+                    return
+                form.destroy()
+                render()
+                self.load_data(save_filters=False)
+
+            btns = ttk.Frame(frm)
+            btns.grid(row=6, column=0, columnspan=2, sticky="e", pady=(12, 0))
+            ttk.Button(btns, text="Cancelar", command=form.destroy).pack(side="right", padx=(6, 0))
+            ttk.Button(btns, text="Guardar", command=save).pack(side="right")
+
+        def edit_selected() -> None:
+            est_id = selected_estimated_id()
+            if not est_id:
+                messagebox.showwarning("Aprovechamiento estimado", "Selecciona una línea estimada manual.", parent=popup)
+                return
+            existing = next((r for r in current_rows if str(r.get("Id")) == str(est_id)), None)
+            if existing:
+                open_form(existing)
+
+        def delete_selected() -> None:
+            est_id = selected_estimated_id()
+            if not est_id:
+                messagebox.showwarning("Aprovechamiento estimado", "Selecciona una línea estimada manual.", parent=popup)
+                return
+            if not messagebox.askyesno("Eliminar estimado", "¿Eliminar el aprovechamiento estimado seleccionado?", parent=popup):
+                return
+            self.service.delete_aprovechamiento_estimado(est_id)
+            render()
+            self.load_data(save_filters=False)
+
+        def render() -> None:
+            nonlocal current_rows
+            current_rows, tiene_real = load_rows()
+            header_lbl.configure(text=(f"Cultivo: {partida.get('Cultivo', '')} | Campaña: {partida.get('Campaña', '')} | Fecha carga: {partida.get('Fecha carga', '')} | "
+                                   f"Semana: {partida.get('Semana', '')} | Socio: {partida.get('Socio', '')} | Variedad: {partida.get('Variedad', '')} | "
+                                   f"Grupo varietal: {partida.get('Grupo varietal', '')} | Boleta: {partida.get('Boleta', '')} | Kg campo: {float(partida.get('Kg campo', 0) or 0):,.2f} | "
+                                   f"Estado aprovechamiento: {'Real PesosFres' if tiene_real else ('Estimado Manual' if current_rows else 'Sin aprovechamiento')}"))
+            body.configure(text="Vista por partida" if view_mode.get() == "partida" else "Vista aprovechamiento medio")
+            if tiene_real:
+                msg.configure(text="El aprovechamiento real de PesosFres tiene prioridad")
+            elif not current_rows:
+                msg.configure(text="Esta partida no tiene aprovechamiento real ni estimado manual")
+            else:
+                msg.configure(text="Aprovechamiento estimado manual activo")
+            rows = []
+            for r in current_rows:
+                origen = str(r.get("Origen aprovechamiento", "")).upper()
+                kg = r.get("Kg disponibles", 0)
+                rows.append({
+                    "Boleta": boleta,
+                    "Calibre": r.get("Calibre", ""),
+                    "Categoría": r.get("Categoría", ""),
+                    "Kg real": kg if origen == "REAL" else 0,
+                    "% aprovechamiento": r.get("% aprovechamiento", 0),
+                    "Kg campo aplicado": r.get("Kg campo origen", 0),
+                    "Kg estimado": kg,
+                    "Origen": "REAL" if origen == "REAL" else "ESTIMADO_MANUAL",
+                })
+            tbl.set_rows(rows)
+            add_btn.configure(state="disabled" if tiene_real else "normal")
+            edit_btn.configure(state="disabled" if tiene_real else "normal")
+            del_btn.configure(state="disabled" if tiene_real else "normal")
+
+        btnbar = ttk.Frame(popup)
+        btnbar.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(btnbar, text="Alternar vista", command=lambda: (view_mode.set("media" if view_mode.get()=="partida" else "partida"), render())).pack(side="left")
+        add_btn = ttk.Button(btnbar, text="Añadir estimado", command=lambda: open_form())
+        add_btn.pack(side="right", padx=(6, 0))
+        edit_btn = ttk.Button(btnbar, text="Editar estimado", command=edit_selected)
+        edit_btn.pack(side="right", padx=(6, 0))
+        del_btn = ttk.Button(btnbar, text="Eliminar estimado", command=delete_selected)
+        del_btn.pack(side="right", padx=(6, 0))
         render()
 
     def _refresh_snapshot_info_label(self) -> None:
@@ -799,6 +924,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             ("Incidencias", cap.get("incidencias", []), list(self.capacidad_inc_table.columns)),
             ("Pedidos_pendientes", pedidos_pendientes, list(self.pedidos_table.columns)),
             ("Pedidos_previstos", self._diagnostico_pedidos_previstos_rows(cap), ["Id previsto", "Estado", "Fecha salida", "Cliente", "Cultivo", "Campaña", "Empresa", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "Confección prevista", "Grupo confección", "Perfil confección", "Kg estimados", "Palets estimados", "Familia productiva", "Línea productiva", "Observaciones"]),
+            ("Aprovechamientos_estimados", self.service.get_aprovechamientos_estimados_filtrados(payload, boletas=[r.get("Boleta", "") for r in self.stock_campo_rows]), ["Id", "Boleta", "Campana", "Cultivo", "Variedad", "GrupoVarietal", "Categoria", "Calibre", "KgCampoAplicado", "Porcentaje", "KgEstimado", "Origen", "Activo", "Observaciones", "FechaCreacion", "FechaModificacion"]),
             ("Filtros_aplicados", self._diagnostico_filter_rows(payload), ["Filtro", "Valor"]),
         ]
         wb = Workbook()

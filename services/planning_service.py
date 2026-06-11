@@ -52,6 +52,21 @@ class PlanningService:
     def get_aprovechamiento_stock_campo(self, stock_campo_rows: list[dict], filters: dict) -> tuple[dict[str, dict], dict[str, list[dict]]]:
         return self.repo.build_aprovechamiento_stock_campo(stock_campo_rows, filters)
 
+    def get_aprovechamientos_estimados_por_boleta(self, boleta: str) -> list[dict]:
+        return self.repo.get_aprovechamientos_estimados_por_boleta(boleta)
+
+    def get_aprovechamientos_estimados_filtrados(self, filters: dict | None = None, boletas: list | None = None) -> list[dict]:
+        return self.repo.get_aprovechamientos_estimados_filtrados(filters, boletas=boletas)
+
+    def upsert_aprovechamiento_estimado(self, row: dict) -> list[int]:
+        return self.repo.upsert_aprovechamiento_estimado(row)
+
+    def delete_aprovechamiento_estimado(self, id: int) -> None:
+        self.repo.delete_aprovechamiento_estimado(id)
+
+    def normalizar_calibre_a_set(self, calibre: str) -> set[str]:
+        return self.repo.normalizar_calibre_a_set(calibre)
+
     def diagnose_loteado_tables(self) -> dict:
         return self.repo.diagnose_loteado_tables()
 
