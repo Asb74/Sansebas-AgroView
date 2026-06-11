@@ -10,6 +10,7 @@ import traceback
 from typing import Any
 
 from config import DB_CALIDAD, DB_DIR, DB_EEPPL, DB_FRUTA, DB_LOTEADO, DB_PEDIDOS
+from db.connection import get_connection
 from services.pedidos_previstos_service import cargar_pedidos_previstos_filtrados
 
 
@@ -98,6 +99,7 @@ class PlanningRepository:
     def __init__(self, base_dir: str | Path = DB_DIR) -> None:
         self.base_dir = Path(base_dir)
         self.db_loteado = self._db_path(DB_LOTEADO)
+        self.ensure_aprovechamientos_estimados_schema()
 
     def _db_path(self, filename: str) -> Path:
         return self.base_dir / filename
@@ -582,6 +584,202 @@ class PlanningRepository:
                 return table
         return None
 
+    @staticmethod
+    def _calibre_estimado_label(calibre: Any) -> str:
+        text = str(calibre or "").strip().upper()
+        if not text:
+            return ""
+        if text.startswith("CAL "):
+            return text
+        if re.fullmatch(r"\d+", text):
+            return f"CAL {text}"
+        return text
+
+    def ensure_aprovechamientos_estimados_schema(self) -> None:
+        with get_connection() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS AprovechamientosEstimados (
+                    Id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    Boleta TEXT NOT NULL,
+                    Campana TEXT,
+                    Cultivo TEXT,
+                    Variedad TEXT,
+                    GrupoVarietal TEXT,
+                    Categoria TEXT DEFAULT 'NORMAL',
+                    Calibre TEXT NOT NULL,
+                    KgCampoAplicado REAL NOT NULL,
+                    Porcentaje REAL NOT NULL,
+                    KgEstimado REAL NOT NULL,
+                    Origen TEXT DEFAULT 'ESTIMADO_MANUAL',
+                    Activo INTEGER DEFAULT 1,
+                    Observaciones TEXT,
+                    FechaCreacion TEXT,
+                    FechaModificacion TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_aprov_estimados_boleta_activo
+                ON AprovechamientosEstimados(Boleta, Activo)
+                """
+            )
+            conn.commit()
+
+    def get_aprovechamientos_estimados_por_boleta(self, boleta: Any) -> list[dict[str, Any]]:
+        self.ensure_aprovechamientos_estimados_schema()
+        boleta_txt = str(boleta or "").strip()
+        if not boleta_txt:
+            return []
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM AprovechamientosEstimados
+                WHERE TRIM(CAST(Boleta AS TEXT)) = TRIM(CAST(? AS TEXT)) AND Activo = 1
+                ORDER BY Calibre, Categoria, Id
+                """,
+                (boleta_txt,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_aprovechamientos_estimados_filtrados(self, filters: dict | None = None, boletas: list[Any] | None = None) -> list[dict[str, Any]]:
+        self.ensure_aprovechamientos_estimados_schema()
+        filters = filters or {}
+        query = "SELECT * FROM AprovechamientosEstimados WHERE Activo = 1"
+        params: list[Any] = []
+        if boletas is not None:
+            boleta_values = [str(b or "").strip() for b in boletas if str(b or "").strip()]
+            if not boleta_values:
+                return []
+            placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(boleta_values))
+            query += f" AND TRIM(CAST(Boleta AS TEXT)) IN ({placeholders})"
+            params.extend(boleta_values)
+        for key, col in (("campana", "Campana"), ("cultivo", "Cultivo"), ("var_coop", "Variedad"), ("grupo_varietal", "GrupoVarietal")):
+            values = self._normalize_filter_values(filters.get(key))
+            if values:
+                placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
+                query += f" AND UPPER(TRIM(COALESCE({col},''))) IN ({placeholders})"
+                params.extend(values)
+        query += " ORDER BY Boleta, Calibre, Categoria, Id"
+        with get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def upsert_aprovechamiento_estimado(self, row: dict[str, Any]) -> list[int]:
+        self.ensure_aprovechamientos_estimados_schema()
+        boleta = str(row.get("Boleta") or row.get("boleta") or "").strip()
+        if not boleta:
+            raise ValueError("Boleta obligatoria.")
+        calibre_raw = str(row.get("Calibre") or row.get("calibre") or "").strip()
+        calibre_set = self.normalizar_calibre_a_set(calibre_raw)
+        calibres = sorted(calibre_set, key=lambda x: int(x) if str(x).isdigit() else 9999)
+        if not calibres:
+            raise ValueError("Calibre obligatorio.")
+        categoria = str(row.get("Categoria") or row.get("Categoría") or row.get("categoria") or "NORMAL").strip().upper() or "NORMAL"
+        kg_campo = float(row.get("KgCampoAplicado") or row.get("Kg campo aplicado") or row.get("Kg campo") or 0)
+        porcentaje = float(row.get("Porcentaje") or row.get("% aprovechamiento") or 0)
+        if porcentaje <= 0 or porcentaje > 100:
+            raise ValueError("El porcentaje debe ser > 0 y <= 100.")
+        total_estimado = round(kg_campo * porcentaje / 100, 2)
+        if total_estimado <= 0:
+            raise ValueError("Kg estimado debe ser > 0.")
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        edit_id = row.get("Id") or row.get("id")
+        kg_por_linea = round(total_estimado / len(calibres), 2)
+        ids: list[int] = []
+        with get_connection() as conn:
+            if edit_id:
+                conn.execute(
+                    "UPDATE AprovechamientosEstimados SET Activo = 0, FechaModificacion = ? WHERE Id = ?",
+                    (now, edit_id),
+                )
+            for idx, calibre in enumerate(calibres):
+                kg_linea = kg_por_linea if idx < len(calibres) - 1 else round(total_estimado - kg_por_linea * (len(calibres) - 1), 2)
+                cur = conn.execute(
+                    """
+                    INSERT INTO AprovechamientosEstimados
+                    (Boleta, Campana, Cultivo, Variedad, GrupoVarietal, Categoria, Calibre,
+                     KgCampoAplicado, Porcentaje, KgEstimado, Origen, Activo, Observaciones,
+                     FechaCreacion, FechaModificacion)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ESTIMADO_MANUAL', 1, ?, ?, ?)
+                    """,
+                    (
+                        boleta,
+                        str(row.get("Campana") or row.get("Campaña") or "").strip(),
+                        str(row.get("Cultivo") or "").strip(),
+                        str(row.get("Variedad") or "").strip(),
+                        str(row.get("GrupoVarietal") or row.get("Grupo varietal") or "").strip(),
+                        categoria,
+                        self._calibre_estimado_label(calibre),
+                        kg_campo,
+                        porcentaje,
+                        kg_linea,
+                        str(row.get("Observaciones") or row.get("observaciones") or "").strip(),
+                        now,
+                        now,
+                    ),
+                )
+                ids.append(int(cur.lastrowid))
+            conn.commit()
+        return ids
+
+    def delete_aprovechamiento_estimado(self, id: Any) -> None:
+        self.ensure_aprovechamientos_estimados_schema()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with get_connection() as conn:
+            conn.execute(
+                "UPDATE AprovechamientosEstimados SET Activo = 0, FechaModificacion = ? WHERE Id = ?",
+                (now, id),
+            )
+            conn.commit()
+
+    def _rows_estimadas_para_stock_campo(self, stock_campo_rows: list[dict[str, Any]], boletas_con_real: set[str] | None = None) -> list[dict[str, Any]]:
+        boletas_con_real = boletas_con_real or set()
+        estimados = self.get_aprovechamientos_estimados_filtrados(boletas=[r.get("Boleta", "") for r in stock_campo_rows])
+        by_boleta: dict[str, list[dict[str, Any]]] = {}
+        for est in estimados:
+            by_boleta.setdefault(str(est.get("Boleta", "") or "").strip(), []).append(est)
+        out: list[dict[str, Any]] = []
+        for partida in stock_campo_rows:
+            boleta = str(partida.get("Boleta", "") or "").strip()
+            if not boleta or boleta in boletas_con_real:
+                continue
+            for est in by_boleta.get(boleta, []):
+                kg_estimado = round(float(est.get("KgEstimado", 0) or 0), 2)
+                if kg_estimado <= 0:
+                    continue
+                kg_campo = float(est.get("KgCampoAplicado", 0) or partida.get("Kg campo", 0) or 0)
+                porcentaje = float(est.get("Porcentaje", 0) or ((kg_estimado / kg_campo) * 100 if kg_campo > 0 else 0))
+                out.append({
+                    "Id": est.get("Id"),
+                    "Origen": "CAMPO_ESTIMADO_MANUAL",
+                    "Tipo stock": "CAMPO",
+                    "Cultivo": est.get("Cultivo") or partida.get("Cultivo", ""),
+                    "Campaña": est.get("Campana") or partida.get("Campaña", partida.get("Campana", "")),
+                    "Grupo varietal": est.get("GrupoVarietal") or partida.get("Grupo varietal", ""),
+                    "Variedad": est.get("Variedad") or partida.get("Variedad", ""),
+                    "Calibre": est.get("Calibre", ""),
+                    "Categoría": est.get("Categoria", "NORMAL") or "NORMAL",
+                    "Kg disponibles": kg_estimado,
+                    "Kg campo origen": kg_campo,
+                    "Boleta": boleta,
+                    "Socio": partida.get("Socio", ""),
+                    "Fecha carga": partida.get("Fecha carga", partida.get("FechaCarga", "")),
+                    "% aprovechamiento": round(porcentaje, 4),
+                    "Origen aprovechamiento": "ESTIMADO_MANUAL",
+                    "Observaciones": est.get("Observaciones", ""),
+                    "Aviso": f"Aprovechamiento estimado manual boleta {boleta}".strip(),
+                    "Explicación": "Kg estimados por calibre introducidos manualmente para stock campo sin PesosFres real",
+                })
+        return out
+
+    def _get_campo_disponibilidad_aprovechamiento(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[list[dict[str, Any]], int]:
+        real_rows, sin_datos = self._get_pesosfres_campo_disponibilidad_real(stock_campo_rows, filters)
+        boletas_con_real = {str(r.get("Boleta", "") or "").strip() for r in real_rows if str(r.get("Boleta", "") or "").strip()}
+        estimadas = self._rows_estimadas_para_stock_campo(stock_campo_rows, boletas_con_real=boletas_con_real)
+        return real_rows + estimadas, sin_datos
+
     def _get_pesosfres_campo_disponibilidad_real(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[list[dict[str, Any]], int]:
         fruta_path = self._db_path(DB_FRUTA)
         if not fruta_path.exists():
@@ -767,9 +965,9 @@ class PlanningRepository:
 
 
     def build_aprovechamiento_stock_campo(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
-        real_rows, _ = self._get_pesosfres_campo_disponibilidad_real(stock_campo_rows, filters)
+        rows_aprovechamiento, _ = self._get_campo_disponibilidad_aprovechamiento(stock_campo_rows, filters)
         by_boleta: dict[str, list[dict[str, Any]]] = {}
-        for row in real_rows:
+        for row in rows_aprovechamiento:
             boleta = str(row.get("Boleta", "") or "").strip()
             by_boleta.setdefault(boleta, []).append(row)
 
@@ -779,7 +977,8 @@ class PlanningRepository:
             boleta = str(partida.get("Boleta", "") or "").strip()
             rows = by_boleta.get(boleta, [])
             if rows:
-                estado = "Real PesosFres"
+                tiene_real = any(str(r.get("Origen aprovechamiento", "")).upper() == "REAL" for r in rows)
+                estado = "Real PesosFres" if tiene_real else "Estimado Manual"
                 n_cal = len({str(r.get("Calibre", "")) for r in rows if str(r.get("Calibre", "")).strip()})
                 kg_est = round(sum(float(r.get("Kg disponibles", 0) or 0) for r in rows), 2)
             else:
@@ -1393,7 +1592,7 @@ class PlanningRepository:
                 row.get("Variedad", ""), "", "",
             )
             campo_map[key] = campo_map.get(key, 0.0) + float(row.get("Kg campo", 0) or 0)
-        campo_real_rows, campo_sin_datos = (self._get_pesosfres_campo_disponibilidad_real(stock_campo_rows, filters) if policy_cfg["usar_entrada_estimada"] else ([], 0))
+        campo_real_rows, campo_sin_datos = (self._get_campo_disponibilidad_aprovechamiento(stock_campo_rows, filters) if policy_cfg["usar_entrada_estimada"] else ([], 0))
         campo_tiene_desglose = bool(campo_real_rows)
         for c_row in campo_real_rows:
             c_key = (
@@ -1743,7 +1942,7 @@ class PlanningRepository:
             acc["Kg disponibles"] += float(row.get("Neto", 0) or 0)
 
         if policy_cfg["usar_entrada_estimada"]:
-            campo_real_rows, _ = self._get_pesosfres_campo_disponibilidad_real(stock_campo_rows, filters)
+            campo_real_rows, _ = self._get_campo_disponibilidad_aprovechamiento(stock_campo_rows, filters)
             for row in campo_real_rows:
                 stock_cultivo = str(row.get("Cultivo", "") or "").strip()
                 stock_campana = str(row.get("Campaña", "") or "").strip()
@@ -1767,8 +1966,8 @@ class PlanningRepository:
                 if not acc:
                     acc = {
                         "__orden": 4,
-                        "Tipo cobertura": "Entrada estimada real",
-                        "Origen": "CAMPO_REAL_PESOSFRES",
+                        "Tipo cobertura": "Entrada estimada manual" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else "Entrada estimada real",
+                        "Origen": row.get("Origen", "CAMPO_REAL_PESOSFRES"),
                         "Cultivo": stock_cultivo,
                         "Campaña": stock_campana,
                         "Grupo varietal": stock_grupo,
@@ -1787,9 +1986,9 @@ class PlanningRepository:
                         "Palets": 0,
                         "Cajas": 0.0,
                         "Kg disponibles": 0.0,
-                        "Coincidencia": "Entrada campo estimada real",
+                        "Coincidencia": "Entrada campo estimada manual" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else "Entrada campo estimada real",
                         "Score": 75,
-                        "Flexibilidad aplicada": "CAMPO_REAL",
+                        "Flexibilidad aplicada": "CAMPO_ESTIMADO_MANUAL" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else "CAMPO_REAL",
                         "Explicación": str(row.get("Explicación", "") or "").strip(),
                         "Aviso": aviso_base,
                     }
@@ -1916,7 +2115,7 @@ class PlanningRepository:
             })
 
         if policy_cfg["usar_entrada_estimada"]:
-            campo_real_rows, _ = self._get_pesosfres_campo_disponibilidad_real(stock_campo_rows, filters)
+            campo_real_rows, _ = self._get_campo_disponibilidad_aprovechamiento(stock_campo_rows, filters)
             for row in campo_real_rows:
                 kg_fisicos = float(row.get("Kg disponibles", 0) or 0)
                 if kg_fisicos <= 0:
@@ -1924,8 +2123,8 @@ class PlanningRepository:
                 calibre = str(row.get("Calibre", "") or "").strip()
                 categoria = str(row.get("Categoría", "") or "").strip()
                 pools.append({
-                    "pool_id": f"CAMPO_REAL|{row.get('Cultivo','')}|{row.get('Campaña','')}|{row.get('Grupo varietal','')}|{row.get('Variedad','')}|{calibre}|{categoria}|{row.get('Boleta','')}",
-                    "origen": "CAMPO_REAL",
+                    "pool_id": f"{('CAMPO_ESTIMADO_MANUAL' if str(row.get('Origen aprovechamiento', '')).upper() == 'ESTIMADO_MANUAL' else 'CAMPO_REAL')}|{row.get('Cultivo','')}|{row.get('Campaña','')}|{row.get('Grupo varietal','')}|{row.get('Variedad','')}|{calibre}|{categoria}|{row.get('Boleta','')}",
+                    "origen": "CAMPO_ESTIMADO_MANUAL" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else "CAMPO_REAL",
                     "tipo_stock": "CAMPO",
                     "variedad": str(row.get("Variedad", "") or "").strip(),
                     "grupo_varietal": str(row.get("Grupo varietal", "") or "").strip(),
@@ -1935,7 +2134,7 @@ class PlanningRepository:
                     "kg_restante_simulado": round(kg_fisicos, 2),
                     "destrio_pct": 0.0,
                     "coef_primera": 1.0,
-                    "Origen": "CAMPO_REAL",
+                    "Origen": "CAMPO_ESTIMADO_MANUAL" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else "CAMPO_REAL",
                     "Cultivo": str(row.get("Cultivo", "") or "").strip(),
                     "Campaña": str(row.get("Campaña", "") or "").strip(),
                     "Grupo varietal": str(row.get("Grupo varietal", "") or "").strip(),
