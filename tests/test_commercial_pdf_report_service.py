@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from services.commercial_pdf_report_service import CommercialPdfReportService
+import pytest
+
+from services.commercial_pdf_report_service import CommercialPdfReportService, REPORTLAB_AVAILABLE
 
 
 def _assert_pdf(path: Path) -> None:
@@ -56,3 +58,47 @@ def test_generate_pdf_no_falla_si_faltan_columnas_opcionales(tmp_path):
         pedidos_previstos_rows=[{"Kg estimados": 4}],
     )
     _assert_pdf(path)
+
+
+@pytest.mark.skipif(not REPORTLAB_AVAILABLE, reason="ReportLab no instalado")
+def test_stock_almacen_oculta_tipo_nombre_palet_si_no_hay_datos(monkeypatch, tmp_path):
+    captured = []
+    service = CommercialPdfReportService()
+    original = service._table
+
+    def spy(data, *args, **kwargs):
+        captured.append(data)
+        return original(data, *args, **kwargs)
+
+    monkeypatch.setattr(service, "_table", spy)
+    service.generate(
+        tmp_path / "almacen_sin_palet.pdf",
+        stock_almacen_rows=[{"Grupo varietal": "G1", "Marca": "M", "Confección": "C", "Calibre": "10", "Categoría": "I", "Kg stock": 500, "Palets": 1, "Cajas": 20}],
+    )
+    almacen_tables = [t for t in captured if t and t[0] and t[0][0] == "Grupo varietal" and "Calibre / categoría" in t[0]]
+    assert almacen_tables
+    assert "Tipo palet" not in almacen_tables[0][0]
+    assert "Nombre palet" not in almacen_tables[0][0]
+
+
+@pytest.mark.skipif(not REPORTLAB_AVAILABLE, reason="ReportLab no instalado")
+def test_pedidos_incluye_mix_timeline_y_matriz(monkeypatch, tmp_path):
+    captured = []
+    service = CommercialPdfReportService()
+    original = service._table
+
+    def spy(data, *args, **kwargs):
+        captured.append(data)
+        return original(data, *args, **kwargs)
+
+    monkeypatch.setattr(service, "_table", spy)
+    service.generate(
+        tmp_path / "pendientes_matriz.pdf",
+        pedidos_pendientes_rows=[
+            {"Semana": "24", "Fecha salida": "2026-06-16", "Cliente": "Cliente A", "Grupo confección": "ENCAJADO", "Grupo varietal": "BLANCA SIN SEMILLAS", "Kg pedido teórico": 1000, "Kg hecho real": 200, "Kg pendiente": 800, "Palets pendientes": 4},
+            {"Semana": "24", "Fecha salida": "2026-06-16", "Cliente": "Cliente A", "Grupo confección": "GRANEL", "Grupo varietal": "NEGRA CON SEMILLAS", "Kg pedido teórico": 500, "Kg hecho real": 100, "Kg pendiente": 400, "Palets pendientes": 2},
+        ],
+    )
+    assert any(t and t[0] == ["Grupo confección", "% palets", "Palets", "Kg pendiente"] for t in captured)
+    assert any(t and t[0] == ["Fecha", "Kg teórico", "Kg terminado", "Kg pendiente", "Palets pendientes", "Barra visual"] for t in captured)
+    assert any(t and "BLANCA SIN SEMILLAS Palets" in t[0] and "TOTAL Pendiente" in t[0] for t in captured)
