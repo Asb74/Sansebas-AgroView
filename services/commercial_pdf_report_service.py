@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 try:
     from reportlab.lib import colors
@@ -59,10 +59,10 @@ class CommercialPdfReportService:
         story: list[Any] = []
         self._add_header(story, filters or {}, generated_at or datetime.now())
         self._add_summary(story, campo, almacen, pendientes, previstos)
-        self._add_section(story, "STOCK CAMPO", campo, ["Fecha carga", "Semana", "Socio", "Variedad", "Grupo varietal", "Boleta", "Color", "Estado aprovechamiento", "Kg campo", "Kg estimados calculados"], ["Cultivo", "Grupo varietal", "Variedad"], ["Cultivo", "Grupo varietal", "Variedad", "Fecha carga", "Boleta"], "Kg campo")
-        self._add_section(story, "STOCK ALMACÉN", almacen, ["Variedad", "Grupo varietal", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Palets", "Cajas", "Kg stock", "Agrupado", "Tipo palet", "Nombre palet"], ["Grupo varietal", "Marca", "Confección"], ["Grupo varietal", "Marca", "Confección", "Calibre", "Categoría"], "Kg stock")
-        self._add_section(story, "PEDIDOS PENDIENTES", pendientes, ["Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "Confección", "Grupo confección", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Palets pedido", "Palets pendientes"], ["Grupo confección", "IdPedidoLora"], ["Grupo confección", "IdPedidoLora", "Grupo varietal", "Confección"], "Kg pendiente")
-        self._add_section(story, "PEDIDOS PREVISTOS / NO CONFIRMADOS", previstos, ["Estado", "Fecha salida", "Cliente", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "Confección prevista", "Grupo confección", "Perfil confección", "Kg estimados", "Palets estimados", "Observaciones"], ["Grupo confección", "Cliente"], ["Grupo confección", "Cliente", "Grupo varietal", "Confección prevista"], "Kg estimados")
+        self._add_stock_campo(story, campo)
+        self._add_stock_almacen(story, almacen)
+        self._add_pedidos(story, "PEDIDOS PENDIENTES", pendientes, kg_field="Kg pendiente", confeccion_field="Confección", previsto=False)
+        self._add_pedidos(story, "PEDIDOS PREVISTOS / NO CONFIRMADOS", previstos, kg_field="Kg estimados", confeccion_field="Confección prevista", previsto=True)
         doc = SimpleDocTemplate(str(target), pagesize=landscape(A4), leftMargin=0.7*cm, rightMargin=0.7*cm, topMargin=0.7*cm, bottomMargin=0.7*cm)
         doc.build(story)
         return target
@@ -92,29 +92,143 @@ class CommercialPdfReportService:
         story.append(Spacer(1, 6))
 
     def _add_summary(self, story: list, campo: list[dict], almacen: list[dict], pendientes: list[dict], previstos: list[dict]) -> None:
-        rows = [["KPI", "Valor"], ["Kg stock campo", self._num(self._sum(campo, "Kg campo"))], ["Kg stock almacén", self._num(self._sum(almacen, "Kg stock"))], ["Kg pedidos pendientes", self._num(self._sum(pendientes, "Kg pendiente"))], ["Kg pedidos previstos", self._num(self._sum(previstos, "Kg estimados"))], ["Nº partidas campo", str(len(campo))], ["Nº grupos varietales campo", str(len({r.get('Grupo varietal','') for r in campo if r.get('Grupo varietal','')}))], ["Nº variedades campo", str(len({r.get('Variedad','') for r in campo if r.get('Variedad','')}))], ["Nº pedidos pendientes", str(len({r.get('IdPedidoLora','') for r in pendientes if r.get('IdPedidoLora','')}))], ["Nº pedidos previstos", str(len(previstos))]]
-        story.append(Paragraph("RESUMEN EJECUTIVO", self._section)); story.append(self._table(rows, col_widths=[8*cm, 5*cm])); story.append(PageBreak())
+        kg_campo = self._sum(campo, "Kg campo")
+        kg_almacen = self._sum(almacen, "Kg stock")
+        kg_pendientes = self._sum(pendientes, "Kg pendiente")
+        kg_previstos = self._sum(previstos, "Kg estimados")
+        rows = [
+            ["Bloque", "KPI", "Valor"],
+            ["Disponibilidad", "Kg stock campo", self._num(kg_campo)],
+            ["Disponibilidad", "Kg stock almacén", self._num(kg_almacen)],
+            ["Disponibilidad", "Kg total disponible", self._num(kg_campo + kg_almacen)],
+            ["Demanda", "Kg pedidos pendientes", self._num(kg_pendientes)],
+            ["Demanda", "Kg pedidos previstos", self._num(kg_previstos)],
+            ["Demanda", "Kg demanda total", self._num(kg_pendientes + kg_previstos)],
+            ["Diferencia", "Kg stock almacén - pedidos pendientes", self._num(kg_almacen - kg_pendientes)],
+            ["Diferencia", "Kg campo + almacén - pendientes - previstos", self._num(kg_campo + kg_almacen - kg_pendientes - kg_previstos)],
+        ]
+        story.append(Paragraph("RESUMEN EJECUTIVO", self._section))
+        story.append(self._table(rows, col_widths=[4*cm, 11*cm, 5*cm]))
+        mini = self._group_rows(pendientes, ["Fecha salida"], {"Kg pendientes": "Kg pendiente"})
+        if mini:
+            story.append(Spacer(1, 6))
+            story.append(Paragraph("Próximos días con kg pendientes", self._normal))
+            story.append(self._table([["Fecha salida", "Kg pendientes"]] + [[r["Fecha salida"], self._num(r["Kg pendientes"])] for r in mini[:7]], col_widths=[5*cm, 5*cm]))
+        story.append(PageBreak())
 
-    def _add_section(self, story: list, title: str, rows: list[dict], columns: list[str], groups: list[str], sort_keys: list[str], kg_field: str) -> None:
+    def _value(self, row: dict, column: str) -> Any:
+        aliases = {
+            "Tipo palet": ("Tipo palet", "TipoPalet", "Tipo Palet", "tipo_palet", "Tipo"),
+            "Nombre palet": ("Nombre palet", "NombrePalet", "Nombre Palet", "nombre_palet", "Palet"),
+            "Pedido": ("Pedido", "IdPedidoLora"),
+        }
+        for key in aliases.get(column, (column,)):
+            if key in row:
+                return row.get(key)
+        return ""
+
+    def _group_rows(self, rows: Sequence[dict], keys: list[str], sums: dict[str, str], count_label: str | None = None) -> list[dict]:
+        grouped: dict[tuple[str, ...], dict[str, Any]] = {}
+        for row in rows:
+            key = tuple(str(self._value(row, k) or "") for k in keys)
+            bucket = grouped.setdefault(key, {k: v for k, v in zip(keys, key)} | {label: 0.0 for label in sums})
+            if count_label:
+                bucket.setdefault("_ids", set()).add(self._value(row, "Pedido") or id(row))
+            for label, field in sums.items():
+                bucket[label] += self._sum([row], field)
+        result = []
+        for bucket in grouped.values():
+            if count_label:
+                bucket[count_label] = len(bucket.pop("_ids", set()))
+            result.append(bucket)
+        return sorted(result, key=lambda r: tuple(str(r.get(k, "")) for k in keys))
+
+    def _add_group_summary(self, story: list, title: str, rows: list[dict], keys: list[str], sum_fields: dict[str, str], *, count_label: str | None = None, extra_fields: list[str] | None = None) -> None:
+        grouped = self._group_rows(rows, keys, sum_fields, count_label=count_label)
+        columns = keys + ([count_label] if count_label else []) + list(sum_fields) + list(extra_fields or [])
+        data = [columns]
+        for r in grouped:
+            data.append([self._format_cell(r.get(c, ""), c) for c in columns])
+        story.append(Paragraph(title, self._normal))
+        story.append(self._table(data))
+        story.append(Spacer(1, 6))
+
+    def _add_stock_campo(self, story: list, rows: list[dict]) -> None:
+        story.append(Paragraph("STOCK CAMPO", self._section))
+        if not rows:
+            story.append(Paragraph("Sin datos para los filtros actuales.", self._normal)); story.append(PageBreak()); return
+        total = self._sum(rows, "Kg campo")
+        summary = self._group_rows(rows, ["Grupo varietal", "Variedad", "Estado aprovechamiento"], {"Kg campo": "Kg campo"}, count_label="Nº partidas")
+        data = [["Grupo varietal", "Variedad", "Estado aprovechamiento", "Nº partidas", "Kg campo", "% sobre total"]]
+        for r in summary:
+            pct = (float(r["Kg campo"]) / total * 100) if total else 0
+            data.append([r["Grupo varietal"], r["Variedad"], r["Estado aprovechamiento"], r["Nº partidas"], self._num(r["Kg campo"]), f"{pct:.1f}%"])
+        story.append(Paragraph("Resumen por grupo varietal, variedad y estado", self._normal)); story.append(self._table(data)); story.append(Spacer(1, 6))
+        self._add_section(story, "Detalle stock campo", rows, ["Fecha carga", "Semana", "Socio", "Variedad", "Grupo varietal", "Boleta", "Color", "Estado aprovechamiento", "Kg campo"], ["Grupo varietal", "Variedad"], ["Grupo varietal", "Variedad", "Fecha carga", "Boleta"], "Kg campo", page_break=False)
+        story.append(PageBreak())
+
+    def _add_stock_almacen(self, story: list, rows: list[dict]) -> None:
+        story.append(Paragraph("STOCK ALMACÉN", self._section))
+        if not rows:
+            story.append(Paragraph("Sin datos para los filtros actuales.", self._normal)); story.append(PageBreak()); return
+        sums = {"Palets": "Palets", "Cajas": "Cajas", "Kg stock": "Kg stock"}
+        self._add_group_summary(story, "Resumen por grupo varietal", rows, ["Grupo varietal"], sums)
+        grouped = self._group_rows(rows, ["Grupo varietal", "Marca", "Confección"], sums)
+        data = [["Grupo varietal", "Marca", "Confección", "Palets", "Cajas", "Kg stock", "Tipo palet", "Nombre palet"]]
+        for r in grouped:
+            matching = [row for row in rows if all(str(self._value(row, k) or "") == str(r.get(k, "")) for k in ("Grupo varietal", "Marca", "Confección"))]
+            tipo = next((self._value(row, "Tipo palet") for row in matching if self._value(row, "Tipo palet")), "")
+            nombre = next((self._value(row, "Nombre palet") for row in matching if self._value(row, "Nombre palet")), "")
+            data.append([r["Grupo varietal"], r["Marca"], r["Confección"], self._format_cell(r["Palets"], "Palets"), self._format_cell(r["Cajas"], "Cajas"), self._format_cell(r["Kg stock"], "Kg stock"), tipo, nombre])
+        story.append(Paragraph("Resumen por grupo varietal, marca y confección", self._normal))
+        story.append(self._table(data))
+        story.append(Spacer(1, 6))
+        self._add_section(story, "Detalle stock almacén", rows, ["Variedad", "Grupo varietal", "Calibre", "Categoría", "Marca", "Confección", "Palets", "Cajas", "Kg stock", "Tipo palet", "Nombre palet"], ["Grupo varietal", "Marca", "Confección"], ["Grupo varietal", "Marca", "Confección", "Calibre", "Categoría"], "Kg stock", page_break=False)
+        story.append(PageBreak())
+
+    def _add_pedidos(self, story: list, title: str, rows: list[dict], *, kg_field: str, confeccion_field: str, previsto: bool) -> None:
         story.append(Paragraph(title, self._section))
         if not rows:
             story.append(Paragraph("Sin datos para los filtros actuales.", self._normal)); story.append(PageBreak()); return
-        sorted_rows = sorted(rows, key=lambda r: tuple(str(r.get(k, "")) for k in sort_keys))
+        pedido_kg = "Kg estimados" if previsto else "Kg pedido teórico"
+        palets = "Palets estimados" if previsto else "Palets pendientes"
+        temporal = self._group_rows(rows, ["Fecha salida"], {"Kg pedido teórico": pedido_kg, "Kg hecho real": "Kg hecho real", "Kg pendiente": kg_field, "Palets pedido": "Palets pedido", "Palets pendientes": palets}, count_label="Nº pedidos")
+        max_kg = max((r["Kg pendiente"] for r in temporal), default=0)
+        data = [["Fecha salida", "Nº pedidos", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Palets pedido", "Palets pendientes", "% pendiente", "Barra"]]
+        for r in temporal:
+            pct = (r["Kg pendiente"] / r["Kg pedido teórico"] * 100) if r["Kg pedido teórico"] else 0
+            blocks = int(round((r["Kg pendiente"] / max_kg) * 12)) if max_kg else 0
+            data.append([r["Fecha salida"], r["Nº pedidos"], self._num(r["Kg pedido teórico"]), self._num(r["Kg hecho real"]), self._num(r["Kg pendiente"]), self._num(r["Palets pedido"]), self._num(r["Palets pendientes"]), f"{pct:.1f}%", "█" * blocks])
+        story.append(Paragraph("RESUMEN TEMPORAL DE PEDIDOS PENDIENTES" if not previsto else "RESUMEN TEMPORAL DE PEDIDOS PREVISTOS", self._normal)); story.append(self._table(data)); story.append(Spacer(1, 6))
+        sums = {"Kg pedido teórico": pedido_kg, "Kg hecho real": "Kg hecho real", "Kg pendiente": kg_field, "Palets pendientes": palets}
+        self._add_group_summary(story, "Resumen por grupo confección, grupo varietal y cliente", rows, ["Grupo confección", "Grupo varietal", "Cliente"], sums, count_label="Nº pedidos")
+        detail_cols = ["Fecha salida", "Cliente", "Pedido", "Grupo varietal", confeccion_field, pedido_kg, "Kg hecho real", kg_field, palets]
+        self._add_section(story, f"Detalle reducido {title.lower()}", rows, detail_cols, ["Grupo confección", "Pedido", "Grupo varietal"], ["Grupo confección", "Pedido", "Grupo varietal", "Fecha salida"], kg_field, page_break=False)
+        story.append(PageBreak())
+
+    def _add_section(self, story: list, title: str, rows: list[dict], columns: list[str], groups: list[str], sort_keys: list[str], kg_field: str, *, page_break: bool = True) -> None:
+        story.append(Paragraph(title, self._section))
+        if not rows:
+            story.append(Paragraph("Sin datos para los filtros actuales.", self._normal)); story.append(PageBreak()); return
+        sorted_rows = sorted(rows, key=lambda r: tuple(str(self._value(r, k)) for k in sort_keys))
         data = [columns]
         last = {g: None for g in groups}; buckets = {g: [] for g in groups}
+        kg_idx = columns.index(kg_field) if kg_field in columns else len(columns) - 1
+        subtotal_row = lambda label, value: [label] + [""] * (kg_idx - 1) + [self._num(value)] + [""] * (len(columns) - kg_idx - 1)
         for r in sorted_rows:
             for idx, g in enumerate(groups):
-                v = r.get(g, "")
+                v = self._value(r, g)
                 if last[g] is not None and v != last[g]:
                     for sg in reversed(groups[idx:]):
-                        if buckets[sg]: data.append([f"Subtotal {sg}: {last[sg]}"] + [""]*(len(columns)-2) + [self._num(self._sum(buckets[sg], kg_field))]); buckets[sg]=[]
+                        if buckets[sg]: data.append(subtotal_row(f"Subtotal {sg}: {last[sg]}", self._sum(buckets[sg], kg_field))); buckets[sg]=[]
                     break
-            for g in groups: last[g] = r.get(g, ""); buckets[g].append(r)
-            data.append([self._format_cell(r.get(c, ""), c) for c in columns])
+            for g in groups: last[g] = self._value(r, g); buckets[g].append(r)
+            data.append([self._format_cell(self._value(r, c), c) for c in columns])
         for sg in reversed(groups):
-            if buckets[sg]: data.append([f"Subtotal {sg}: {last[sg]}"] + [""]*(len(columns)-2) + [self._num(self._sum(buckets[sg], kg_field))])
-        data.append([f"Total {title.lower()}"] + [""]*(len(columns)-2) + [self._num(self._sum(sorted_rows, kg_field))])
-        story.append(self._table(data)); story.append(PageBreak())
+            if buckets[sg]: data.append(subtotal_row(f"Subtotal {sg}: {last[sg]}", self._sum(buckets[sg], kg_field)))
+        data.append(subtotal_row(f"Total {title.lower()}", self._sum(sorted_rows, kg_field)))
+        story.append(self._table(data))
+        if page_break: story.append(PageBreak())
 
     def _format_cell(self, value: Any, column: str) -> str:
         if "Kg" in column: return self._num(value)
