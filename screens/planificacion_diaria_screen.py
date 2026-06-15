@@ -18,6 +18,7 @@ from widgets.multi_select_filter import MultiSelectFilter
 from services.simulacion_asignacion import abrir_simulacion_asignacion, construir_panel_pedidos_previstos
 from screens.operational_quality_settings_screen import OperationalQualitySettingsScreen
 from services.production_capacity_service import ProductionCapacityService
+from services.commercial_pdf_report_service import CommercialPdfReportService
 
 
 class PlanificacionDiariaScreen(ttk.Frame):
@@ -32,6 +33,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.service = PlanningService()
         self.runtime_db_service = RuntimeDatabaseService()
         self.capacity_service = ProductionCapacityService()
+        self.commercial_pdf_service = CommercialPdfReportService()
         self.fecha_desde_var = tk.StringVar()
         self.fecha_hasta_var = tk.StringVar()
         self.filter_widgets: dict[str, MultiSelectFilter] = {}
@@ -92,6 +94,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Button(btns, text="Reaplicar filtros", command=lambda: self.load_data(save_filters=True)).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Exportar Excel", command=self.export_excel).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Exportar diagnóstico", command=self.export_diagnostico).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Informe comercial PDF", command=self.export_informe_comercial_pdf).pack(side="left", padx=(0, 8))
         self._btn_actualizar_planificacion = ttk.Button(btns, text="Actualizar planificación", command=self._actualizar_planificacion)
         self._btn_actualizar_planificacion.pack(side="left", padx=(0, 8))
         self._btn_actualizar_foto = ttk.Button(btns, text="Actualizar foto local", command=self._actualizar_foto_local)
@@ -898,6 +901,64 @@ class PlanificacionDiariaScreen(ttk.Frame):
         for column_cells in ws.columns:
             max_len = max(len(str(cell.value or "")) for cell in column_cells)
             ws.column_dimensions[get_column_letter(column_cells[0].column)].width = min(max_len + 2, 38)
+
+    def _rows_from_table(self, table: DataTable) -> list[dict]:
+        rows: list[dict] = []
+        for item in table.tree.get_children():
+            values = table.tree.item(item, "values")
+            rows.append({col: values[idx] if idx < len(values) else "" for idx, col in enumerate(table.columns)})
+        return rows
+
+    def _commercial_pdf_filters(self) -> dict:
+        payload = dict(self._filters_payload())
+        payload["pedidos_modo_label"] = self._pedidos_mode_label(self.pedidos_modo_var.get())
+        return payload
+
+    def _ensure_commercial_pdf_rows_loaded(self) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
+        if not self.stock_campo_rows:
+            try:
+                self.stock_campo_rows, _updated, _warning = self.service.load_stock_campo(self._filters_payload())
+            except Exception:
+                logging.getLogger(__name__).exception("No se pudo asegurar stock campo para PDF comercial")
+        if not self.stock_almacen_rows:
+            try:
+                self.stock_almacen_rows, _warning = self.service.load_stock_almacen(self._filters_payload())
+            except Exception:
+                logging.getLogger(__name__).exception("No se pudo asegurar stock almacén para PDF comercial")
+        if not self.pedidos_pendientes_rows:
+            try:
+                pedidos_rows, pedidos_kpi = self.service.load_pedidos_pendientes(self._filters_payload(), self.pedidos_modo_var.get())
+                self._refresh_pedidos_local_filter_options(pedidos_rows)
+                self.pedidos_pendientes_rows, _ = self._apply_pedidos_local_filters(pedidos_rows, pedidos_kpi)
+            except Exception:
+                logging.getLogger(__name__).exception("No se pudo asegurar pedidos pendientes para PDF comercial")
+        pedidos_previstos_rows = self._rows_from_table(self.pedidos_previstos_panel["table"]) if self.pedidos_previstos_panel else []
+        return self.stock_campo_rows, self.stock_almacen_rows, self.pedidos_pendientes_rows, pedidos_previstos_rows
+
+    def export_informe_comercial_pdf(self) -> None:
+        try:
+            stock_campo, stock_almacen, pedidos_pendientes, pedidos_previstos = self._ensure_commercial_pdf_rows_loaded()
+        except Exception as exc:
+            messagebox.showerror("Informe comercial PDF", f"No se pudieron preparar los datos del informe: {exc}", parent=self)
+            return
+        default_name = self.commercial_pdf_service.default_filename()
+        target = filedialog.asksaveasfilename(defaultextension=".pdf", initialfile=default_name, filetypes=[("PDF", "*.pdf")])
+        if not target:
+            return
+        try:
+            path = self.commercial_pdf_service.generate(
+                target,
+                filters=self._commercial_pdf_filters(),
+                stock_campo_rows=[dict(r) for r in stock_campo],
+                stock_almacen_rows=[dict(r) for r in stock_almacen],
+                pedidos_pendientes_rows=[dict(r) for r in pedidos_pendientes],
+                pedidos_previstos_rows=[dict(r) for r in pedidos_previstos],
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).exception("No se pudo generar informe comercial PDF")
+            messagebox.showerror("Informe comercial PDF", f"No se pudo generar el PDF: {exc}", parent=self)
+            return
+        messagebox.showinfo("Informe comercial PDF", f"Archivo guardado en:\n{path}", parent=self)
 
     def export_diagnostico(self) -> None:
         payload = self._filters_payload()
