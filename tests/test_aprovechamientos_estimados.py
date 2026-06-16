@@ -40,11 +40,28 @@ def test_upsert_estimado_agrupado_reparte_lineas_y_actualiza_resumen(tmp_path, m
     ]
     resumen, detalle = repo.build_aprovechamiento_stock_campo(stock_campo, {})
 
-    assert resumen["2052"]["Estado aprovechamiento"] == "Estimado Manual"
-    assert resumen["2052"]["Nº calibres aprovechamiento"] == 2
-    assert resumen["2052"]["Kg estimados calculados"] == 8000
+    key = repo._stock_campo_partida_key(stock_campo[0])
+    assert resumen[key]["Estado aprovechamiento"] == "Estimado Manual"
+    assert resumen[key]["Nº calibres aprovechamiento"] == 2
+    assert resumen[key]["Kg estimados calculados"] == 8000
     assert {r["Origen"] for r in detalle["2052"]} == {"CAMPO_ESTIMADO_MANUAL"}
 
+
+
+def test_resumen_stock_campo_se_calcula_por_partida_no_por_boleta(tmp_path, monkeypatch):
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    _crear_pesosfres(tmp_path, [{"Boleta": "2050", "AlbaranDef": "A1", "Neto": 1000, "NetoPartida": 1000, "Cal1": 500, "Cal2": 500}])
+    repo = PlanningRepository(base_dir=tmp_path)
+    stock_campo = [
+        {"Cultivo": "NECTARINA", "Campaña": "2026", "Fecha carga": "2026-01-01", "Socio": "SOC", "Variedad": "VAR", "Grupo varietal": "GRUPO", "Boleta": "2050", "Kg campo": 14048},
+        {"Cultivo": "NECTARINA", "Campaña": "2026", "Fecha carga": "2026-01-01", "Socio": "SOC", "Variedad": "VAR", "Grupo varietal": "GRUPO", "Boleta": "2050", "Kg campo": 6945},
+    ]
+
+    resumen, detalle = repo.build_aprovechamiento_stock_campo(stock_campo, {})
+
+    assert resumen[repo._stock_campo_partida_key(stock_campo[0])]["Kg estimados calculados"] == 14048
+    assert resumen[repo._stock_campo_partida_key(stock_campo[1])]["Kg estimados calculados"] == 6945
+    assert {row["Kg campo origen"] for row in detalle["2050"]} == {14048.0, 6945.0}
 
 def test_delete_estimado_desactiva_linea(tmp_path, monkeypatch):
     monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
