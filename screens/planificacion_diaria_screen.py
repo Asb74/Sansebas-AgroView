@@ -53,6 +53,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.balance_rows_all: list[dict] = []
         self.last_capacity_simulation: dict | None = None
         self.last_capacity_payload: dict | None = None
+        self._planning_cache = self._new_planning_cache()
         self.sim_policy_vars: dict[str, tk.BooleanVar] = {}
         self._build_ui()
         self._load_filters()
@@ -93,9 +94,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
             filters_frame.grid_columnconfigure(i, weight=1)
         btns = ttk.Frame(filters_frame)
         btns.grid(row=2, column=0, columnspan=10, sticky="w", pady=(8, 0))
-        ttk.Button(btns, text="Aplicar filtros", command=lambda: self.load_data(save_filters=True)).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Aplicar filtros", command=lambda: self._reload_with_invalidated_cache("aplicar_filtros", save_filters=True)).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Limpiar filtros", command=self.reset_filters).pack(side="left", padx=(0, 8))
-        ttk.Button(btns, text="Reaplicar filtros", command=lambda: self.load_data(save_filters=True)).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Reaplicar filtros", command=lambda: self._reload_with_invalidated_cache("reaplicar_filtros", save_filters=True)).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Exportar Excel", command=self.export_excel).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Exportar diagnóstico", command=self.export_diagnostico).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Informe comercial PDF", command=self.export_informe_comercial_pdf).pack(side="left", padx=(0, 8))
@@ -168,7 +169,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             self.previstos_tab,
             owner=self,
             filters_payload=self._filters_payload,
-            refresh_command=lambda: self.load_data(save_filters=True),
+            refresh_command=lambda: self._reload_with_invalidated_cache("pedidos_previstos", save_filters=True),
             refresh_button_text="Refrescar planificación",
         )
 
@@ -262,117 +263,176 @@ class PlanificacionDiariaScreen(ttk.Frame):
             "pedidos_modo": self.pedidos_modo_var.get(),
         }
 
+    def _new_planning_cache(self) -> dict:
+        return {
+            "filters_key": None,
+            "stock_campo": None,
+            "stock_almacen": None,
+            "stock_almacen_detalle": None,
+            "pedidos_pendientes": None,
+            "pedidos_previstos": None,
+            "balance": None,
+            "capacidad_productiva": None,
+            "aprovechamientos_resumen": None,
+            "aprovechamientos_detalle": None,
+        }
+
+    def _get_filters_key(self, payload: dict | None = None) -> tuple:
+        payload = payload or self._filters_payload()
+
+        def stable(value):
+            if isinstance(value, (list, tuple, set)):
+                return tuple(sorted(str(v) for v in value))
+            if isinstance(value, dict):
+                return tuple((k, stable(v)) for k, v in sorted(value.items()))
+            return str(value or "")
+
+        policy = self._build_sim_policy() if self.sim_policy_vars else {}
+        return tuple((key, stable(payload.get(key))) for key in (
+            "campana", "cultivo", "semana", "fecha_desde", "fecha_hasta",
+            "empresa", "var_coop", "grupo_varietal", "marca", "pedidos_modo",
+        )) + (("sim_policy", stable(policy)),)
+
+    def _invalidate_planning_cache(self, motivo: str, keys: list[str] | None = None) -> None:
+        logger = logging.getLogger(__name__)
+        logger.info("CACHE INVALIDADA motivo=%s", motivo)
+        if keys is None:
+            self._planning_cache = self._new_planning_cache()
+            self.last_capacity_simulation = None
+            self.last_capacity_payload = None
+            return
+        for key in keys:
+            if key in self._planning_cache:
+                self._planning_cache[key] = None
+        self._planning_cache["aprovechamientos_resumen"] = None
+        self._planning_cache["aprovechamientos_detalle"] = None
+        self.last_capacity_simulation = None
+        self.last_capacity_payload = None
+
+    def _ensure_cache_key(self, payload: dict) -> None:
+        filters_key = self._get_filters_key(payload)
+        if self._planning_cache.get("filters_key") != filters_key:
+            self._invalidate_planning_cache("cambio_filtros")
+            self._planning_cache["filters_key"] = filters_key
+
+    def _reload_with_invalidated_cache(self, motivo: str, save_filters: bool = True) -> None:
+        self._invalidate_planning_cache(motivo)
+        self.load_data(save_filters=save_filters)
+
+    def _cache_get(self, key: str):
+        logger = logging.getLogger(__name__)
+        if self._planning_cache.get(key) is not None:
+            logger.info("CACHE HIT %s", key)
+            return self._planning_cache[key]
+        logger.info("CACHE MISS %s", key)
+        return None
+
+    def _cache_set(self, key: str, value) -> None:
+        self._planning_cache[key] = value
+
     def load_data(self, save_filters: bool = True) -> None:
         tab_activa = self.tabs.tab(self.tabs.select(), "text")
         payload = self._filters_payload()
+        self._ensure_cache_key(payload)
         updated = None
         update_warning = False
         pedidos_kpi = {}
         if tab_activa == "Stock campo":
-            try:
-                self.stock_campo_rows, updated, update_warning = self.service.load_stock_campo(payload)
-            except Exception as exc:
-                self.stock_campo_rows = []
-                messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock campo: {exc}")
+            cached = self._cache_get("stock_campo")
+            if cached is not None:
+                self.stock_campo_rows, updated, update_warning = cached
+            else:
+                try:
+                    self.stock_campo_rows, updated, update_warning = self.service.load_stock_campo(payload)
+                    self._cache_set("stock_campo", (self.stock_campo_rows, updated, update_warning))
+                except Exception as exc:
+                    self.stock_campo_rows = []
+                    messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock campo: {exc}")
         elif tab_activa == "Stock almacén":
-            try:
-                self.stock_almacen_rows, almacen_warning = self.service.load_stock_almacen(payload)
-                self.stock_almacen_detalle_rows = self.service.load_stock_almacen_detalle_palets(payload)
+            cached = self._cache_get("stock_almacen")
+            if cached is not None:
+                self.stock_almacen_rows, self.stock_almacen_detalle_rows, almacen_warning = cached
                 if almacen_warning:
                     messagebox.showwarning("Planificación diaria", almacen_warning)
-            except Exception as exc:
-                self.stock_almacen_rows = []
-                self.stock_almacen_detalle_rows = []
-                logging.getLogger(__name__).warning("No se pudo cargar stock almacén: %s", exc)
-                messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock almacén: {exc}")
+            else:
+                try:
+                    self.stock_almacen_rows, almacen_warning = self.service.load_stock_almacen(payload)
+                    self.stock_almacen_detalle_rows = self.service.load_stock_almacen_detalle_palets(payload)
+                    self._cache_set("stock_almacen", (self.stock_almacen_rows, self.stock_almacen_detalle_rows, almacen_warning))
+                    if almacen_warning:
+                        messagebox.showwarning("Planificación diaria", almacen_warning)
+                except Exception as exc:
+                    self.stock_almacen_rows = []
+                    self.stock_almacen_detalle_rows = []
+                    logging.getLogger(__name__).warning("No se pudo cargar stock almacén: %s", exc)
+                    messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock almacén: {exc}")
         elif tab_activa == "Pedidos pendientes":
-            modo_pedidos = self.pedidos_modo_var.get()
-            try:
-                pedidos_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, modo_pedidos)
-                self.pedidos_pendientes_rows_raw = [dict(r) for r in pedidos_rows]
-                self._refresh_pedidos_local_filter_options(pedidos_rows)
-                self.pedidos_pendientes_rows, pedidos_kpi = self._apply_pedidos_local_filters(pedidos_rows, pedidos_kpi)
-            except Exception as exc:
-                self.pedidos_pendientes_rows = []
-                self.pedidos_pendientes_rows_raw = []
-                logging.getLogger(__name__).warning("No se pudo cargar pedidos pendientes: %s", exc)
-                messagebox.showwarning("Pedidos pendientes", f"No se pudo cargar pedidos pendientes: {exc}")
+            cached = self._cache_get("pedidos_pendientes")
+            if cached is not None:
+                self.pedidos_pendientes_rows_raw, self.pedidos_pendientes_rows, pedidos_kpi = cached
+                self._refresh_pedidos_local_filter_options(self.pedidos_pendientes_rows_raw)
+            else:
+                modo_pedidos = self.pedidos_modo_var.get()
+                try:
+                    pedidos_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, modo_pedidos)
+                    self.pedidos_pendientes_rows_raw = [dict(r) for r in pedidos_rows]
+                    self._refresh_pedidos_local_filter_options(pedidos_rows)
+                    self.pedidos_pendientes_rows, pedidos_kpi = self._apply_pedidos_local_filters(pedidos_rows, pedidos_kpi)
+                    self._cache_set("pedidos_pendientes", (self.pedidos_pendientes_rows_raw, self.pedidos_pendientes_rows, pedidos_kpi))
+                except Exception as exc:
+                    self.pedidos_pendientes_rows = []
+                    self.pedidos_pendientes_rows_raw = []
+                    logging.getLogger(__name__).warning("No se pudo cargar pedidos pendientes: %s", exc)
+                    messagebox.showwarning("Pedidos pendientes", f"No se pudo cargar pedidos pendientes: {exc}")
         elif tab_activa == "Pedidos previstos":
+            cached = self._cache_get("pedidos_previstos")
             if self.pedidos_previstos_panel:
-                self.pedidos_previstos_panel["refresh_rows"]()
+                if cached is None:
+                    self.pedidos_previstos_panel["refresh_rows"]()
+                    self._cache_set("pedidos_previstos", True)
         elif tab_activa == "Balance":
-            try:
-                self.balance_rows_all = self.service.load_balance_planificacion(payload, policy=self._build_sim_policy())
-                self.balance_rows = self._build_balance_view_rows(self.balance_rows_all)
-            except Exception as exc:
-                self.balance_rows_all = []
-                self.balance_rows = []
-                logging.getLogger(__name__).warning("No se pudo cargar balance: %s", exc)
-                messagebox.showwarning("Balance", f"No se pudo cargar balance: {exc}")
+            cached = self._cache_get("balance")
+            if cached is not None:
+                self.balance_rows_all, self.balance_rows = cached
+            else:
+                try:
+                    self.balance_rows_all = self.service.load_balance_planificacion(payload, policy=self._build_sim_policy())
+                    self.balance_rows = self._build_balance_view_rows(self.balance_rows_all)
+                    self._cache_set("balance", (self.balance_rows_all, self.balance_rows))
+                except Exception as exc:
+                    self.balance_rows_all = []
+                    self.balance_rows = []
+                    logging.getLogger(__name__).warning("No se pudo cargar balance: %s", exc)
+                    messagebox.showwarning("Balance", f"No se pudo cargar balance: {exc}")
         elif tab_activa == "Capacidad productiva":
-            try:
-                cap = self.capacity_service.build_capacity_simulation(payload, self.pedidos_modo_var.get())
+            cached = self._cache_get("capacidad_productiva")
+            if cached is not None:
+                cap = cached
                 self.last_capacity_simulation = cap
                 self.last_capacity_payload = dict(payload)
-                s = cap["summary"]
-                self.kpi_capacidad.set(
-                    f"Kg reales pendientes: {s['Kg reales pendientes']:,.2f} | Kg previstos: {s['Kg previstos']:,.2f} | "
-                    f"Kg total simulación: {s['Kg total simulación']:,.2f} | Horas necesarias estimadas: {s['Horas necesarias estimadas']:,.2f} | "
-                    f"Horas disponibles: {s['Horas disponibles']:,.2f} | Ocupación %: {s['Ocupación %']:,.2f}% | "
-                    f"Turnos equivalentes: {s.get('turnos_equivalentes', 0):,.2f} | "
-                    f"Personal total/directo/soporte/indirecto: {s['Personal disponible total']}/{s['Personal directo disponible']}/{s['Personal soporte disponible']}/{s['Personal indirecto disponible']} | "
-                    f"Personal requerido mín/ópt/estimado: {s.get('personal_minimo_flujo', 0)}/{s.get('personal_optimo_flujo', 0)}/{s.get('personal_estimado_flujo', 0)} | "
-                    f"Déficit personal: {s.get('deficit_personal_flujo', 0)} | "
-                    f"Personal min/ópt recursos: {s.get('personal_minimo_recursos', 0)}/{s.get('personal_optimo_recursos', 0)} | "
-                    f"Cuello botella: {s.get('linea_cuello_botella_principal', '') or '-'} / {s.get('puesto_cuello_botella_principal', '') or s.get('motivo_cuello_botella', '') or 'Sin datos'} | "
-                    f"Capacidad alcanzable: {s.get('capacidad_alcanzable_pct', 0):,.2f}% | Kg alcanzables: {s.get('kg_alcanzables_estimados', 0):,.0f} | "
-                    f"Estado capacidad: {s['Estado capacidad']}"
-                )
-                self.capacidad_family_table.set_rows(cap["family_rows"])
-                self.capacidad_line_table.set_rows(cap["line_rows"])
-                self.capacidad_resource_table.set_rows(cap.get("resource_rows", []))
-                self.capacidad_staffing_table.set_rows(cap.get("staffing_rows", []))
-                self.capacidad_bottleneck_table.set_rows(cap.get("bottleneck_rows", []))
-                self.capacidad_inc_table.set_rows(cap["incidencias"])
-            except Exception as exc:
-                self.capacidad_family_table.set_rows([])
-                self.capacidad_line_table.set_rows([])
-                self.capacidad_resource_table.set_rows([])
-                self.capacidad_staffing_table.set_rows([])
-                self.capacidad_bottleneck_table.set_rows([])
-                self.capacidad_inc_table.set_rows([])
-                self.last_capacity_simulation = None
-                self.last_capacity_payload = None
-                messagebox.showwarning("Capacidad productiva", f"No se pudo calcular capacidad productiva: {exc}")
+                self._render_capacidad(cap)
+            else:
+                try:
+                    cap = self.capacity_service.build_capacity_simulation(payload, self.pedidos_modo_var.get())
+                    self.last_capacity_simulation = cap
+                    self.last_capacity_payload = dict(payload)
+                    self._cache_set("capacidad_productiva", cap)
+                    self._render_capacidad(cap)
+                except Exception as exc:
+                    self.capacidad_family_table.set_rows([])
+                    self.capacidad_line_table.set_rows([])
+                    self.capacidad_resource_table.set_rows([])
+                    self.capacidad_staffing_table.set_rows([])
+                    self.capacidad_bottleneck_table.set_rows([])
+                    self.capacidad_inc_table.set_rows([])
+                    self.last_capacity_simulation = None
+                    self.last_capacity_payload = None
+                    messagebox.showwarning("Capacidad productiva", f"No se pudo calcular capacidad productiva: {exc}")
         self.campo_table.set_rows(self.stock_campo_rows)
         self.almacen_table.set_rows(self.stock_almacen_rows)
         self.pedidos_table.set_rows(self.pedidos_pendientes_rows)
         self.balance_table.set_rows(self.balance_rows)
-        if tab_activa != "Pedidos previstos" and self.pedidos_previstos_panel:
-            self.pedidos_previstos_panel["refresh_rows"]()
-        self.kpi_campo.set(
-            f"Kg campo total: {sum(float(r.get('Kg campo', 0) or 0) for r in self.stock_campo_rows):,.2f} | "
-            f"Nº partidas: {len(self.stock_campo_rows)} | Nº variedades: {len({r.get('Variedad') for r in self.stock_campo_rows})}"
-        )
-        self.kpi_almacen.set(
-            f"Kg stock almacén: {sum(float(r.get('Kg stock', 0) or 0) for r in self.stock_almacen_rows):,.2f} | "
-            f"Nº grupos: {len(self.stock_almacen_rows)} | "
-            f"Nº variedades: {len({r.get('Variedad') for r in self.stock_almacen_rows})} | "
-            f"Nº calibres: {len({r.get('Calibre') for r in self.stock_almacen_rows})}"
-        )
-        self.last_update.set(f"Última actualización: {updated}" if updated else "Última actualización: No disponible")
-        self.kpi_pedidos.set(
-            f"Kg pedido teórico total: {float(pedidos_kpi.get('Kg pedido teórico total', 0) or 0):,.2f} | "
-            f"Kg hecho real total: {float(pedidos_kpi.get('Kg hecho real total', 0) or 0):,.2f} | "
-            f"Kg pendiente total: {float(pedidos_kpi.get('Kg pendiente total', 0) or 0):,.2f} | "
-            f"Merma kg total: {float(pedidos_kpi.get('Merma kg total', 0) or 0):,.2f} | "
-            f"% merma total: {float(pedidos_kpi.get('% merma total', 0) or 0):,.2f}% | "
-            f"Nº pedidos: {int(pedidos_kpi.get('Nº pedidos', 0) or 0)} | "
-            f"Nº líneas: {int(pedidos_kpi.get('Nº líneas', 0) or 0)} | "
-            f"Nº líneas sin datos: {int(pedidos_kpi.get('Nº líneas sin datos', 0) or 0)} | "
-            f"Nº líneas parciales: {int(pedidos_kpi.get('Nº líneas parciales', 0) or 0)}"
-        )
-        self.kpi_balance.set(self._format_balance_summary(self.balance_rows_all))
+        self._update_kpis(updated, pedidos_kpi)
         if update_warning:
             messagebox.showwarning("Planificación diaria", "No se pudo leer un archivo auxiliar de actualización. Se continuará sin ese dato.")
         if save_filters:
@@ -381,6 +441,42 @@ class PlanificacionDiariaScreen(ttk.Frame):
         payload = self._filters_payload()
         self.filters_status_var.set(self._format_filters_status(payload))
         self._refresh_snapshot_info_label()
+
+    def _render_capacidad(self, cap: dict) -> None:
+        s = cap["summary"]
+        self.kpi_capacidad.set(
+            f"Kg reales pendientes: {s['Kg reales pendientes']:,.2f} | Kg previstos: {s['Kg previstos']:,.2f} | "
+            f"Kg total simulación: {s['Kg total simulación']:,.2f} | Horas necesarias estimadas: {s['Horas necesarias estimadas']:,.2f} | "
+            f"Horas disponibles: {s['Horas disponibles']:,.2f} | Ocupación %: {s['Ocupación %']:,.2f}% | "
+            f"Turnos equivalentes: {s.get('turnos_equivalentes', 0):,.2f} | Personal total/directo/soporte/indirecto: {s['Personal disponible total']}/{s['Personal directo disponible']}/{s['Personal soporte disponible']}/{s['Personal indirecto disponible']} | "
+            f"Personal requerido mín/ópt/estimado: {s.get('personal_minimo_flujo', 0)}/{s.get('personal_optimo_flujo', 0)}/{s.get('personal_estimado_flujo', 0)} | Déficit personal: {s.get('deficit_personal_flujo', 0)} | "
+            f"Personal min/ópt recursos: {s.get('personal_minimo_recursos', 0)}/{s.get('personal_optimo_recursos', 0)} | Cuello botella: {s.get('linea_cuello_botella_principal', '') or '-'} / {s.get('puesto_cuello_botella_principal', '') or s.get('motivo_cuello_botella', '') or 'Sin datos'} | "
+            f"Capacidad alcanzable: {s.get('capacidad_alcanzable_pct', 0):,.2f}% | Kg alcanzables: {s.get('kg_alcanzables_estimados', 0):,.0f} | Estado capacidad: {s['Estado capacidad']}"
+        )
+        self.capacidad_family_table.set_rows(cap["family_rows"])
+        self.capacidad_line_table.set_rows(cap["line_rows"])
+        self.capacidad_resource_table.set_rows(cap.get("resource_rows", []))
+        self.capacidad_staffing_table.set_rows(cap.get("staffing_rows", []))
+        self.capacidad_bottleneck_table.set_rows(cap.get("bottleneck_rows", []))
+        self.capacidad_inc_table.set_rows(cap["incidencias"])
+
+    def _update_kpis(self, updated, pedidos_kpi: dict) -> None:
+        self.kpi_campo.set(
+            f"Kg campo total: {sum(float(r.get('Kg campo', 0) or 0) for r in self.stock_campo_rows):,.2f} | "
+            f"Nº partidas: {len(self.stock_campo_rows)} | Nº variedades: {len({r.get('Variedad') for r in self.stock_campo_rows})}"
+        )
+        self.kpi_almacen.set(
+            f"Kg stock almacén: {sum(float(r.get('Kg stock', 0) or 0) for r in self.stock_almacen_rows):,.2f} | "
+            f"Nº grupos: {len(self.stock_almacen_rows)} | Nº variedades: {len({r.get('Variedad') for r in self.stock_almacen_rows})} | Nº calibres: {len({r.get('Calibre') for r in self.stock_almacen_rows})}"
+        )
+        self.last_update.set(f"Última actualización: {updated}" if updated else self.last_update.get() or "Última actualización: No disponible")
+        self.kpi_pedidos.set(
+            f"Kg pedido teórico total: {float(pedidos_kpi.get('Kg pedido teórico total', 0) or 0):,.2f} | "
+            f"Kg hecho real total: {float(pedidos_kpi.get('Kg hecho real total', 0) or 0):,.2f} | Kg pendiente total: {float(pedidos_kpi.get('Kg pendiente total', 0) or 0):,.2f} | "
+            f"Merma kg total: {float(pedidos_kpi.get('Merma kg total', 0) or 0):,.2f} | % merma total: {float(pedidos_kpi.get('% merma total', 0) or 0):,.2f}% | "
+            f"Nº pedidos: {int(pedidos_kpi.get('Nº pedidos', 0) or 0)} | Nº líneas: {int(pedidos_kpi.get('Nº líneas', 0) or 0)} | Nº líneas sin datos: {int(pedidos_kpi.get('Nº líneas sin datos', 0) or 0)} | Nº líneas parciales: {int(pedidos_kpi.get('Nº líneas parciales', 0) or 0)}"
+        )
+        self.kpi_balance.set(self._format_balance_summary(self.balance_rows_all))
 
     def _build_balance_view_rows(self, rows: list[dict]) -> list[dict]:
         out: list[dict] = []
@@ -585,8 +681,27 @@ class PlanificacionDiariaScreen(ttk.Frame):
             messagebox.showwarning("Stock campo", "Selecciona una partida de stock campo.", parent=self)
             return
         values = self.campo_table.tree.item(sel[0], "values")
-        boleta = str(values[7]) if len(values) > 7 else ""
-        partida = next((r for r in self.stock_campo_rows if str(r.get("Boleta", "")) == boleta), None)
+        selected_row = {col: values[idx] if idx < len(values) else "" for idx, col in enumerate(self.campo_table.columns)}
+        boleta = str(selected_row.get("Boleta", ""))
+
+        def normalize_kg(value) -> float:
+            try:
+                return round(float(str(value).replace(".", "").replace(",", ".") if isinstance(value, str) and "," in value else value or 0), 3)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def partida_key(row: dict) -> tuple:
+            return (
+                str(row.get("Boleta", "")).strip(),
+                str(row.get("Fecha carga", "")).strip(),
+                normalize_kg(row.get("Kg campo", 0)),
+                str(row.get("Socio", "")).strip(),
+                str(row.get("Variedad", "")).strip(),
+                str(row.get("Grupo varietal", "")).strip(),
+            )
+
+        selected_key = partida_key(selected_row)
+        partida = next((r for r in self.stock_campo_rows if partida_key(r) == selected_key), None)
         if not partida:
             messagebox.showwarning("Stock campo", "No se pudo localizar la partida seleccionada.", parent=self)
             return
@@ -611,7 +726,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         tbl.pack(fill="both", expand=True)
 
         def load_rows() -> tuple[list[dict], bool]:
-            _resumen, detalle_map = self.service.get_aprovechamiento_stock_campo(self.stock_campo_rows, self._filters_payload())
+            _resumen, detalle_map = self.service.get_aprovechamiento_stock_campo([partida], self._filters_payload())
             rows = detalle_map.get(boleta, [])
             tiene_real = any(str(r.get("Origen aprovechamiento", "")).upper() in {"REAL", "REAL_PESOSFRES", "LOTEADO"} for r in rows)
             return rows, tiene_real
@@ -708,6 +823,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                     messagebox.showerror("Aprovechamiento estimado", str(exc), parent=form)
                     return
                 form.destroy()
+                self._invalidate_planning_cache("aprovechamiento_estimado_manual", keys=["stock_campo", "balance", "capacidad_productiva"])
                 render()
                 self.load_data(save_filters=False)
 
@@ -733,6 +849,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             if not messagebox.askyesno("Eliminar estimado", "¿Eliminar el aprovechamiento estimado seleccionado?", parent=popup):
                 return
             self.service.delete_aprovechamiento_estimado(est_id)
+            self._invalidate_planning_cache("aprovechamiento_estimado_manual", keys=["stock_campo", "balance", "capacidad_productiva"])
             render()
             self.load_data(save_filters=False)
 
@@ -791,7 +908,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             messagebox.showwarning("Planificación diaria", self.runtime_db_service.WARNING_MESSAGE, parent=self)
             logging.getLogger(__name__).warning("No se pudo actualizar foto local en: %s", errors)
         self._refresh_snapshot_info_label()
-        self.load_data(save_filters=True)
+        self._reload_with_invalidated_cache("actualizar_foto_local", save_filters=True)
 
     def _on_tab_changed(self, _event=None) -> None:
         self.load_data(save_filters=False)
@@ -808,7 +925,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self._clear_saved_filters()
         self._load_filter_options(contextual=True)
         self.filters_status_var.set("Sin filtros activos")
-        self.load_data(save_filters=True)
+        self._reload_with_invalidated_cache("limpiar_filtros", save_filters=True)
 
     def _diagnostico_resumen_rows(self, summary: dict) -> list[dict]:
         return [
@@ -1040,6 +1157,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         )
         if not confirm:
             return
+        self._invalidate_planning_cache("actualizar_planificacion")
         self.stock_campo_rows = []
         self.stock_almacen_rows = []
         self.pedidos_pendientes_rows = []
@@ -1052,7 +1170,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 return
             messagebox.showinfo("Actualizar planificación", msg.replace(" | ", "\n").replace("Planificación rápida OK. ", ""), parent=self)
             self._load_filter_options()
-            self.load_data(save_filters=True)
+            self._reload_with_invalidated_cache("actualizar_planificacion", save_filters=True)
         except ValueError as exc:
             msg = str(exc)
             if "No existe configuración legacy" in msg and "DBPedidos.sqlite:Pedidos" in msg:
@@ -1086,7 +1204,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         label = self._pedidos_modo_combo.get()
         lookup = {lbl: key for lbl, key in self.PEDIDOS_MODOS}
         self.pedidos_modo_var.set(lookup.get(label, "10_dias"))
-        self.load_data(save_filters=True)
+        self._reload_with_invalidated_cache("modo_pedidos", save_filters=True)
 
     def _format_filters_status(self, payload: dict) -> str:
         labels = {
@@ -1227,7 +1345,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
     def _recalcular_simulacion(self) -> None:
         self._save_balance_settings()
-        self.load_data(save_filters=True)
+        self._reload_with_invalidated_cache("recalcular_simulacion", save_filters=True)
 
     def _save_balance_settings(self) -> None:
         self.BALANCE_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
