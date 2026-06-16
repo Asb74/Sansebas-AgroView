@@ -1,5 +1,9 @@
 import json
 import logging
+import os
+import platform
+import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -941,11 +945,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
         except Exception as exc:
             messagebox.showerror("Informe comercial PDF", f"No se pudieron preparar los datos del informe: {exc}", parent=self)
             return
-        default_name = self.commercial_pdf_service.default_filename()
-        target = filedialog.asksaveasfilename(defaultextension=".pdf", initialfile=default_name, filetypes=[("PDF", "*.pdf")])
-        if not target:
-            return
         try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                target = tmp.name
             path = self.commercial_pdf_service.generate(
                 target,
                 filters=self._commercial_pdf_filters(),
@@ -954,11 +956,26 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 pedidos_pendientes_rows=[dict(r) for r in pedidos_pendientes],
                 pedidos_previstos_rows=[dict(r) for r in pedidos_previstos],
             )
+            self._open_pdf_preview(path)
         except Exception as exc:
             logging.getLogger(__name__).exception("No se pudo generar informe comercial PDF")
             messagebox.showerror("Informe comercial PDF", f"No se pudo generar el PDF: {exc}", parent=self)
             return
-        messagebox.showinfo("Informe comercial PDF", f"Archivo guardado en:\n{path}", parent=self)
+        messagebox.showinfo(
+            "Informe comercial PDF",
+            "Informe generado en vista previa. Revíselo y guárdelo desde el visor PDF si lo desea.",
+            parent=self,
+        )
+
+    def _open_pdf_preview(self, path: str | Path) -> None:
+        path_str = str(path)
+        system = platform.system()
+        if system == "Windows":
+            os.startfile(path_str)  # type: ignore[attr-defined]
+        elif system == "Darwin":
+            subprocess.call(["open", path_str])
+        else:
+            subprocess.call(["xdg-open", path_str])
 
     def export_diagnostico(self) -> None:
         payload = self._filters_payload()

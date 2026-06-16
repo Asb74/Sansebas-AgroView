@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 try:
     from reportlab.lib import colors
-    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm
@@ -49,8 +49,9 @@ class CommercialPdfReportService:
         self._styles = getSampleStyleSheet()
         self._small = ParagraphStyle("Small", parent=self._styles["Normal"], fontSize=6.2, leading=7.2, alignment=TA_LEFT)
         self._normal = ParagraphStyle("NormalCompact", parent=self._styles["Normal"], fontSize=8, leading=9.5)
-        self._section = ParagraphStyle("Section", parent=self._styles["Heading2"], fontSize=11, leading=13, spaceBefore=4, spaceAfter=5)
-        self._title = ParagraphStyle("Title", parent=self._styles["Heading1"], fontSize=15, leading=17)
+        self._section = ParagraphStyle("Section", parent=self._styles["Heading2"], fontSize=14, leading=16, spaceBefore=4, spaceAfter=7, textColor=colors.HexColor("#1F4E79"))
+        self._title = ParagraphStyle("Title", parent=self._styles["Heading1"], fontSize=20, leading=23, alignment=TA_CENTER, textColor=colors.HexColor("#1F4E79"))
+        self._kpi = ParagraphStyle("Kpi", parent=self._styles["Normal"], fontSize=10, leading=12, alignment=TA_CENTER)
 
         campo = list(stock_campo_rows or [])
         almacen = list(stock_almacen_rows or [])
@@ -60,9 +61,13 @@ class CommercialPdfReportService:
         self._add_header(story, filters or {}, generated_at or datetime.now())
         self._add_summary(story, campo, almacen, pendientes, previstos)
         self._add_stock_campo(story, campo)
+        self._add_aprovechamientos(story, campo)
         self._add_stock_almacen(story, almacen)
         self._add_pedidos(story, "PEDIDOS PENDIENTES", pendientes, kg_field="Kg pendiente", confeccion_field="Confección", previsto=False)
         self._add_pedidos(story, "PEDIDOS PREVISTOS / NO CONFIRMADOS", previstos, kg_field="Kg estimados", confeccion_field="Confección prevista", previsto=True)
+        self._add_agenda(story, pendientes)
+        self._add_alertas(story, campo, almacen, pendientes, previstos)
+        self._add_capacidad(story)
         doc = SimpleDocTemplate(str(target), pagesize=landscape(A4), leftMargin=0.7*cm, rightMargin=0.7*cm, topMargin=0.7*cm, bottomMargin=0.7*cm)
         doc.build(story)
         return target
@@ -86,7 +91,7 @@ class CommercialPdfReportService:
         return str(value or "TODOS")
 
     def _add_header(self, story: list, filters: dict, generated_at: datetime) -> None:
-        story.append(Paragraph("Informe comercial diario", self._title))
+        story.append(Paragraph("INFORME OPERATIVO DIARIO", self._title))
         data = [["Fecha/hora generación", generated_at.strftime("%Y-%m-%d %H:%M")], ["Campaña", self._filter_text(filters.get("campana"))], ["Cultivo", self._filter_text(filters.get("cultivo"))], ["Empresa", self._filter_text(filters.get("empresa"))], ["Semana", self._filter_text(filters.get("semana"))], ["Variedad Coop", self._filter_text(filters.get("var_coop"))], ["Grupo varietal", self._filter_text(filters.get("grupo_varietal"))], ["Marca", self._filter_text(filters.get("marca"))], ["Fecha desde / hasta", f"{filters.get('fecha_desde') or 'TODOS'} / {filters.get('fecha_hasta') or 'TODOS'}"], ["Modo pedidos", filters.get("pedidos_modo_label") or filters.get("pedidos_modo", "TODOS")]]
         story.append(self._table(data, repeat=0, header=False, col_widths=[4*cm, 21*cm]))
         story.append(Spacer(1, 6))
@@ -96,30 +101,26 @@ class CommercialPdfReportService:
         kg_almacen = self._sum(almacen, "Kg stock")
         kg_pendientes = self._sum(pendientes, "Kg pendiente")
         kg_previstos = self._sum(previstos, "Kg estimados")
-        rows = [
-            ["Bloque", "KPI", "Valor"],
-            ["Disponibilidad", "Kg stock campo", self._num(kg_campo)],
-            ["Disponibilidad", "Kg stock almacén", self._num(kg_almacen)],
-            ["Disponibilidad", "Kg total disponible", self._num(kg_campo + kg_almacen)],
-            ["Demanda", "Kg pedidos pendientes", self._num(kg_pendientes)],
-            ["Demanda", "Kg pedidos previstos", self._num(kg_previstos)],
-            ["Demanda", "Kg demanda total", self._num(kg_pendientes + kg_previstos)],
-            ["Diferencia", "Kg stock almacén - pedidos pendientes", self._num(kg_almacen - kg_pendientes)],
-            ["Diferencia", "Kg campo + almacén - pendientes - previstos", self._num(kg_campo + kg_almacen - kg_pendientes - kg_previstos)],
-        ]
         story.append(Paragraph("RESUMEN EJECUTIVO", self._section))
-        story.append(self._table(rows, col_widths=[4*cm, 11*cm, 5*cm]))
-        confecciones = self._group_rows(pendientes, ["Grupo confección"], {"Palets": "Palets pendientes", "Kg pendiente": "Kg pendiente"})
-        total_palets = sum(r["Palets"] for r in confecciones)
-        if confecciones:
-            story.append(Spacer(1, 6))
-            story.append(Paragraph("% pedidos por grupo confección", self._normal))
-            story.append(self._table([["Grupo confección", "% palets", "Palets", "Kg pendiente"]] + [[r.get("Grupo confección") or "DESCONOCIDO", f"{(r['Palets'] / total_palets * 100 if total_palets else 0):.0f}%", self._format_cell(r["Palets"], "Palets"), self._num(r["Kg pendiente"])] for r in confecciones], col_widths=[5*cm, 2.5*cm, 2.5*cm, 3*cm]))
-        mini = self._group_rows(pendientes, ["Fecha salida"], {"Kg pendientes": "Kg pendiente"})
-        if mini:
-            story.append(Spacer(1, 6))
-            story.append(Paragraph("Próximos días con kg pendientes", self._normal))
-            story.append(self._table([["Fecha salida", "Kg pendientes"]] + [[r["Fecha salida"], self._num(r["Kg pendientes"])] for r in mini[:7]], col_widths=[5*cm, 5*cm]))
+        demanda_total = kg_pendientes + kg_previstos
+        cobertura = ((kg_campo + kg_almacen) / demanda_total * 100) if demanda_total else 0
+        estado = "VERDE" if cobertura >= 130 else "AMARILLO" if cobertura >= 100 else "ROJO"
+        rows = [
+            ["DISPONIBILIDAD", "DEMANDA", "COBERTURA"],
+            [
+                f"Kg stock campo\n{self._num(kg_campo)}\nKg stock almacén\n{self._num(kg_almacen)}\nTotal disponible\n{self._num(kg_campo + kg_almacen)}",
+                f"Kg pedidos pendientes\n{self._num(kg_pendientes)}\nKg pedidos previstos\n{self._num(kg_previstos)}\nDemanda total\n{self._num(demanda_total)}",
+                f"Dif. almacén vs pendientes\n{self._num(kg_almacen - kg_pendientes)}\nDif. total vs demanda\n{self._num(kg_campo + kg_almacen - demanda_total)}\nCobertura\n{cobertura:.0f}% ({estado})",
+            ],
+        ]
+        story.append(self._table(rows, col_widths=[8.5*cm, 8.5*cm, 8.5*cm], row_styles=[(1, estado)]))
+        max_value = max(kg_campo, kg_almacen, kg_pendientes, kg_previstos, 1)
+        bars = [["Indicador", "Kg", "Barra"]]
+        for label, value in [("Stock campo", kg_campo), ("Stock almacén", kg_almacen), ("Pedidos pendientes", kg_pendientes), ("Pedidos previstos", kg_previstos)]:
+            bars.append([label, self._num(value), "█" * max(1, int(value / max_value * 28)) if value else ""])
+        story.append(Spacer(1, 8))
+        story.append(Paragraph("Comparativa visual stock / demanda", self._normal))
+        story.append(self._table(bars, col_widths=[5*cm, 4*cm, 16*cm]))
         story.append(PageBreak())
 
     def _value(self, row: dict, column: str) -> Any:
@@ -160,28 +161,28 @@ class CommercialPdfReportService:
         story.append(Spacer(1, 6))
 
     def _add_stock_campo(self, story: list, rows: list[dict]) -> None:
-        story.append(Paragraph("STOCK CAMPO RESUMIDO", self._section))
+        story.append(Paragraph("STOCK CAMPO", self._section))
         if not rows:
             story.append(Paragraph("Sin datos para los filtros actuales.", self._normal)); story.append(PageBreak()); return
-        columns = ["Fecha carga", "Boleta", "Plataforma", "Empresa", "Cultivo", "Restricciones / Color", "Kg campo"]
-        sorted_rows = sorted(rows, key=lambda r: (str(self._value(r, "Cultivo")), str(self._value(r, "Variedad")), str(self._value(r, "Socio")), str(self._value(r, "Fecha carga")), str(self._value(r, "Boleta"))))
+        columns = ["Fecha carga", "Semana", "Socio", "Variedad", "Grupo varietal", "Boleta", "Plataforma", "Empresa", "Color / restricciones", "Kg campo"]
+        sorted_rows = sorted(rows, key=lambda r: (str(self._value(r, "Grupo varietal")), str(self._value(r, "Variedad")), str(self._value(r, "Socio")), str(self._value(r, "Boleta"))))
         data = [columns]
         styles = []
-        current: dict[str, Any] = {"Cultivo": None, "Variedad": None, "Socio": None}
-        buckets: dict[str, list[dict]] = {"Cultivo": [], "Variedad": [], "Socio": []}
+        current: dict[str, Any] = {"Grupo varietal": None, "Variedad": None, "Socio": None}
+        buckets: dict[str, list[dict]] = {"Grupo varietal": [], "Variedad": [], "Socio": []}
 
         def subtotal(label: str, value: Any, level: str) -> None:
-            data.append([label, "", "", "", "", "", self._num(value)])
+            data.append([label] + [""] * (len(columns) - 2) + [self._num(value)])
             styles.append((len(data) - 1, level))
 
         for row in sorted_rows:
-            values = {k: self._value(row, k) or "Sin especificar" for k in ("Cultivo", "Variedad", "Socio")}
-            if current["Cultivo"] is not None:
-                if values["Cultivo"] != current["Cultivo"]:
+            values = {k: self._value(row, k) or "Sin especificar" for k in ("Grupo varietal", "Variedad", "Socio")}
+            if current["Grupo varietal"] is not None:
+                if values["Grupo varietal"] != current["Grupo varietal"]:
                     subtotal(f"Subtotal socio: {current['Socio']}", self._sum(buckets["Socio"], "Kg campo"), "socio")
                     subtotal(f"Subtotal variedad: {current['Variedad']}", self._sum(buckets["Variedad"], "Kg campo"), "variedad")
-                    subtotal(f"Total cultivo: {current['Cultivo']}", self._sum(buckets["Cultivo"], "Kg campo"), "cultivo")
-                    buckets = {"Cultivo": [], "Variedad": [], "Socio": []}
+                    subtotal(f"Total grupo varietal: {current['Grupo varietal']}", self._sum(buckets["Grupo varietal"], "Kg campo"), "cultivo")
+                    buckets = {"Grupo varietal": [], "Variedad": [], "Socio": []}
                 elif values["Variedad"] != current["Variedad"]:
                     subtotal(f"Subtotal socio: {current['Socio']}", self._sum(buckets["Socio"], "Kg campo"), "socio")
                     subtotal(f"Subtotal variedad: {current['Variedad']}", self._sum(buckets["Variedad"], "Kg campo"), "variedad")
@@ -197,9 +198,9 @@ class CommercialPdfReportService:
         if sorted_rows:
             subtotal(f"Subtotal socio: {current['Socio']}", self._sum(buckets["Socio"], "Kg campo"), "socio")
             subtotal(f"Subtotal variedad: {current['Variedad']}", self._sum(buckets["Variedad"], "Kg campo"), "variedad")
-            subtotal(f"Total cultivo: {current['Cultivo']}", self._sum(buckets["Cultivo"], "Kg campo"), "cultivo")
+            subtotal(f"Total grupo varietal: {current['Grupo varietal']}", self._sum(buckets["Grupo varietal"], "Kg campo"), "cultivo")
         subtotal("TOTAL GENERAL STOCK CAMPO", self._sum(sorted_rows, "Kg campo"), "general")
-        story.append(self._table(data, row_styles=styles, col_widths=[2.2*cm, 2.0*cm, 2.1*cm, 3.0*cm, 2.5*cm, 3.1*cm, 2.4*cm]))
+        story.append(self._table(data, row_styles=styles))
         story.append(PageBreak())
 
     def _has_any_value(self, rows: Sequence[dict], column: str) -> bool:
@@ -262,23 +263,24 @@ class CommercialPdfReportService:
         story.append(Paragraph("% pedidos por grupo confección", self._normal)); story.append(self._table(data, col_widths=[5*cm, 2.5*cm, 2.5*cm, 3*cm])); story.append(Spacer(1, 6))
 
     def _add_timeline(self, story: list, rows: list[dict], pedido_kg: str, kg_field: str, palets_field: str, previsto: bool) -> None:
-        temporal = self._group_rows(rows, ["Fecha salida"], {"Kg teórico": pedido_kg, "Kg terminado": "Kg hecho real", "Kg pendiente": kg_field, "Palets pendientes": palets_field})
+        temporal = self._group_rows(rows, ["Fecha salida"], {"Kg teórico": pedido_kg, "Kg terminado": "Kg hecho real", "Kg pendiente": kg_field, "Palets pendientes": palets_field}, count_label="Nº pedidos")
         max_kg = max((r["Kg pendiente"] for r in temporal), default=0)
-        data = [["Fecha", "Kg teórico", "Kg terminado", "Kg pendiente", "Palets pendientes", "Barra visual"]]
+        data = [["Fecha salida", "Nº pedidos", "Palets pendientes", "Kg teórico", "Kg terminado", "Kg pendiente", "% pendiente", "Barra visual"]]
         for r in temporal:
             blocks = int(round((r["Kg pendiente"] / max_kg) * 14)) if max_kg else 0
-            data.append([r["Fecha salida"], self._num(r["Kg teórico"]), self._num(r["Kg terminado"]), self._num(r["Kg pendiente"]), self._format_cell(r["Palets pendientes"], "Palets"), "█" * blocks])
+            pct = (r["Kg pendiente"] / r["Kg teórico"] * 100) if r["Kg teórico"] else 0
+            data.append([r["Fecha salida"], r["Nº pedidos"], self._format_cell(r["Palets pendientes"], "Palets"), self._num(r["Kg teórico"]), self._num(r["Kg terminado"]), self._num(r["Kg pendiente"]), f"{pct:.0f}%", "█" * blocks])
         story.append(Paragraph("LÍNEA TEMPORAL PEDIDOS" + (" PREVISTOS" if previsto else ""), self._normal)); story.append(self._table(data)); story.append(Spacer(1, 6))
 
     def _add_pedidos_matrix(self, story: list, rows: list[dict], pedido_kg: str, kg_field: str, palets_field: str) -> None:
         groups = sorted({str(self._value(r, "Grupo varietal") or "Sin grupo") for r in rows})
-        matrix: dict[tuple[str, str, str], dict[str, dict[str, float]]] = {}
+        matrix: dict[tuple[str, str, str, str], dict[str, dict[str, float]]] = {}
         for row in rows:
-            key = (str(self._value(row, "Semana") or ""), str(self._value(row, "Fecha salida") or ""), str(self._value(row, "Cliente") or ""))
+            key = (str(self._value(row, "Semana") or ""), str(self._value(row, "Fecha salida") or ""), str(self._value(row, "Cliente") or ""), str(self._value(row, "Pedido") or ""))
             gv = str(self._value(row, "Grupo varietal") or "Sin grupo")
             bucket = matrix.setdefault(key, {g: {"Palets": 0.0, "Kg teórico": 0.0, "Kg terminado": 0.0, "Kg pendiente": 0.0} for g in groups})[gv]
             bucket["Palets"] += self._sum([row], palets_field); bucket["Kg teórico"] += self._sum([row], pedido_kg); bucket["Kg terminado"] += self._sum([row], "Kg hecho real"); bucket["Kg pendiente"] += self._sum([row], kg_field)
-        header = ["Semana", "Fecha salida", "Cliente"] + [f"{g} {m}" for g in groups for m in ("Palets", "Teórico", "Terminado", "Pendiente")] + [f"TOTAL {m}" for m in ("Palets", "Teórico", "Terminado", "Pendiente")]
+        header = ["Semana", "Fecha salida", "Cliente", "Pedido"] + [f"{g} {m}" for g in groups for m in ("Palets", "Teórico", "Terminado", "Pendiente")] + [f"TOTAL {m}" for m in ("Palets", "Teórico", "Terminado", "Pendiente")]
         data = [header]
         for key in sorted(matrix):
             totals = {"Palets": 0.0, "Kg teórico": 0.0, "Kg terminado": 0.0, "Kg pendiente": 0.0}
@@ -290,6 +292,67 @@ class CommercialPdfReportService:
             row += [self._format_cell(totals["Palets"], "Palets"), self._num(totals["Kg teórico"]), self._num(totals["Kg terminado"]), self._num(totals["Kg pendiente"])]
             data.append(row)
         story.append(Paragraph("Matriz operativa por semana, fecha, cliente y grupo varietal", self._normal)); story.append(self._table(data))
+
+    def _add_aprovechamientos(self, story: list, rows: list[dict]) -> None:
+        story.append(Paragraph("APROVECHAMIENTOS", self._section))
+        if not rows:
+            story.append(Paragraph("Sin stock campo para analizar aprovechamientos.", self._normal)); story.append(PageBreak()); return
+        origen_real = [r for r in rows if str(self._value(r, "Origen aprovechamiento") or self._value(r, "Origen") or "").lower().find("real") >= 0]
+        origen_manual = [r for r in rows if str(self._value(r, "Origen aprovechamiento") or self._value(r, "Origen") or "").lower().find("manual") >= 0]
+        sin = [r for r in rows if r not in origen_real and r not in origen_manual]
+        data = [["Bloque", "Nº partidas", "Kg campo afectado"], ["Aprovechamientos reales PesosFres", len(origen_real), self._num(self._sum(origen_real, "Kg campo"))], ["Aprovechamientos estimados manuales", len(origen_manual), self._num(self._sum(origen_manual, "Kg campo"))], ["Sin aprovechamiento", len(sin), self._num(self._sum(sin, "Kg campo"))]]
+        story.append(self._table(data, col_widths=[8*cm, 4*cm, 5*cm]))
+        story.append(PageBreak())
+
+    def _add_agenda(self, story: list, rows: list[dict]) -> None:
+        story.append(Paragraph("AGENDA DE PRODUCCIÓN", self._section))
+        if not rows:
+            story.append(Paragraph("Sin pedidos pendientes para agenda de producción.", self._normal)); story.append(PageBreak()); return
+        columns = ["Fecha salida", "Cliente", "Pedido", "Grupo confección", "Grupo varietal", "Kg pendiente", "Palets pendientes"]
+        for optional in ("Prioridad", "Estado"):
+            if self._has_any_value(rows, optional):
+                columns.append(optional)
+        data = [columns + ["Semáforo"]]
+        today = datetime.now().date()
+        for r in sorted(rows, key=lambda x: (str(self._value(x, "Fecha salida")), -self._sum([x], "Kg pendiente"))):
+            kg = self._sum([r], "Kg pendiente")
+            sem = "Verde" if kg <= 0 else "Rojo" if self._parse_date(self._value(r, "Fecha salida")) == today else "Amarillo" if self._parse_date(self._value(r, "Fecha salida")) == today + timedelta(days=1) else "Pendiente"
+            data.append([self._format_cell(self._value(r, c), c) for c in columns] + [sem])
+        story.append(self._table(data))
+        story.append(PageBreak())
+
+    def _add_alertas(self, story: list, campo: list[dict], almacen: list[dict], pendientes: list[dict], previstos: list[dict]) -> None:
+        story.append(Paragraph("RIESGOS / ALERTAS", self._section))
+        alerts: list[list[Any]] = [["Nivel", "Área", "Mensaje", "Acción sugerida"]]
+        today = datetime.now().date()
+        for r in pendientes:
+            if self._sum([r], "Kg pendiente") > 0 and self._parse_date(self._value(r, "Fecha salida")) == today:
+                alerts.append(["Rojo", "Producción", f"Pedido {self._value(r, 'Pedido')} de {self._value(r, 'Cliente')} sale hoy con {self._num(self._value(r, 'Kg pendiente'))} kg pendientes.", "Priorizar fabricación/expedición hoy."])
+        stock_gv = self._group_rows(almacen, ["Grupo varietal"], {"Kg stock": "Kg stock"})
+        demanda_gv = self._group_rows(pendientes, ["Grupo varietal"], {"Kg pendiente": "Kg pendiente"})
+        stock_map = {r["Grupo varietal"]: r["Kg stock"] for r in stock_gv}
+        for d in demanda_gv:
+            if d["Kg pendiente"] > stock_map.get(d["Grupo varietal"], 0):
+                alerts.append(["Amarillo", "Almacén", f"Demanda de {d['Grupo varietal'] or 'Sin grupo'} supera stock almacén.", "Revisar stock campo y plan de confección."])
+        if campo and not any(str(self._value(r, "Origen aprovechamiento") or self._value(r, "Origen") or "").strip() for r in campo):
+            alerts.append(["Amarillo", "Campo", "Hay stock campo sin aprovechamiento informado en los datos disponibles.", "Completar aprovechamientos antes de cerrar planificación."])
+        if len(alerts) == 1:
+            alerts.append(["Verde", "General", "No se detectan alertas automáticas con los datos actuales.", "Mantener seguimiento operativo."])
+        story.append(self._table(alerts, row_styles=[(i, row[0].upper()) for i, row in enumerate(alerts[1:], start=1)], col_widths=[2.5*cm, 3*cm, 14*cm, 8*cm]))
+        story.append(PageBreak())
+
+    def _add_capacidad(self, story: list) -> None:
+        story.append(Paragraph("CAPACIDAD PRODUCTIVA", self._section))
+        story.append(Paragraph("Capacidad productiva no incluida en esta versión del informe.", self._normal))
+        story.append(PageBreak())
+
+    def _parse_date(self, value: Any):
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+            try:
+                return datetime.strptime(str(value)[:10], fmt).date()
+            except Exception:
+                pass
+        return None
 
     def _add_section(self, story: list, title: str, rows: list[dict], columns: list[str], groups: list[str], sort_keys: list[str], kg_field: str, *, page_break: bool = True) -> None:
         story.append(Paragraph(title, self._section))
@@ -328,7 +391,7 @@ class CommercialPdfReportService:
         for i, row in enumerate(data):
             if row and str(row[0]).startswith(("Subtotal", "Total", "TOTAL")):
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#F1F1F1"))]
-        color_map = {"VERDE": "#E2F0D9", "AMARILLO": "#FFF2CC", "GRIS": "#E7E6E6"}
+        color_map = {"VERDE": "#E2F0D9", "AMARILLO": "#FFF2CC", "ROJO": "#F4CCCC", "GRIS": "#E7E6E6"}
         for row_idx, marker in row_styles or []:
             marker_text = str(marker).upper()
             if marker_text in color_map:
@@ -342,7 +405,7 @@ class CommercialPdfReportService:
         """Fallback PDF válido cuando ReportLab aún no está instalado en el entorno."""
         filters = kwargs.get("filters", {}) or {}
         lines = [
-            "Informe comercial diario",
+            "INFORME OPERATIVO DIARIO",
             f"Fecha/hora generación: {kwargs.get('generated_at').strftime('%Y-%m-%d %H:%M')}",
             f"Campaña: {self._filter_text(filters.get('campana'))}",
             f"Cultivo: {self._filter_text(filters.get('cultivo'))}",
