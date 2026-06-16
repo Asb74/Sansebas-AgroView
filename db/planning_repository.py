@@ -809,23 +809,242 @@ class PlanningRepository:
         return out
 
     def _get_campo_disponibilidad_aprovechamiento(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[list[dict[str, Any]], int]:
-        real_rows, sin_datos_pf, _rechazadas = self._get_pesosfres_campo_disponibilidad_real(stock_campo_rows, filters)
-        boletas_con_real = {str(r.get("Boleta", "") or "").strip() for r in real_rows if str(r.get("Boleta", "") or "").strip()}
-        loteado_rows, sin_datos_loteado = self._get_loteado_campo_disponibilidad_real(stock_campo_rows, filters, boletas_excluidas=boletas_con_real)
-        boletas_con_loteado = {str(r.get("Boleta", "") or "").strip() for r in loteado_rows if str(r.get("Boleta", "") or "").strip()}
-        estimadas = self._rows_estimadas_para_stock_campo(stock_campo_rows, boletas_con_real=boletas_con_real | boletas_con_loteado)
-        boletas_estimadas = {str(r.get("Boleta", "") or "").strip() for r in estimadas if str(r.get("Boleta", "") or "").strip()}
+        boletas_unicas = []
+        seen: set[str] = set()
+        for row in stock_campo_rows:
+            boleta = str(row.get("Boleta", "") or "").strip()
+            if boleta and boleta not in seen:
+                seen.add(boleta)
+                boletas_unicas.append(boleta)
+        logger.info("APROVECHAMIENTO boletas únicas=%s", len(boletas_unicas))
+
+        albaranes_por_boleta = self._get_pesosfres_albaranes_por_boleta(boletas_unicas)
+        kg_campo_por_boleta: dict[str, float] = defaultdict(float)
+        stock_por_boleta: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in stock_campo_rows:
+            boleta = str(row.get("Boleta", "") or "").strip()
+            if boleta:
+                kg_campo_por_boleta[boleta] += float(row.get("Kg campo", 0) or 0)
+                stock_por_boleta[boleta].append(row)
+        aprovechamiento_cache: dict[str, list[dict[str, Any]]] = {}
+        for boleta in boletas_unicas:
+            pf_rows = self._get_pesosfres_aprovechamiento_por_boleta(boleta, filters)
+            if pf_rows:
+                aprovechamiento_cache[boleta] = pf_rows
+                logger.info("APROVECHAMIENTO Fuente final boleta=%s fuente=REAL_PESOSFRES", boleta)
+                continue
+            loteado_filters = dict(filters or {})
+            loteado_filters["_kg_campo_boleta"] = kg_campo_por_boleta.get(boleta, 0.0)
+            loteado_rows = self._get_loteado_aprovechamiento_por_boleta(boleta, albaranes_por_boleta.get(boleta, []), loteado_filters)
+            if loteado_rows:
+                aprovechamiento_cache[boleta] = loteado_rows
+                logger.info("APROVECHAMIENTO Fuente final boleta=%s fuente=LOTEADO", boleta)
+                continue
+            estimadas = self._rows_estimadas_para_stock_campo(stock_por_boleta.get(boleta, [{"Boleta": boleta}]), boletas_con_real=set())
+            if estimadas:
+                aprovechamiento_cache[boleta] = estimadas
+                logger.info("APROVECHAMIENTO Fuente final boleta=%s fuente=ESTIMADO_MANUAL", boleta)
+            else:
+                aprovechamiento_cache[boleta] = []
+                logger.info("APROVECHAMIENTO Fuente final boleta=%s fuente=SIN_APROVECHAMIENTO", boleta)
+
+        out: list[dict[str, Any]] = []
+        sin_datos = 0
+        used: set[str] = set()
         for partida in stock_campo_rows:
             boleta = str(partida.get("Boleta", "") or "").strip()
-            if boleta in boletas_con_real:
-                logger.info("APROVECHAMIENTO FUENTE boleta=%s fuente=REAL_PESOSFRES calibres=%s kg=%s", boleta, len({r.get('Calibre') for r in real_rows if str(r.get('Boleta','')).strip()==boleta}), sum(float(r.get('Kg disponibles',0) or 0) for r in real_rows if str(r.get('Boleta','')).strip()==boleta))
-            elif boleta in boletas_con_loteado:
-                logger.info("APROVECHAMIENTO FUENTE boleta=%s fuente=LOTEADO calibres=%s kg=%s", boleta, len({r.get('Calibre') for r in loteado_rows if str(r.get('Boleta','')).strip()==boleta}), sum(float(r.get('Kg disponibles',0) or 0) for r in loteado_rows if str(r.get('Boleta','')).strip()==boleta))
-            elif boleta in boletas_estimadas:
-                logger.info("APROVECHAMIENTO FUENTE boleta=%s fuente=ESTIMADO_MANUAL calibres=%s kg=%s", boleta, len({r.get('Calibre') for r in estimadas if str(r.get('Boleta','')).strip()==boleta}), sum(float(r.get('Kg disponibles',0) or 0) for r in estimadas if str(r.get('Boleta','')).strip()==boleta))
-            else:
-                logger.info("APROVECHAMIENTO FUENTE boleta=%s fuente=SIN_DATOS", boleta)
-        return real_rows + loteado_rows + estimadas, sin_datos_pf + sin_datos_loteado
+            kg_campo = float(partida.get("Kg campo", 0) or 0)
+            if boleta in used:
+                logger.info("APROVECHAMIENTO cache hit boleta=%s", boleta)
+            used.add(boleta)
+            template_rows = aprovechamiento_cache.get(boleta, [])
+            if not template_rows:
+                sin_datos += 1
+                continue
+            for template in template_rows:
+                row = dict(template)
+                if str(template.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL":
+                    kg_estimado = round(float(template.get("Kg disponibles", 0) or template.get("KgEstimado", 0) or 0), 2)
+                    pct = float(template.get("% aprovechamiento", 0) or ((kg_estimado / kg_campo * 100) if kg_campo > 0 else 0))
+                else:
+                    pct = float(template.get("% aprovechamiento", 0) or 0)
+                    kg_estimado = round(kg_campo * pct / 100, 2)
+                if kg_estimado <= 0:
+                    continue
+                row.update({
+                    "Tipo stock": "CAMPO",
+                    "Cultivo": partida.get("Cultivo", row.get("Cultivo", "")),
+                    "Campaña": partida.get("Campaña", partida.get("Campana", row.get("Campaña", ""))),
+                    "Grupo varietal": partida.get("Grupo varietal", row.get("Grupo varietal", "")),
+                    "Variedad": partida.get("Variedad", row.get("Variedad", "")),
+                    "Kg disponibles": kg_estimado,
+                    "Kg campo origen": kg_campo,
+                    "Boleta": boleta,
+                    "Socio": partida.get("Socio", row.get("Socio", "")),
+                    "Fecha carga": partida.get("Fecha carga", partida.get("FechaCarga", row.get("Fecha carga", ""))),
+                })
+                logger.debug("APROVECHAMIENTO reparto boleta=%s calibre=%s kg=%s pct=%s", boleta, row.get("Calibre"), kg_estimado, pct)
+                out.append(row)
+        return out, sin_datos
+
+    def _get_pesosfres_albaranes_por_boleta(self, boletas: list[str]) -> dict[str, list[str]]:
+        fruta_path = self._db_path(DB_FRUTA)
+        if not fruta_path.exists() or not boletas:
+            return {}
+        out: dict[str, list[str]] = defaultdict(list)
+        with sqlite3.connect(fruta_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cols = [r[1] for r in conn.execute('PRAGMA table_info("PesosFres")').fetchall()]
+            boleta_col = self._find_column(cols, ["Boleta"])
+            albaran_col = self._find_column(cols, ["AlbaranDef"])
+            if not boleta_col or not albaran_col:
+                return {}
+            for i in range(0, len(boletas), 500):
+                chunk = boletas[i:i + 500]
+                placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(chunk))
+                sql = f'SELECT DISTINCT TRIM(CAST("{boleta_col}" AS TEXT)) AS Boleta, TRIM(CAST("{albaran_col}" AS TEXT)) AS AlbaranDef FROM "PesosFres" WHERE TRIM(CAST("{boleta_col}" AS TEXT)) IN ({placeholders}) AND TRIM(CAST("{albaran_col}" AS TEXT)) <> ""'
+                for row in conn.execute(sql, chunk).fetchall():
+                    boleta = str(row["Boleta"] or "").strip()
+                    albaran = str(row["AlbaranDef"] or "").strip()
+                    if boleta and albaran and albaran not in out[boleta]:
+                        out[boleta].append(albaran)
+        return dict(out)
+
+    def _get_pesosfres_aprovechamiento_por_boleta(self, boleta: str, filters: dict) -> list[dict[str, Any]]:
+        fruta_path = self._db_path(DB_FRUTA)
+        if not fruta_path.exists() or not boleta:
+            return []
+        with sqlite3.connect(fruta_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cols = [r[1] for r in conn.execute('PRAGMA table_info("PesosFres")').fetchall()]
+            boleta_col = self._find_column(cols, ["Boleta"])
+            campana_col = self._find_campana_column(cols)
+            cultivo_col = self._find_column(cols, ["CULTIVO", "Cultivo"])
+            semana_col = self._find_column(cols, ["Semana", "SEMANA"])
+            neto_col = self._find_column(cols, ["Neto"])
+            neto_partida_col = self._find_column(cols, ["NetoPartida"])
+            categoria_col = self._find_column(cols, ["Categoria", "Categoría"])
+            cal_cols = [(f"CAL {i}", self._find_column(cols, [f"Cal{i}"])) for i in range(12)]
+            cal_cols = [(label, col) for label, col in cal_cols if col]
+            if not boleta_col or not cal_cols:
+                return []
+            where = [f'TRIM(CAST("{boleta_col}" AS TEXT)) = TRIM(CAST(? AS TEXT))']
+            params: list[Any] = [boleta]
+            for values, column, upper in (
+                (self._normalize_filter_values(filters.get("campana")), campana_col, False),
+                (self._normalize_filter_values_upper(filters.get("cultivo")), cultivo_col, True),
+                (self._normalize_filter_values(filters.get("semana")), semana_col, False),
+            ):
+                values = [v for v in values if v.upper() != "TODOS"]
+                if values and column:
+                    placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(values))
+                    expr = f'UPPER(TRIM(CAST("{column}" AS TEXT)))' if upper else f'TRIM(CAST("{column}" AS TEXT))'
+                    where.append(f"{expr} IN ({placeholders})")
+                    params.extend(values)
+            sql = f'SELECT * FROM "PesosFres" WHERE {" AND ".join(where)}'
+            rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+        sum_cal: dict[str, float] = defaultdict(float)
+        total_valido = 0.0
+        categoria = ""
+        validas = 0
+        ignoradas = 0
+        for row in rows:
+            kg_total = self._build_neto_correcto(row.get(neto_partida_col) if neto_partida_col else 0, row.get(neto_col) if neto_col else 0)
+            cal_values = {label: float(row.get(col, 0) or 0) for label, col in cal_cols}
+            if kg_total <= 0 or len([kg for kg in cal_values.values() if kg > 0]) < 2:
+                ignoradas += 1
+                continue
+            validas += 1
+            total_valido += kg_total
+            if not categoria and categoria_col:
+                categoria = str(row.get(categoria_col, "") or "").strip()
+            for label, kg in cal_values.items():
+                if kg > 0:
+                    sum_cal[label] += kg
+        logger.info("APROVECHAMIENTO PesosFres boleta=%s entregas_validas=%s entregas_ignoradas=%s", boleta, validas, ignoradas)
+        if total_valido <= 0 or validas == 0:
+            return []
+        out = []
+        for calibre in sorted(sum_cal, key=lambda x: int(x.replace("CAL ", ""))):
+            pct = sum_cal[calibre] / total_valido * 100
+            if pct <= 0:
+                continue
+            out.append({"Origen": "CAMPO_REAL_PESOSFRES", "Calibre": calibre, "Categoría": categoria, "% aprovechamiento": round(pct, 4), "Origen aprovechamiento": "REAL_PESOSFRES", "Aviso": f"Aprovechamiento real PesosFres boleta {boleta}".strip(), "Explicación": "Kg estimados por calibre calculados desde aprovechamiento medio válido de PesosFres"})
+        return out
+
+    def _get_loteado_aprovechamiento_por_boleta(self, boleta: str, albaranes_boleta: list[str], filters: dict) -> list[dict[str, Any]]:
+        start = time.perf_counter()
+        if not boleta or not albaranes_boleta or not self.db_loteado.exists():
+            logger.info("APROVECHAMIENTO Loteado boleta=%s albaranes=%s filas_lote=0 tiempo=%.2fs", boleta, len(albaranes_boleta or []), time.perf_counter() - start)
+            return []
+        lote_rows: list[dict[str, Any]] = []
+        with sqlite3.connect(self.db_loteado) as conn:
+            conn.row_factory = sqlite3.Row
+            ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
+            lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
+            if not ldo_table or not lote_table:
+                return []
+            ldo_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
+            lote_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{lote_table}")').fetchall()]
+            idpalet_ldo = self._find_column(ldo_cols, ["IdPalet"])
+            idpalet_lote = self._find_column(lote_cols, ["IdPalet"])
+            idlote_col = self._find_column(lote_cols, ["IdLote"])
+            neto_col = self._find_column(lote_cols, ["Neto"])
+            calibre_col = self._find_column(lote_cols, ["Calibre"])
+            categoria_col = self._find_column(lote_cols, ["Lote", "Categoria", "Categoría"])
+            campana_col = self._find_campana_column(ldo_cols)
+            cultivo_col = self._find_column(ldo_cols, ["CULTIVO", "Cultivo", "cultivo"])
+            empresa_col = self._find_column(ldo_cols, ["EMPRESA", "Empresa", "empresa"])
+            if not all([idpalet_ldo, idpalet_lote, idlote_col, neto_col, calibre_col]):
+                return []
+            where = [f'CAST(lote."{neto_col}" AS REAL) > 0', f'TRIM(CAST(lote."{calibre_col}" AS TEXT)) <> ""']
+            params: list[Any] = []
+            for values, column, upper in (
+                (self._normalize_filter_values(filters.get("campana")), campana_col, False),
+                (self._normalize_filter_values_upper(filters.get("cultivo")), cultivo_col, True),
+                (self._normalize_filter_values(filters.get("empresa")), empresa_col, False),
+            ):
+                values = [v for v in values if v.upper() != "TODOS"]
+                if values and column:
+                    placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(values))
+                    expr = f'UPPER(TRIM(CAST(ldo."{column}" AS TEXT)))' if upper else f'TRIM(CAST(ldo."{column}" AS TEXT))'
+                    where.append(f"{expr} IN ({placeholders})")
+                    params.extend(values)
+            cat_expr = f'lote."{categoria_col}"' if categoria_col else "'NORMAL'"
+            for i in range(0, len(albaranes_boleta), 500):
+                chunk = albaranes_boleta[i:i + 500]
+                placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(chunk))
+                sql = (f'SELECT lote."{idpalet_lote}" AS IdPalet, lote."{idlote_col}" AS IdLote, lote."{neto_col}" AS Neto, lote."{calibre_col}" AS Calibre, {cat_expr} AS Categoria '
+                       f'FROM "{lote_table}" lote JOIN "{ldo_table}" ldo ON TRIM(CAST(lote."{idpalet_lote}" AS TEXT)) = TRIM(CAST(ldo."{idpalet_ldo}" AS TEXT)) '
+                       f'WHERE {" AND ".join(where)} AND TRIM(CAST(lote."{idlote_col}" AS TEXT)) IN ({placeholders})')
+                lote_rows.extend(dict(r) for r in conn.execute(sql, params + chunk).fetchall())
+        seen_rows: set[tuple[str, str]] = set()
+        grouped: dict[tuple[str, str], float] = defaultdict(float)
+        total = 0.0
+        for r in lote_rows:
+            key = (str(r.get("IdPalet", "") or "").strip(), str(r.get("IdLote", "") or "").strip())
+            if key in seen_rows:
+                continue
+            seen_rows.add(key)
+            kg = float(r.get("Neto", 0) or 0)
+            reparto = self._repartir_kg_loteado_por_calibres(kg, self._expandir_calibre_loteado(r.get("Calibre")))
+            categoria = str(r.get("Categoria", "") or "NORMAL").strip() or "NORMAL"
+            for calibre, kg_cal in reparto.items():
+                logger.debug("APROVECHAMIENTO Loteado reparto boleta=%s calibre=%s kg=%s", boleta, calibre, kg_cal)
+                grouped[(calibre, categoria)] += kg_cal
+                total += kg_cal
+        elapsed = time.perf_counter() - start
+        logger.info("APROVECHAMIENTO Loteado boleta=%s albaranes=%s filas_lote=%s tiempo=%.2fs", boleta, len(albaranes_boleta), len(lote_rows), elapsed)
+        kg_campo_ref = float((filters or {}).get("_kg_campo_boleta", 0) or 0)
+        if total <= 0:
+            return []
+        if kg_campo_ref > 0 and total > kg_campo_ref * 1.05:
+            logger.error("LOTEADO inconsistente boleta=%s kg_partida=%s kg_repartidos=%s", boleta, kg_campo_ref, total)
+            return []
+        if kg_campo_ref > 0 and (total / kg_campo_ref * 100) < self.MIN_PCT_APROVECHAMIENTO_LOTEADO:
+            logger.warning("Loteado insuficiente para boleta %s: pct=%s", boleta, round(total / kg_campo_ref * 100, 4))
+            return []
+        return [{"Origen": "CAMPO_REAL_LOTEADO", "Calibre": calibre, "Categoría": categoria, "% aprovechamiento": round(kg_cal / total * 100, 4), "Origen aprovechamiento": "LOTEADO", "Aviso": f"Aprovechamiento calculado desde loteado boleta {boleta}".strip(), "Explicación": "Kg estimados por calibre calculados desde netos loteados vinculados a albaranes de la boleta"} for (calibre, categoria), kg_cal in grouped.items() if kg_cal > 0]
 
     def _get_pesosfres_campo_disponibilidad_real(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[list[dict[str, Any]], int, set[str]]:
         fruta_path = self._db_path(DB_FRUTA)
@@ -869,7 +1088,7 @@ class PlanningRepository:
                 match_row: dict[str, Any] | None = None
                 match = False
                 if boleta_col and boleta:
-                    q = f'SELECT * FROM "PesosFres" WHERE TRIM(CAST("{boleta_col}" AS TEXT)) = TRIM(CAST(? AS TEXT)) LIMIT 1'
+                    q = f'SELECT * FROM "PesosFres" WHERE TRIM(CAST("{boleta_col}" AS TEXT)) = TRIM(CAST(? AS TEXT))'
                     query_params = [boleta]
                     found = conn.execute(q, query_params).fetchone()
                     match_row = dict(found) if found else None
@@ -879,7 +1098,7 @@ class PlanningRepository:
                         f'SELECT * FROM "PesosFres" WHERE UPPER(TRIM("{cultivo_col}")) = UPPER(TRIM(?)) '
                         f'AND TRIM(CAST("{campana_col}" AS TEXT)) = TRIM(CAST(? AS TEXT)) '
                         f'AND UPPER(TRIM("{socio_col}")) = UPPER(TRIM(?)) AND UPPER(TRIM("{variedad_col}")) = UPPER(TRIM(?)) '
-                        f'ORDER BY ABS(julianday("{fecha_col}") - julianday(?)) ASC LIMIT 1'
+                        f'ORDER BY ABS(julianday("{fecha_col}") - julianday(?)) ASC'
                     )
                     query_params = [
                         str(row.get("Cultivo", "") or "").strip(),
