@@ -180,3 +180,35 @@ def test_prioridad_sin_real_ni_loteado_usa_estimado_manual(tmp_path, monkeypatch
     repo.upsert_aprovechamiento_estimado({"Boleta": "B1", "Calibre": "2", "KgCampoAplicado": 1000, "Porcentaje": 40})
     rows, _ = repo._get_campo_disponibilidad_aprovechamiento(_stock("B1", 1000), {})
     assert {r["Origen aprovechamiento"] for r in rows} == {"ESTIMADO_MANUAL"}
+
+
+def test_loteado_deduplica_pesosfres_por_albaran_y_boleta(tmp_path, monkeypatch):
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    _crear_pesosfres(
+        tmp_path,
+        [
+            {"Boleta": "B1", "AlbaranDef": "A1", "Cal1": 1000},
+            {"Boleta": "B1", "AlbaranDef": "A1", "Cal1": 1000},
+        ],
+    )
+    _crear_loteado(tmp_path, [{"IdPalet": "P1", "IdLote": "A1", "Neto": 900, "Calibre": "1/3"}])
+    repo = PlanningRepository(base_dir=tmp_path)
+
+    rows, sin_datos = repo._get_loteado_campo_disponibilidad_real(_stock("B1", 1000), {})
+
+    assert sin_datos == 0
+    assert round(sum(float(r["Kg disponibles"]) for r in rows), 2) == 900
+    assert {r["Calibre"] for r in rows} == {"CAL 1", "CAL 2", "CAL 3"}
+
+
+def test_loteado_inconsistente_no_se_usa_y_pasa_a_estimado_manual(tmp_path, monkeypatch):
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    _crear_pesosfres(tmp_path, [{"Boleta": "B1", "AlbaranDef": "A1", "Cal1": 1000}])
+    _crear_loteado(tmp_path, [{"IdPalet": "P1", "IdLote": "A1", "Neto": 1100, "Calibre": "1/2"}])
+    repo = PlanningRepository(base_dir=tmp_path)
+    repo.upsert_aprovechamiento_estimado({"Boleta": "B1", "Calibre": "3", "KgCampoAplicado": 1000, "Porcentaje": 40})
+
+    rows, _ = repo._get_campo_disponibilidad_aprovechamiento(_stock("B1", 1000), {})
+
+    assert {r["Origen aprovechamiento"] for r in rows} == {"ESTIMADO_MANUAL"}
+    assert round(sum(float(r["Kg disponibles"]) for r in rows), 2) == 400
