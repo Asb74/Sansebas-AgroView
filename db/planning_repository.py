@@ -328,7 +328,7 @@ class PlanningRepository:
             diff = round(kg - sum(out.values()), 2)
             if out and diff:
                 out[next(iter(out))] = round(out[next(iter(out))] + diff, 2)
-        logger.info("Kg repartidos por calibre kg=%s calibres=%s reparto=%s", kg, calibres, out)
+        logger.debug("Kg repartidos por calibre kg=%s calibres=%s reparto=%s", kg, calibres, out)
         return out
 
     def get_mcalibres_map(self) -> dict[str, str]:
@@ -818,7 +818,7 @@ class PlanningRepository:
                 boletas_unicas.append(boleta)
         logger.info("APROVECHAMIENTO boletas únicas=%s", len(boletas_unicas))
 
-        albaranes_por_boleta = self._get_pesosfres_albaranes_por_boleta(boletas_unicas)
+        albaranes_por_boleta = self._get_pesosfres_albaranes_por_boleta(boletas_unicas, filters)
         kg_campo_por_boleta: dict[str, float] = defaultdict(float)
         stock_por_boleta: dict[str, list[dict[str, Any]]] = defaultdict(list)
         for row in stock_campo_rows:
@@ -887,7 +887,7 @@ class PlanningRepository:
                 out.append(row)
         return out, sin_datos
 
-    def _get_pesosfres_albaranes_por_boleta(self, boletas: list[str]) -> dict[str, list[str]]:
+    def _get_pesosfres_albaranes_por_boleta(self, boletas: list[str], filters: dict) -> dict[str, list[str]]:
         fruta_path = self._db_path(DB_FRUTA)
         if not fruta_path.exists() or not boletas:
             return {}
@@ -897,17 +897,53 @@ class PlanningRepository:
             cols = [r[1] for r in conn.execute('PRAGMA table_info("PesosFres")').fetchall()]
             boleta_col = self._find_column(cols, ["Boleta"])
             albaran_col = self._find_column(cols, ["AlbaranDef"])
+            campana_col = self._find_campana_column(cols)
+            cultivo_col = self._find_column(cols, ["CULTIVO", "Cultivo"])
+            semana_col = self._find_column(cols, ["Semana", "SEMANA"])
+            empresa_col = self._find_column(cols, ["EMPRESA", "Empresa", "empresa"])
+            fecha_col = self._find_column(cols, ["Fcarga", "FechaCarga"])
             if not boleta_col or not albaran_col:
                 return {}
+            base_where = [
+                f'TRIM(CAST("{boleta_col}" AS TEXT)) IN ({{placeholders}})',
+                f'TRIM(CAST("{albaran_col}" AS TEXT)) <> ""',
+            ]
+            base_params: list[Any] = []
+            for values, column, upper in (
+                (self._normalize_filter_values((filters or {}).get("campana")), campana_col, False),
+                (self._normalize_filter_values_upper((filters or {}).get("cultivo")), cultivo_col, True),
+                (self._normalize_filter_values((filters or {}).get("semana")), semana_col, False),
+                (self._normalize_filter_values((filters or {}).get("empresa")), empresa_col, False),
+            ):
+                values = [v for v in values if v.upper() != "TODOS"]
+                if values and column:
+                    filter_placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(values))
+                    expr = f'UPPER(TRIM(CAST("{column}" AS TEXT)))' if upper else f'TRIM(CAST("{column}" AS TEXT))'
+                    base_where.append(f"{expr} IN ({filter_placeholders})")
+                    base_params.extend(values)
+            fecha_desde = str((filters or {}).get("fecha_desde") or "").strip()
+            fecha_hasta = str((filters or {}).get("fecha_hasta") or "").strip()
+            if fecha_col and fecha_desde:
+                base_where.append(f'date("{fecha_col}") >= date(?)')
+                base_params.append(fecha_desde)
+            if fecha_col and fecha_hasta:
+                base_where.append(f'date("{fecha_col}") <= date(?)')
+                base_params.append(fecha_hasta)
             for i in range(0, len(boletas), 500):
                 chunk = boletas[i:i + 500]
                 placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(chunk))
-                sql = f'SELECT DISTINCT TRIM(CAST("{boleta_col}" AS TEXT)) AS Boleta, TRIM(CAST("{albaran_col}" AS TEXT)) AS AlbaranDef FROM "PesosFres" WHERE TRIM(CAST("{boleta_col}" AS TEXT)) IN ({placeholders}) AND TRIM(CAST("{albaran_col}" AS TEXT)) <> ""'
-                for row in conn.execute(sql, chunk).fetchall():
+                where = [clause.format(placeholders=placeholders) for clause in base_where]
+                sql = f'SELECT DISTINCT TRIM(CAST("{boleta_col}" AS TEXT)) AS Boleta, TRIM(CAST("{albaran_col}" AS TEXT)) AS AlbaranDef FROM "PesosFres" WHERE {" AND ".join(where)}'
+                for row in conn.execute(sql, chunk + base_params).fetchall():
                     boleta = str(row["Boleta"] or "").strip()
                     albaran = str(row["AlbaranDef"] or "").strip()
                     if boleta and albaran and albaran not in out[boleta]:
                         out[boleta].append(albaran)
+        for boleta in boletas:
+            total_filtrado = len(out.get(boleta, []))
+            logger.info("APROVECHAMIENTO albaranes boleta=%s total_filtrado=%s", boleta, total_filtrado)
+            if total_filtrado > 50:
+                logger.warning("Boleta %s tiene demasiados albaranes filtrados: %s", boleta, total_filtrado)
         return dict(out)
 
     def _get_pesosfres_aprovechamiento_por_boleta(self, boleta: str, filters: dict) -> list[dict[str, Any]]:
@@ -921,6 +957,8 @@ class PlanningRepository:
             campana_col = self._find_campana_column(cols)
             cultivo_col = self._find_column(cols, ["CULTIVO", "Cultivo"])
             semana_col = self._find_column(cols, ["Semana", "SEMANA"])
+            empresa_col = self._find_column(cols, ["EMPRESA", "Empresa", "empresa"])
+            fecha_col = self._find_column(cols, ["Fcarga", "FechaCarga"])
             neto_col = self._find_column(cols, ["Neto"])
             neto_partida_col = self._find_column(cols, ["NetoPartida"])
             categoria_col = self._find_column(cols, ["Categoria", "Categoría"])
@@ -934,6 +972,7 @@ class PlanningRepository:
                 (self._normalize_filter_values(filters.get("campana")), campana_col, False),
                 (self._normalize_filter_values_upper(filters.get("cultivo")), cultivo_col, True),
                 (self._normalize_filter_values(filters.get("semana")), semana_col, False),
+                (self._normalize_filter_values(filters.get("empresa")), empresa_col, False),
             ):
                 values = [v for v in values if v.upper() != "TODOS"]
                 if values and column:
@@ -941,6 +980,14 @@ class PlanningRepository:
                     expr = f'UPPER(TRIM(CAST("{column}" AS TEXT)))' if upper else f'TRIM(CAST("{column}" AS TEXT))'
                     where.append(f"{expr} IN ({placeholders})")
                     params.extend(values)
+            fecha_desde = str((filters or {}).get("fecha_desde") or "").strip()
+            fecha_hasta = str((filters or {}).get("fecha_hasta") or "").strip()
+            if fecha_col and fecha_desde:
+                where.append(f'date("{fecha_col}") >= date(?)')
+                params.append(fecha_desde)
+            if fecha_col and fecha_hasta:
+                where.append(f'date("{fecha_col}") <= date(?)')
+                params.append(fecha_hasta)
             sql = f'SELECT * FROM "PesosFres" WHERE {" AND ".join(where)}'
             rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
         sum_cal: dict[str, float] = defaultdict(float)
