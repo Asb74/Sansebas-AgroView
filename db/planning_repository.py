@@ -1033,24 +1033,65 @@ class PlanningRepository:
                             where_base.append(f'TRIM(CAST(ldo."{column}" AS TEXT)) IN ({placeholders})')
                         params_base.extend(values)
                 cat_expr = f'lote."{categoria_col}"' if categoria_col else "'NORMAL'"
-                select_sql = (f'SELECT pf."{boleta_col}" AS Boleta, lote."{idpalet_lote}" AS IdPalet, '
+                cultivo_pf_col = self._find_column(pf_cols, ["CULTIVO", "Cultivo", "cultivo"])
+                campana_pf_col = self._find_campana_column(pf_cols)
+                empresa_pf_col = self._find_column(pf_cols, ["EMPRESA", "Empresa", "empresa"])
+                variedad_pf_col = self._find_column(pf_cols, ["Variedad", "VARIEDAD", "variedad"])
+                cultivo_pf_expr = f'MAX(TRIM(CAST("{cultivo_pf_col}" AS TEXT)))' if cultivo_pf_col else "''"
+                campana_pf_expr = f'MAX(TRIM(CAST("{campana_pf_col}" AS TEXT)))' if campana_pf_col else "''"
+                empresa_pf_expr = f'MAX(TRIM(CAST("{empresa_pf_col}" AS TEXT)))' if empresa_pf_col else "''"
+                variedad_pf_expr = f'MAX(TRIM(CAST("{variedad_pf_col}" AS TEXT)))' if variedad_pf_col else "''"
+                select_sql = (f'WITH pf_unico AS ('
+                              f'SELECT TRIM(CAST("{albaran_col}" AS TEXT)) AS AlbaranDef, '
+                              f'TRIM(CAST("{boleta_col}" AS TEXT)) AS Boleta, '
+                              f'{cultivo_pf_expr} AS CULTIVO, {campana_pf_expr} AS CAMPANA, '
+                              f'{empresa_pf_expr} AS EMPRESA, {variedad_pf_expr} AS Variedad '
+                              f'FROM dbfruta."PesosFres" '
+                              f'WHERE TRIM(CAST("{albaran_col}" AS TEXT)) <> "" '
+                              f'AND TRIM(CAST("{boleta_col}" AS TEXT)) IN ({{boleta_placeholders}}) '
+                              f'GROUP BY TRIM(CAST("{albaran_col}" AS TEXT)), TRIM(CAST("{boleta_col}" AS TEXT))'
+                              f') '
+                              f'SELECT pf.Boleta AS Boleta, lote."{idpalet_lote}" AS IdPalet, '
                               f'lote."{idlote_col}" AS IdLote, lote."{neto_col}" AS Neto, '
                               f'lote."{calibre_col}" AS Calibre, {cat_expr} AS Categoria '
                               f'FROM "{lote_table}" lote JOIN "{ldo_table}" ldo ON TRIM(CAST(lote."{idpalet_lote}" AS TEXT)) = TRIM(CAST(ldo."{idpalet_ldo}" AS TEXT)) '
-                              f'JOIN dbfruta."PesosFres" pf ON TRIM(CAST(lote."{idlote_col}" AS TEXT)) = TRIM(CAST(pf."{albaran_col}" AS TEXT)) ')
+                              f'JOIN pf_unico pf ON TRIM(CAST(lote."{idlote_col}" AS TEXT)) = pf.AlbaranDef ')
                 chunk_size = 200
                 for i in range(0, len(boletas_pendientes), chunk_size):
                     chunk = boletas_pendientes[i:i + chunk_size]
                     boleta_placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(chunk))
-                    where = where_base + [f'TRIM(CAST(pf."{boleta_col}" AS TEXT)) IN ({boleta_placeholders})']
-                    sql = f'{select_sql} WHERE {" AND ".join(where)}'
-                    logger.info("LOTEADO SQL usada=%s params=%s", sql, params_base + chunk)
-                    rows.extend(dict(r) for r in conn.execute(sql, params_base + chunk).fetchall())
+                    where = where_base
+                    sql = f'{select_sql.format(boleta_placeholders=boleta_placeholders)} WHERE {" AND ".join(where)}'
+                    logger.info("LOTEADO SQL usada=%s params=%s", sql, chunk + params_base)
+                    rows.extend(dict(r) for r in conn.execute(sql, chunk + params_base).fetchall())
                 logger.info("LOTEADO SQL filas=%s", len(rows))
         except Exception as exc:
             logger.warning("No se pudo calcular aprovechamiento por Loteado: %s", exc)
             log_loteado_exit()
             return [], len(pendientes)
+
+        deduped_rows: list[dict[str, Any]] = []
+        seen_loteado_rows: set[tuple[str, str, str, float, str, str]] = set()
+        deduplicados_descartados = 0
+        for r in rows:
+            boleta_dedupe = str(r.get("Boleta", "") or "").strip()
+            id_palet_dedupe = str(r.get("IdPalet", "") or "").strip()
+            id_lote_dedupe = str(r.get("IdLote", "") or "").strip()
+            neto_dedupe = round(float(r.get("Neto", 0) or 0), 6)
+            calibre_dedupe = str(r.get("Calibre", "") or "").strip()
+            categoria_dedupe = str(r.get("Categoria", "") or "NORMAL").strip() or "NORMAL"
+            dedupe_key = (boleta_dedupe, id_palet_dedupe, id_lote_dedupe, neto_dedupe, calibre_dedupe, categoria_dedupe)
+            if dedupe_key in seen_loteado_rows:
+                deduplicados_descartados += 1
+                logger.debug("LOTEADO duplicado descartado key=%s", dedupe_key)
+                continue
+            seen_loteado_rows.add(dedupe_key)
+            deduped_rows.append(r)
+        if deduplicados_descartados:
+            logger.info("LOTEADO deduplicados descartados=%s", deduplicados_descartados)
+        else:
+            logger.info("LOTEADO deduplicados descartados=0")
+        rows = deduped_rows
 
         grouped: dict[tuple[str, str, str], float] = {}
         total_by_boleta: dict[str, float] = {}
@@ -1113,7 +1154,8 @@ class PlanningRepository:
             logger.info("LOTEADO detalle boleta=%s kg_partida=%s kg_base_usada=%s", boleta, kg_campo, kg_campo)
             logger.info("LOTEADO control boleta=%s kg_partida=%s kg_repartidos=%s", boleta, kg_campo, total)
             if total > kg_campo * 1.05:
-                logger.error("LOTEADO inconsistente boleta=%s", boleta)
+                logger.error("LOTEADO inconsistente boleta=%s kg_partida=%s kg_repartidos=%s", boleta, kg_campo, total)
+                continue
             logger.info(
                 "LOTEADO resumen boleta=%s palets_distintos=%s lotes_distintos=%s filas_sql=%s neto_total_sql=%s kg_repartidos=%s duplicados=%s",
                 boleta,
