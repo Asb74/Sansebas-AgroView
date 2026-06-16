@@ -962,14 +962,21 @@ class PlanningRepository:
         pendientes = {str(r.get("Boleta", "") or "").strip() for r in stock_campo_rows if str(r.get("Boleta", "") or "").strip()} - boletas_excluidas
         boletas_pendientes = sorted(pendientes)
         start = time.perf_counter()
-        rows: list[dict[str, Any]] = []
+        loteado_rows: list[dict[str, Any]] = []
 
         def log_loteado_exit(filas: int | None = None) -> None:
             elapsed = time.perf_counter() - start
-            filas_log = len(rows) if filas is None else filas
+            filas_log = len(loteado_rows) if filas is None else filas
             logger.info("SALIENDO LOTEADO tiempo=%.2fs filas=%s", elapsed, filas_log)
             if elapsed > 3:
                 logger.warning("LOTEADO lento: tiempo=%.2f segundos", elapsed)
+
+        def crear_indices(conn: sqlite3.Connection, statements: list[str]) -> None:
+            for statement in statements:
+                try:
+                    conn.execute(statement)
+                except Exception as exc:
+                    logger.debug("No se pudo crear índice temporal loteado: %s sql=%s", exc, statement)
 
         logger.info("ENTRANDO LOTEADO pendientes=%s", len(boletas_pendientes))
         if not loteado_path.exists() or not fruta_path.exists():
@@ -981,18 +988,66 @@ class PlanningRepository:
             log_loteado_exit()
             return [], 0
         try:
-            with sqlite3.connect(loteado_path) as conn:
-                conn.row_factory = sqlite3.Row
-                conn.execute(f"ATTACH DATABASE '{fruta_path.as_posix()}' AS dbfruta")
-                ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
-                lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
+            albaran_to_boleta: dict[str, str] = {}
+            with sqlite3.connect(fruta_path) as conn_fruta:
+                conn_fruta.row_factory = sqlite3.Row
+                crear_indices(
+                    conn_fruta,
+                    [
+                        'CREATE INDEX IF NOT EXISTS idx_pesosfres_boleta ON PesosFres(Boleta)',
+                        'CREATE INDEX IF NOT EXISTS idx_pesosfres_albarandef ON PesosFres(AlbaranDef)',
+                    ],
+                )
+                pf_cols = [r[1] for r in conn_fruta.execute('PRAGMA table_info("PesosFres")').fetchall()]
+                albaran_col = self._find_column(pf_cols, ["AlbaranDef"])
+                boleta_col = self._find_column(pf_cols, ["Boleta"])
+                if not albaran_col or not boleta_col:
+                    logger.warning("Columnas insuficientes en PesosFres para aprovechamiento por loteado")
+                    log_loteado_exit()
+                    return [], len(pendientes)
+                chunk_size = 500
+                for i in range(0, len(boletas_pendientes), chunk_size):
+                    chunk = boletas_pendientes[i:i + chunk_size]
+                    placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(chunk))
+                    sql = (
+                        f'SELECT DISTINCT TRIM(CAST("{albaran_col}" AS TEXT)) AS AlbaranDef, '
+                        f'TRIM(CAST("{boleta_col}" AS TEXT)) AS Boleta '
+                        f'FROM "PesosFres" '
+                        f'WHERE TRIM(CAST("{albaran_col}" AS TEXT)) <> "" '
+                        f'AND TRIM(CAST("{boleta_col}" AS TEXT)) IN ({placeholders})'
+                    )
+                    for row in conn_fruta.execute(sql, chunk).fetchall():
+                        albaran = str(row["AlbaranDef"] or "").strip()
+                        boleta = str(row["Boleta"] or "").strip()
+                        if albaran and boleta in pendientes and albaran not in albaran_to_boleta:
+                            albaran_to_boleta[albaran] = boleta
+            logger.info("PesosFres albaranes encontrados=%s", len(albaran_to_boleta))
+            if not albaran_to_boleta:
+                log_loteado_exit(0)
+                return [], len(pendientes)
+
+            albaranes_pendientes = sorted(albaran_to_boleta)
+            with sqlite3.connect(loteado_path) as conn_loteado:
+                conn_loteado.row_factory = sqlite3.Row
+                crear_indices(
+                    conn_loteado,
+                    [
+                        'CREATE INDEX IF NOT EXISTS idx_lote_idlote ON Lote(IdLote)',
+                        'CREATE INDEX IF NOT EXISTS idx_lote_idpalet ON Lote(IdPalet)',
+                        'CREATE INDEX IF NOT EXISTS idx_loteado_idpalet ON Loteado(IdPalet)',
+                        'CREATE INDEX IF NOT EXISTS idx_loteado_campana ON Loteado(CAMPAÑA)',
+                        'CREATE INDEX IF NOT EXISTS idx_loteado_cultivo ON Loteado(CULTIVO)',
+                        'CREATE INDEX IF NOT EXISTS idx_loteado_empresa ON Loteado(EMPRESA)',
+                    ],
+                )
+                ldo_table = self._find_table(conn_loteado, ["Loteado", "loteado", "LOTEADO"])
+                lote_table = self._find_table(conn_loteado, ["Lote", "lote", "LOTE"])
                 if not ldo_table or not lote_table:
                     logger.warning("No existe tabla Loteado o Lote para aprovechamiento por loteado")
                     log_loteado_exit()
                     return [], len(pendientes)
-                ldo_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
-                lote_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{lote_table}")').fetchall()]
-                pf_cols = [r[1] for r in conn.execute('PRAGMA dbfruta.table_info("PesosFres")').fetchall()]
+                ldo_cols = [r[1] for r in conn_loteado.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
+                lote_cols = [r[1] for r in conn_loteado.execute(f'PRAGMA table_info("{lote_table}")').fetchall()]
                 idpalet_ldo = self._find_column(ldo_cols, ["IdPalet"])
                 idpalet_lote = self._find_column(lote_cols, ["IdPalet"])
                 idlote_col = self._find_column(lote_cols, ["IdLote"])
@@ -1004,9 +1059,7 @@ class PlanningRepository:
                 campana_col = self._find_campana_column(ldo_cols)
                 cultivo_col = self._find_column(ldo_cols, ["CULTIVO", "Cultivo", "cultivo"])
                 empresa_col = self._find_column(ldo_cols, ["EMPRESA", "Empresa", "empresa"])
-                albaran_col = self._find_column(pf_cols, ["AlbaranDef"])
-                boleta_col = self._find_column(pf_cols, ["Boleta"])
-                if not all([idpalet_ldo, idpalet_lote, idlote_col, neto_col, calibre_col, albaran_col, boleta_col]):
+                if not all([idpalet_ldo, idpalet_lote, idlote_col, neto_col, calibre_col]):
                     logger.warning("Columnas insuficientes para aprovechamiento por loteado")
                     log_loteado_exit()
                     return [], len(pendientes)
@@ -1017,7 +1070,7 @@ class PlanningRepository:
                 cultivos = [v for v in cultivos if v.upper() != "TODOS"]
                 empresas = [v for v in empresas if v.upper() != "TODOS"]
                 logger.info("LOTEADO filtros normalizados campana=%s cultivo=%s empresa=%s", campanas, cultivos, empresas)
-                where_base = [f'CAST(lote."{neto_col}" AS REAL) > 0', f'TRIM(CAST(lote."{idlote_col}" AS TEXT)) <> ""', f'TRIM(CAST(lote."{calibre_col}" AS TEXT)) <> ""']
+                where_base = [f'CAST(lote."{neto_col}" AS REAL) > 0', f'TRIM(CAST(lote."{calibre_col}" AS TEXT)) <> ""']
                 params_base: list[Any] = []
                 if terminado_col:
                     where_base.append(f"UPPER(TRIM(CAST(ldo.\"{terminado_col}\" AS TEXT))) IN ('S','SI','SÍ')")
@@ -1025,72 +1078,52 @@ class PlanningRepository:
                     where_base.append(f"UPPER(TRIM(CAST(ldo.\"{estado_col}\" AS TEXT))) NOT IN ('BAJA','VOLCADO','EXPEDICION','EXPEDICIÓN')")
                 for values, column, use_upper in ((campanas, campana_col, False), (cultivos, cultivo_col, True), (empresas, empresa_col, False)):
                     if values and column:
-                        placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
-                        if use_upper:
-                            where_base.append(f'UPPER(TRIM(CAST(ldo."{column}" AS TEXT))) IN ({placeholders})')
-                        else:
-                            placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(values))
-                            where_base.append(f'TRIM(CAST(ldo."{column}" AS TEXT)) IN ({placeholders})')
+                        placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(values))
+                        expr = f'UPPER(TRIM(CAST(ldo."{column}" AS TEXT)))' if use_upper else f'TRIM(CAST(ldo."{column}" AS TEXT))'
+                        where_base.append(f'{expr} IN ({placeholders})')
                         params_base.extend(values)
                 cat_expr = f'lote."{categoria_col}"' if categoria_col else "'NORMAL'"
-                cultivo_pf_col = self._find_column(pf_cols, ["CULTIVO", "Cultivo", "cultivo"])
-                campana_pf_col = self._find_campana_column(pf_cols)
-                empresa_pf_col = self._find_column(pf_cols, ["EMPRESA", "Empresa", "empresa"])
-                variedad_pf_col = self._find_column(pf_cols, ["Variedad", "VARIEDAD", "variedad"])
-                cultivo_pf_expr = f'MAX(TRIM(CAST("{cultivo_pf_col}" AS TEXT)))' if cultivo_pf_col else "''"
-                campana_pf_expr = f'MAX(TRIM(CAST("{campana_pf_col}" AS TEXT)))' if campana_pf_col else "''"
-                empresa_pf_expr = f'MAX(TRIM(CAST("{empresa_pf_col}" AS TEXT)))' if empresa_pf_col else "''"
-                variedad_pf_expr = f'MAX(TRIM(CAST("{variedad_pf_col}" AS TEXT)))' if variedad_pf_col else "''"
-                select_sql = (f'WITH pf_unico AS ('
-                              f'SELECT TRIM(CAST("{albaran_col}" AS TEXT)) AS AlbaranDef, '
-                              f'TRIM(CAST("{boleta_col}" AS TEXT)) AS Boleta, '
-                              f'{cultivo_pf_expr} AS CULTIVO, {campana_pf_expr} AS CAMPANA, '
-                              f'{empresa_pf_expr} AS EMPRESA, {variedad_pf_expr} AS Variedad '
-                              f'FROM dbfruta."PesosFres" '
-                              f'WHERE TRIM(CAST("{albaran_col}" AS TEXT)) <> "" '
-                              f'AND TRIM(CAST("{boleta_col}" AS TEXT)) IN ({{boleta_placeholders}}) '
-                              f'GROUP BY TRIM(CAST("{albaran_col}" AS TEXT)), TRIM(CAST("{boleta_col}" AS TEXT))'
-                              f') '
-                              f'SELECT pf.Boleta AS Boleta, lote."{idpalet_lote}" AS IdPalet, '
-                              f'lote."{idlote_col}" AS IdLote, lote."{neto_col}" AS Neto, '
-                              f'lote."{calibre_col}" AS Calibre, {cat_expr} AS Categoria '
-                              f'FROM "{lote_table}" lote JOIN "{ldo_table}" ldo ON TRIM(CAST(lote."{idpalet_lote}" AS TEXT)) = TRIM(CAST(ldo."{idpalet_ldo}" AS TEXT)) '
-                              f'JOIN pf_unico pf ON TRIM(CAST(lote."{idlote_col}" AS TEXT)) = pf.AlbaranDef ')
-                chunk_size = 200
-                for i in range(0, len(boletas_pendientes), chunk_size):
-                    chunk = boletas_pendientes[i:i + chunk_size]
-                    boleta_placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(chunk))
-                    where = where_base
-                    sql = f'{select_sql.format(boleta_placeholders=boleta_placeholders)} WHERE {" AND ".join(where)}'
-                    logger.info("LOTEADO SQL usada=%s params=%s", sql, chunk + params_base)
-                    rows.extend(dict(r) for r in conn.execute(sql, chunk + params_base).fetchall())
-                logger.info("LOTEADO SQL filas=%s", len(rows))
+                select_sql = (
+                    f'SELECT lote."{idpalet_lote}" AS IdPalet, '
+                    f'lote."{idlote_col}" AS IdLote, lote."{neto_col}" AS Neto, '
+                    f'lote."{calibre_col}" AS Calibre, {cat_expr} AS Categoria '
+                    f'FROM "{lote_table}" lote JOIN "{ldo_table}" ldo '
+                    f'ON TRIM(CAST(lote."{idpalet_lote}" AS TEXT)) = TRIM(CAST(ldo."{idpalet_ldo}" AS TEXT))'
+                )
+                for i in range(0, len(albaranes_pendientes), chunk_size):
+                    chunk = albaranes_pendientes[i:i + chunk_size]
+                    lote_placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(chunk))
+                    where = where_base + [f'TRIM(CAST(lote."{idlote_col}" AS TEXT)) IN ({lote_placeholders})']
+                    sql = f'{select_sql} WHERE {" AND ".join(where)}'
+                    for row in conn_loteado.execute(sql, params_base + chunk).fetchall():
+                        item = dict(row)
+                        id_lote = str(item.get("IdLote", "") or "").strip()
+                        boleta = albaran_to_boleta.get(id_lote)
+                        if boleta:
+                            item["Boleta"] = boleta
+                            loteado_rows.append(item)
+            logger.info("Loteado filas recuperadas=%s", len(loteado_rows))
         except Exception as exc:
             logger.warning("No se pudo calcular aprovechamiento por Loteado: %s", exc)
             log_loteado_exit()
             return [], len(pendientes)
 
         deduped_rows: list[dict[str, Any]] = []
-        seen_loteado_rows: set[tuple[str, str, str, float, str, str]] = set()
+        seen_loteado_rows: set[tuple[str, str]] = set()
         deduplicados_descartados = 0
-        for r in rows:
-            boleta_dedupe = str(r.get("Boleta", "") or "").strip()
+        for r in loteado_rows:
             id_palet_dedupe = str(r.get("IdPalet", "") or "").strip()
             id_lote_dedupe = str(r.get("IdLote", "") or "").strip()
-            neto_dedupe = round(float(r.get("Neto", 0) or 0), 6)
-            calibre_dedupe = str(r.get("Calibre", "") or "").strip()
-            categoria_dedupe = str(r.get("Categoria", "") or "NORMAL").strip() or "NORMAL"
-            dedupe_key = (boleta_dedupe, id_palet_dedupe, id_lote_dedupe, neto_dedupe, calibre_dedupe, categoria_dedupe)
+            dedupe_key = (id_palet_dedupe, id_lote_dedupe)
             if dedupe_key in seen_loteado_rows:
                 deduplicados_descartados += 1
                 logger.debug("LOTEADO duplicado descartado key=%s", dedupe_key)
                 continue
             seen_loteado_rows.add(dedupe_key)
             deduped_rows.append(r)
+        logger.info("Loteado filas deduplicadas=%s", len(deduped_rows))
         if deduplicados_descartados:
-            logger.info("LOTEADO deduplicados descartados=%s", deduplicados_descartados)
-        else:
-            logger.info("LOTEADO deduplicados descartados=0")
+            logger.debug("LOTEADO deduplicados descartados=%s", deduplicados_descartados)
         rows = deduped_rows
 
         grouped: dict[tuple[str, str, str], float] = {}
@@ -1099,46 +1132,25 @@ class PlanningRepository:
         filas_by_boleta: Counter[str] = Counter()
         palets_by_boleta: dict[str, set[str]] = defaultdict(set)
         lotes_by_boleta: dict[str, set[str]] = defaultdict(set)
-        palet_rows_by_boleta: dict[str, Counter[str]] = defaultdict(Counter)
-        duplicate_palets_by_boleta: dict[str, dict[str, int]] = {}
-        for r in rows:
-            boleta_resumen = str(r.get("Boleta", "") or "").strip()
-            if boleta_resumen not in pendientes:
-                continue
-            id_palet_resumen = str(r.get("IdPalet", "") or "").strip()
-            id_lote_resumen = str(r.get("IdLote", "") or "").strip()
-            neto_resumen = float(r.get("Neto", 0) or 0)
-            logger.info(
-                "LOTEADO fila boleta=%s IdPalet=%s IdLote=%s Neto=%s",
-                boleta_resumen,
-                id_palet_resumen,
-                id_lote_resumen,
-                neto_resumen,
-            )
-            filas_by_boleta[boleta_resumen] += 1
-            neto_sql_by_boleta[boleta_resumen] += neto_resumen
-            if id_palet_resumen:
-                palets_by_boleta[boleta_resumen].add(id_palet_resumen)
-                palet_rows_by_boleta[boleta_resumen][id_palet_resumen] += 1
-            if id_lote_resumen:
-                lotes_by_boleta[boleta_resumen].add(id_lote_resumen)
-        for boleta_resumen, palet_counter in palet_rows_by_boleta.items():
-            duplicados = {palet: count for palet, count in palet_counter.items() if count > 1}
-            duplicate_palets_by_boleta[boleta_resumen] = duplicados
-            logger.info("LOTEADO bruto boleta=%s neto_total_sql=%s", boleta_resumen, neto_sql_by_boleta[boleta_resumen])
-            if duplicados:
-                logger.warning("LOTEADO duplicados boleta=%s IdPalet_repetidos=%s", boleta_resumen, duplicados)
         for r in rows:
             boleta = str(r.get("Boleta", "") or "").strip()
             if boleta not in pendientes:
                 continue
+            id_palet = str(r.get("IdPalet", "") or "").strip()
+            id_lote = str(r.get("IdLote", "") or "").strip()
             kg = float(r.get("Neto", 0) or 0)
+            filas_by_boleta[boleta] += 1
+            neto_sql_by_boleta[boleta] += kg
+            if id_palet:
+                palets_by_boleta[boleta].add(id_palet)
+            if id_lote:
+                lotes_by_boleta[boleta].add(id_lote)
             calibres = self._expandir_calibre_loteado(r.get("Calibre"))
             reparto = self._repartir_kg_loteado_por_calibres(kg, calibres)
             categoria = str(r.get("Categoria", "") or "NORMAL").strip() or "NORMAL"
-            logger.info("Loteado encontrado por boleta=%s kg=%s calibre=%s reparto=%s", boleta, kg, r.get("Calibre"), reparto)
+            logger.debug("Loteado encontrado por boleta=%s kg=%s calibre=%s reparto=%s", boleta, kg, r.get("Calibre"), reparto)
             for calibre, kg_cal in reparto.items():
-                logger.info("LOTEADO reparto boleta=%s calibre=%s kg=%s", boleta, calibre, kg_cal)
+                logger.debug("LOTEADO reparto boleta=%s calibre=%s kg=%s", boleta, calibre, kg_cal)
                 grouped[(boleta, calibre, categoria)] = grouped.get((boleta, calibre, categoria), 0.0) + kg_cal
                 total_by_boleta[boleta] = total_by_boleta.get(boleta, 0.0) + kg_cal
         logger.info(
@@ -1151,20 +1163,18 @@ class PlanningRepository:
         for boleta, total in total_by_boleta.items():
             partida = stock_by_boleta[boleta]
             kg_campo = float(partida.get("Kg campo", 0) or 0)
-            logger.info("LOTEADO detalle boleta=%s kg_partida=%s kg_base_usada=%s", boleta, kg_campo, kg_campo)
-            logger.info("LOTEADO control boleta=%s kg_partida=%s kg_repartidos=%s", boleta, kg_campo, total)
+            logger.info("Loteado boleta=%s kg_repartidos=%s kg_partida=%s", boleta, total, kg_campo)
             if total > kg_campo * 1.05:
                 logger.error("LOTEADO inconsistente boleta=%s kg_partida=%s kg_repartidos=%s", boleta, kg_campo, total)
                 continue
             logger.info(
-                "LOTEADO resumen boleta=%s palets_distintos=%s lotes_distintos=%s filas_sql=%s neto_total_sql=%s kg_repartidos=%s duplicados=%s",
+                "LOTEADO resumen boleta=%s palets_distintos=%s lotes_distintos=%s filas_sql=%s neto_total_sql=%s kg_repartidos=%s",
                 boleta,
                 len(palets_by_boleta.get(boleta, set())),
                 len(lotes_by_boleta.get(boleta, set())),
                 filas_by_boleta.get(boleta, 0),
                 neto_sql_by_boleta.get(boleta, 0.0),
                 total,
-                duplicate_palets_by_boleta.get(boleta, {}),
             )
             pct_total = (total / kg_campo * 100) if kg_campo > 0 else 0
             if pct_total < self.MIN_PCT_APROVECHAMIENTO_LOTEADO:
