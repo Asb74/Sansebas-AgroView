@@ -113,13 +113,18 @@ def test_loteado_reparte_calibres_compuestos():
     assert PlanningRepository._expandir_calibre_loteado("1/3") == ["1", "2", "3"]
 
 
-def test_loteado_insuficiente_no_se_usa(tmp_path, monkeypatch):
+def test_loteado_insuficiente_se_usa_como_distribucion_porcentual(tmp_path, monkeypatch):
     monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
     _crear_pesosfres(tmp_path, [{"Boleta": "B1", "AlbaranDef": "A1", "Cal1": 1000}])
     _crear_loteado(tmp_path, [{"IdLote": "A1", "Neto": 50, "Calibre": "2"}])
     repo = PlanningRepository(base_dir=tmp_path)
+
     rows, _ = repo._get_campo_disponibilidad_aprovechamiento(_stock("B1", 1000), {})
-    assert rows == []
+
+    assert {r["Origen aprovechamiento"] for r in rows} == {"LOTEADO"}
+    assert rows[0]["Calibre"] == "CAL 2"
+    assert rows[0]["Kg disponibles"] == 1000
+    assert rows[0]["Kg campo origen"] == 1000
 
 
 
@@ -201,7 +206,7 @@ def test_loteado_deduplica_pesosfres_por_albaran_y_boleta(tmp_path, monkeypatch)
     assert {r["Calibre"] for r in rows} == {"CAL 1", "CAL 2", "CAL 3"}
 
 
-def test_loteado_inconsistente_no_se_usa_y_pasa_a_estimado_manual(tmp_path, monkeypatch):
+def test_loteado_historico_mayor_que_partida_se_aplica_como_porcentaje(tmp_path, monkeypatch):
     monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
     _crear_pesosfres(tmp_path, [{"Boleta": "B1", "AlbaranDef": "A1", "Cal1": 1000}])
     _crear_loteado(tmp_path, [{"IdPalet": "P1", "IdLote": "A1", "Neto": 1100, "Calibre": "1/2"}])
@@ -210,5 +215,28 @@ def test_loteado_inconsistente_no_se_usa_y_pasa_a_estimado_manual(tmp_path, monk
 
     rows, _ = repo._get_campo_disponibilidad_aprovechamiento(_stock("B1", 1000), {})
 
-    assert {r["Origen aprovechamiento"] for r in rows} == {"ESTIMADO_MANUAL"}
-    assert round(sum(float(r["Kg disponibles"]) for r in rows), 2) == 400
+    assert {r["Origen aprovechamiento"] for r in rows} == {"LOTEADO"}
+    assert {r["Calibre"] for r in rows} == {"CAL 1", "CAL 2"}
+    assert round(sum(float(r["Kg disponibles"]) for r in rows), 2) == 1000
+    assert {r["Kg campo origen"] for r in rows} == {1000}
+
+
+def test_pesosfres_historicos_generan_una_distribucion_y_se_aplican_a_cada_partida(tmp_path, monkeypatch):
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    _crear_pesosfres(
+        tmp_path,
+        [
+            {"Boleta": "B1", "AlbaranDef": "A1", "Neto": 1000, "NetoPartida": 1000, "Cal0": 100, "Cal1": 900},
+            {"Boleta": "B1", "AlbaranDef": "A2", "Neto": 1000, "NetoPartida": 1000, "Cal0": 300, "Cal1": 700},
+        ],
+    )
+    repo = PlanningRepository(base_dir=tmp_path)
+
+    rows, _ = repo._get_campo_disponibilidad_aprovechamiento(_stock("B1", 1500), {})
+
+    assert {r["Origen aprovechamiento"] for r in rows} == {"REAL_PESOSFRES"}
+    assert [r["Calibre"] for r in rows] == ["CAL 0", "CAL 1"]
+    assert [r["% aprovechamiento"] for r in rows] == [20.0, 80.0]
+    assert [r["Kg disponibles"] for r in rows] == [300.0, 1200.0]
+    assert {r["Kg campo origen"] for r in rows} == {1500}
+    assert round(sum(float(r["Kg disponibles"]) for r in rows), 2) == 1500

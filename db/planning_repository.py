@@ -861,13 +861,23 @@ class PlanningRepository:
             if not template_rows:
                 sin_datos += 1
                 continue
+            pct_total = sum(
+                float(t.get("% aprovechamiento", 0) or 0)
+                for t in template_rows
+                if str(t.get("Origen aprovechamiento", "")).upper() in {"REAL_PESOSFRES", "LOTEADO"}
+            )
+            pct_factor = 100.0 / pct_total if pct_total > 100.0 else 1.0
+            if pct_total > 100.0:
+                logger.warning("APROVECHAMIENTO porcentajes normalizados boleta=%s pct_total=%s", boleta, round(pct_total, 4))
+            partida_rows: list[dict[str, Any]] = []
             for template in template_rows:
                 row = dict(template)
-                if str(template.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL":
+                origen_aprov = str(template.get("Origen aprovechamiento", "")).upper()
+                if origen_aprov == "ESTIMADO_MANUAL":
                     kg_estimado = round(float(template.get("Kg disponibles", 0) or template.get("KgEstimado", 0) or 0), 2)
                     pct = float(template.get("% aprovechamiento", 0) or ((kg_estimado / kg_campo * 100) if kg_campo > 0 else 0))
                 else:
-                    pct = float(template.get("% aprovechamiento", 0) or 0)
+                    pct = float(template.get("% aprovechamiento", 0) or 0) * pct_factor
                     kg_estimado = round(kg_campo * pct / 100, 2)
                 if kg_estimado <= 0:
                     continue
@@ -884,7 +894,17 @@ class PlanningRepository:
                     "Fecha carga": partida.get("Fecha carga", partida.get("FechaCarga", row.get("Fecha carga", ""))),
                 })
                 logger.debug("APROVECHAMIENTO reparto boleta=%s calibre=%s kg=%s pct=%s", boleta, row.get("Calibre"), kg_estimado, pct)
-                out.append(row)
+                partida_rows.append(row)
+            kg_estimado_total = round(sum(float(r.get("Kg disponibles", 0) or 0) for r in partida_rows), 2)
+            if kg_campo > 0 and kg_estimado_total > kg_campo * 1.01:
+                logger.error("Aprovechamiento incoherente: boleta=%s kg_partida=%s kg_estimado=%s", boleta, kg_campo, kg_estimado_total)
+                if kg_estimado_total > 0:
+                    factor_kg = kg_campo / kg_estimado_total
+                    for row in partida_rows:
+                        row["Kg disponibles"] = round(float(row.get("Kg disponibles", 0) or 0) * factor_kg, 2)
+                    kg_estimado_total = round(sum(float(r.get("Kg disponibles", 0) or 0) for r in partida_rows), 2)
+            logger.info("APROVECHAMIENTO aplicado boleta=%s kg_partida=%s pct_total=%s kg_estimado_total=%s", boleta, kg_campo, round(min(pct_total, 100.0), 4), kg_estimado_total)
+            out.extend(partida_rows)
         return out, sin_datos
 
     def _get_pesosfres_albaranes_por_boleta(self, boletas: list[str], filters: dict) -> dict[str, list[str]]:
@@ -1008,15 +1028,19 @@ class PlanningRepository:
             for label, kg in cal_values.items():
                 if kg > 0:
                     sum_cal[label] += kg
-        logger.info("APROVECHAMIENTO PesosFres boleta=%s entregas_validas=%s entregas_ignoradas=%s", boleta, validas, ignoradas)
         if total_valido <= 0 or validas == 0:
+            logger.info("APROVECHAMIENTO PesosFres boleta=%s entregas_validas=%s entregas_ignoradas=%s total_kg_valido=0 distribucion_pct={}", boleta, validas, ignoradas)
             return []
         out = []
+        distribucion_pct: dict[str, float] = {}
         for calibre in sorted(sum_cal, key=lambda x: int(x.replace("CAL ", ""))):
             pct = sum_cal[calibre] / total_valido * 100
             if pct <= 0:
                 continue
-            out.append({"Origen": "CAMPO_REAL_PESOSFRES", "Calibre": calibre, "Categoría": categoria, "% aprovechamiento": round(pct, 4), "Origen aprovechamiento": "REAL_PESOSFRES", "Aviso": f"Aprovechamiento real PesosFres boleta {boleta}".strip(), "Explicación": "Kg estimados por calibre calculados desde aprovechamiento medio válido de PesosFres"})
+            pct_redondeado = round(pct, 4)
+            distribucion_pct[calibre] = pct_redondeado
+            out.append({"Origen": "CAMPO_REAL_PESOSFRES", "Calibre": calibre, "Categoría": categoria or "NORMAL", "% aprovechamiento": pct_redondeado, "Origen aprovechamiento": "REAL_PESOSFRES", "Aviso": f"Aprovechamiento real PesosFres boleta {boleta}".strip(), "Explicación": "Distribución porcentual media por calibre calculada desde entregas válidas de PesosFres; los kilos se aplican después a cada partida"})
+        logger.info("APROVECHAMIENTO PesosFres boleta=%s entregas_validas=%s entregas_ignoradas=%s total_kg_valido=%s distribucion_pct=%s", boleta, validas, ignoradas, round(total_valido, 2), distribucion_pct)
         return out
 
     def _get_loteado_aprovechamiento_por_boleta(self, boleta: str, albaranes_boleta: list[str], filters: dict) -> list[dict[str, Any]]:
@@ -1082,16 +1106,19 @@ class PlanningRepository:
                 total += kg_cal
         elapsed = time.perf_counter() - start
         logger.info("APROVECHAMIENTO Loteado boleta=%s albaranes=%s filas_lote=%s tiempo=%.2fs", boleta, len(albaranes_boleta), len(lote_rows), elapsed)
-        kg_campo_ref = float((filters or {}).get("_kg_campo_boleta", 0) or 0)
         if total <= 0:
             return []
-        if kg_campo_ref > 0 and total > kg_campo_ref * 1.05:
-            logger.error("LOTEADO inconsistente boleta=%s kg_partida=%s kg_repartidos=%s", boleta, kg_campo_ref, total)
-            return []
-        if kg_campo_ref > 0 and (total / kg_campo_ref * 100) < self.MIN_PCT_APROVECHAMIENTO_LOTEADO:
-            logger.warning("Loteado insuficiente para boleta %s: pct=%s", boleta, round(total / kg_campo_ref * 100, 4))
-            return []
-        return [{"Origen": "CAMPO_REAL_LOTEADO", "Calibre": calibre, "Categoría": categoria, "% aprovechamiento": round(kg_cal / total * 100, 4), "Origen aprovechamiento": "LOTEADO", "Aviso": f"Aprovechamiento calculado desde loteado boleta {boleta}".strip(), "Explicación": "Kg estimados por calibre calculados desde netos loteados vinculados a albaranes de la boleta"} for (calibre, categoria), kg_cal in grouped.items() if kg_cal > 0]
+        out = []
+        distribucion_pct: dict[str, float] = {}
+        for calibre, categoria in sorted(grouped, key=lambda x: (int(x[0].replace("CAL ", "")) if str(x[0]).startswith("CAL ") else 99, x[1])):
+            kg_cal = grouped[(calibre, categoria)]
+            if kg_cal <= 0:
+                continue
+            pct = round(kg_cal / total * 100, 4)
+            distribucion_pct[f"{calibre}|{categoria}"] = pct
+            out.append({"Origen": "CAMPO_REAL_LOTEADO", "Calibre": calibre, "Categoría": categoria, "% aprovechamiento": pct, "Origen aprovechamiento": "LOTEADO", "Aviso": f"Aprovechamiento calculado desde loteado boleta {boleta}".strip(), "Explicación": "Distribución porcentual por calibre calculada desde netos loteados; los kilos se aplican después a cada partida"})
+        logger.info("APROVECHAMIENTO Loteado boleta=%s total_kg_loteado=%s distribucion_pct=%s", boleta, round(total, 2), distribucion_pct)
+        return out
 
     def _get_pesosfres_campo_disponibilidad_real(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[list[dict[str, Any]], int, set[str]]:
         fruta_path = self._db_path(DB_FRUTA)
