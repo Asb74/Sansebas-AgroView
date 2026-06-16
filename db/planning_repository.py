@@ -1549,18 +1549,39 @@ class PlanningRepository:
         return data
 
 
-    def build_aprovechamiento_stock_campo(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    @staticmethod
+    def _stock_campo_partida_key(row: dict[str, Any]) -> tuple[str, str, str, str, str, float]:
+        def _clean(value: Any) -> str:
+            return str(value or "").strip()
+
+        try:
+            kg_campo = round(float(row.get("Kg campo", row.get("Kg campo origen", 0)) or 0), 2)
+        except (TypeError, ValueError):
+            kg_campo = 0.0
+        return (
+            _clean(row.get("Boleta")),
+            _clean(row.get("Fecha carga", row.get("FechaCarga", ""))),
+            _clean(row.get("Socio")),
+            _clean(row.get("Variedad")),
+            _clean(row.get("Grupo varietal", row.get("GrupoVarietal", ""))),
+            kg_campo,
+        )
+
+    def build_aprovechamiento_stock_campo(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[dict[tuple[str, str, str, str, str, float], dict[str, Any]], dict[str, list[dict[str, Any]]]]:
         rows_aprovechamiento, _ = self._get_campo_disponibilidad_aprovechamiento(stock_campo_rows, filters)
+        by_partida: dict[tuple[str, str, str, str, str, float], list[dict[str, Any]]] = {}
         by_boleta: dict[str, list[dict[str, Any]]] = {}
         for row in rows_aprovechamiento:
             boleta = str(row.get("Boleta", "") or "").strip()
             by_boleta.setdefault(boleta, []).append(row)
+            by_partida.setdefault(self._stock_campo_partida_key(row), []).append(row)
 
-        resumen: dict[str, dict[str, Any]] = {}
+        resumen: dict[tuple[str, str, str, str, str, float], dict[str, Any]] = {}
         detalle: dict[str, list[dict[str, Any]]] = {}
         for partida in stock_campo_rows:
             boleta = str(partida.get("Boleta", "") or "").strip()
-            rows = by_boleta.get(boleta, [])
+            partida_key = self._stock_campo_partida_key(partida)
+            rows = by_partida.get(partida_key, [])
             if rows:
                 origenes = {str(r.get("Origen aprovechamiento", "")).upper() for r in rows}
                 if origenes.intersection({"REAL", "REAL_PESOSFRES"}):
@@ -1577,9 +1598,9 @@ class PlanningRepository:
                 estado = "Sin aprovechamiento"
                 n_cal = 0
                 kg_est = 0.0
-            logger.info("APROVECHAMIENTO partida boleta=%s estado=%s calibres=%s kg_estimados=%s", boleta, estado, n_cal, kg_est)
-            resumen[boleta] = {"Estado aprovechamiento": estado, "Nº calibres aprovechamiento": n_cal, "Kg estimados calculados": kg_est}
-            detalle[boleta] = rows
+            logger.info("APROVECHAMIENTO partida key=%s estado=%s calibres=%s kg_estimados=%s", partida_key, estado, n_cal, kg_est)
+            resumen[partida_key] = {"Estado aprovechamiento": estado, "Nº calibres aprovechamiento": n_cal, "Kg estimados calculados": kg_est}
+            detalle[boleta] = by_boleta.get(boleta, [])
         return resumen, detalle
 
     def get_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
@@ -1663,8 +1684,8 @@ class PlanningRepository:
 
         resumen_aprov, _ = self.build_aprovechamiento_stock_campo(data, filters)
         for row in data:
-            boleta = str(row.get("Boleta", "") or "").strip()
-            row.update(resumen_aprov.get(boleta, {"Estado aprovechamiento": "Sin aprovechamiento", "Nº calibres aprovechamiento": 0, "Kg estimados calculados": 0.0}))
+            partida_key = self._stock_campo_partida_key(row)
+            row.update(resumen_aprov.get(partida_key, {"Estado aprovechamiento": "Sin aprovechamiento", "Nº calibres aprovechamiento": 0, "Kg estimados calculados": 0.0}))
 
         update_file = self.base_dir / "ultima_actualizacion.txt"
         last_update = None

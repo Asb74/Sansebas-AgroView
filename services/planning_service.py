@@ -49,7 +49,7 @@ class PlanningService:
     def get_aprovechamientos_reales(self, filters: dict) -> list[dict]:
         return self.repo.get_aprovechamientos_reales(filters)
 
-    def get_aprovechamiento_stock_campo(self, stock_campo_rows: list[dict], filters: dict) -> tuple[dict[str, dict], dict[str, list[dict]]]:
+    def get_aprovechamiento_stock_campo(self, stock_campo_rows: list[dict], filters: dict) -> tuple[dict[tuple[str, str, str, str, str, float], dict], dict[str, list[dict]]]:
         return self.repo.build_aprovechamiento_stock_campo(stock_campo_rows, filters)
 
     def get_aprovechamientos_estimados_por_boleta(self, boleta: str) -> list[dict]:
