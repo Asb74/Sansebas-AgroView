@@ -88,7 +88,7 @@ def _crear_loteado(path, lote_rows):
         conn.execute('CREATE TABLE Lote (IdPalet TEXT, IdLote TEXT, Neto REAL, Calibre TEXT, Variedad TEXT, Lote TEXT)')
         for idx, row in enumerate(lote_rows, start=1):
             palet = row.get("IdPalet", f"P{idx}")
-            conn.execute('INSERT INTO Loteado VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (palet, "2026", "NECTARINA", "EMP", "STOCK", "S", "X", "2026-01-02"))
+            conn.execute('INSERT INTO Loteado VALUES (?, ?, ?, ?, ?, ?, ?, ?)', (palet, row.get("Campaña", "2026"), row.get("Cultivo", "NECTARINA"), row.get("Empresa", "EMP"), "STOCK", "S", "X", "2026-01-02"))
             conn.execute('INSERT INTO Lote VALUES (?, ?, ?, ?, ?, ?)', (palet, row.get("IdLote"), row.get("Neto"), row.get("Calibre"), "VAR", row.get("Categoria", "NORMAL")))
 
 
@@ -120,6 +120,39 @@ def test_loteado_insuficiente_no_se_usa(tmp_path, monkeypatch):
     repo = PlanningRepository(base_dir=tmp_path)
     rows, _ = repo._get_campo_disponibilidad_aprovechamiento(_stock("B1", 1000), {})
     assert rows == []
+
+
+
+def test_loteado_aplica_filtros_sql_de_boleta_campana_cultivo_empresa(tmp_path, monkeypatch):
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    _crear_pesosfres(
+        tmp_path,
+        [
+            {"Boleta": "B1", "AlbaranDef": "A1", "Cal1": 1000},
+            {"Boleta": "B2", "AlbaranDef": "A2", "Cal1": 1000},
+            {"Boleta": "B3", "AlbaranDef": "A3", "Cal1": 1000},
+            {"Boleta": "B4", "AlbaranDef": "A4", "Cal1": 1000},
+        ],
+    )
+    _crear_loteado(
+        tmp_path,
+        [
+            {"IdLote": "A1", "Neto": 900, "Calibre": "1/3", "Campaña": "2026", "Cultivo": "NECTARINA", "Empresa": "EMP"},
+            {"IdLote": "A2", "Neto": 900, "Calibre": "4", "Campaña": "2025", "Cultivo": "NECTARINA", "Empresa": "EMP"},
+            {"IdLote": "A3", "Neto": 900, "Calibre": "5", "Campaña": "2026", "Cultivo": "MELOCOTON", "Empresa": "EMP"},
+            {"IdLote": "A4", "Neto": 900, "Calibre": "6", "Campaña": "2026", "Cultivo": "NECTARINA", "Empresa": "OTRA"},
+        ],
+    )
+    repo = PlanningRepository(base_dir=tmp_path)
+
+    rows, sin_datos = repo._get_loteado_campo_disponibilidad_real(
+        _stock("B1", 1000) + _stock("B2", 1000) + _stock("B3", 1000) + _stock("B4", 1000),
+        {"campana": ["2026"], "cultivo": ["NECTARINA"], "empresa": ["EMP"]},
+    )
+
+    assert {r["Boleta"] for r in rows} == {"B1"}
+    assert {r["Calibre"] for r in rows} == {"CAL 1", "CAL 2", "CAL 3"}
+    assert sin_datos == 3
 
 
 def test_prioridad_pesosfres_valido_gana_a_loteado(tmp_path, monkeypatch):
