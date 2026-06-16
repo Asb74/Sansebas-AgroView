@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections import Counter, defaultdict
 import re
 from datetime import datetime
 from pathlib import Path
@@ -1032,7 +1033,8 @@ class PlanningRepository:
                             where_base.append(f'TRIM(CAST(ldo."{column}" AS TEXT)) IN ({placeholders})')
                         params_base.extend(values)
                 cat_expr = f'lote."{categoria_col}"' if categoria_col else "'NORMAL'"
-                select_sql = (f'SELECT pf."{boleta_col}" AS Boleta, lote."{neto_col}" AS Neto, '
+                select_sql = (f'SELECT pf."{boleta_col}" AS Boleta, lote."{idpalet_lote}" AS IdPalet, '
+                              f'lote."{idlote_col}" AS IdLote, lote."{neto_col}" AS Neto, '
                               f'lote."{calibre_col}" AS Calibre, {cat_expr} AS Categoria '
                               f'FROM "{lote_table}" lote JOIN "{ldo_table}" ldo ON TRIM(CAST(lote."{idpalet_lote}" AS TEXT)) = TRIM(CAST(ldo."{idpalet_ldo}" AS TEXT)) '
                               f'JOIN dbfruta."PesosFres" pf ON TRIM(CAST(lote."{idlote_col}" AS TEXT)) = TRIM(CAST(pf."{albaran_col}" AS TEXT)) ')
@@ -1042,8 +1044,9 @@ class PlanningRepository:
                     boleta_placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(chunk))
                     where = where_base + [f'TRIM(CAST(pf."{boleta_col}" AS TEXT)) IN ({boleta_placeholders})']
                     sql = f'{select_sql} WHERE {" AND ".join(where)}'
+                    logger.info("LOTEADO SQL usada=%s params=%s", sql, params_base + chunk)
                     rows.extend(dict(r) for r in conn.execute(sql, params_base + chunk).fetchall())
-                logger.info("LOTEADO filas recuperadas=%s", len(rows))
+                logger.info("LOTEADO SQL filas=%s", len(rows))
         except Exception as exc:
             logger.warning("No se pudo calcular aprovechamiento por Loteado: %s", exc)
             log_loteado_exit()
@@ -1051,6 +1054,39 @@ class PlanningRepository:
 
         grouped: dict[tuple[str, str, str], float] = {}
         total_by_boleta: dict[str, float] = {}
+        neto_sql_by_boleta: dict[str, float] = defaultdict(float)
+        filas_by_boleta: Counter[str] = Counter()
+        palets_by_boleta: dict[str, set[str]] = defaultdict(set)
+        lotes_by_boleta: dict[str, set[str]] = defaultdict(set)
+        palet_rows_by_boleta: dict[str, Counter[str]] = defaultdict(Counter)
+        duplicate_palets_by_boleta: dict[str, dict[str, int]] = {}
+        for r in rows:
+            boleta_resumen = str(r.get("Boleta", "") or "").strip()
+            if boleta_resumen not in pendientes:
+                continue
+            id_palet_resumen = str(r.get("IdPalet", "") or "").strip()
+            id_lote_resumen = str(r.get("IdLote", "") or "").strip()
+            neto_resumen = float(r.get("Neto", 0) or 0)
+            logger.info(
+                "LOTEADO fila boleta=%s IdPalet=%s IdLote=%s Neto=%s",
+                boleta_resumen,
+                id_palet_resumen,
+                id_lote_resumen,
+                neto_resumen,
+            )
+            filas_by_boleta[boleta_resumen] += 1
+            neto_sql_by_boleta[boleta_resumen] += neto_resumen
+            if id_palet_resumen:
+                palets_by_boleta[boleta_resumen].add(id_palet_resumen)
+                palet_rows_by_boleta[boleta_resumen][id_palet_resumen] += 1
+            if id_lote_resumen:
+                lotes_by_boleta[boleta_resumen].add(id_lote_resumen)
+        for boleta_resumen, palet_counter in palet_rows_by_boleta.items():
+            duplicados = {palet: count for palet, count in palet_counter.items() if count > 1}
+            duplicate_palets_by_boleta[boleta_resumen] = duplicados
+            logger.info("LOTEADO bruto boleta=%s neto_total_sql=%s", boleta_resumen, neto_sql_by_boleta[boleta_resumen])
+            if duplicados:
+                logger.warning("LOTEADO duplicados boleta=%s IdPalet_repetidos=%s", boleta_resumen, duplicados)
         for r in rows:
             boleta = str(r.get("Boleta", "") or "").strip()
             if boleta not in pendientes:
@@ -1061,13 +1097,33 @@ class PlanningRepository:
             categoria = str(r.get("Categoria", "") or "NORMAL").strip() or "NORMAL"
             logger.info("Loteado encontrado por boleta=%s kg=%s calibre=%s reparto=%s", boleta, kg, r.get("Calibre"), reparto)
             for calibre, kg_cal in reparto.items():
+                logger.info("LOTEADO reparto boleta=%s calibre=%s kg=%s", boleta, calibre, kg_cal)
                 grouped[(boleta, calibre, categoria)] = grouped.get((boleta, calibre, categoria), 0.0) + kg_cal
                 total_by_boleta[boleta] = total_by_boleta.get(boleta, 0.0) + kg_cal
+        logger.info(
+            "LOTEADO resumen final palets_distintos=%s lotes_distintos=%s filas_sql=%s",
+            len(set().union(*palets_by_boleta.values()) if palets_by_boleta else set()),
+            len(set().union(*lotes_by_boleta.values()) if lotes_by_boleta else set()),
+            sum(filas_by_boleta.values()),
+        )
         out: list[dict[str, Any]] = []
         for boleta, total in total_by_boleta.items():
             partida = stock_by_boleta[boleta]
             kg_campo = float(partida.get("Kg campo", 0) or 0)
             logger.info("LOTEADO detalle boleta=%s kg_partida=%s kg_base_usada=%s", boleta, kg_campo, kg_campo)
+            logger.info("LOTEADO control boleta=%s kg_partida=%s kg_repartidos=%s", boleta, kg_campo, total)
+            if total > kg_campo * 1.05:
+                logger.error("LOTEADO inconsistente boleta=%s", boleta)
+            logger.info(
+                "LOTEADO resumen boleta=%s palets_distintos=%s lotes_distintos=%s filas_sql=%s neto_total_sql=%s kg_repartidos=%s duplicados=%s",
+                boleta,
+                len(palets_by_boleta.get(boleta, set())),
+                len(lotes_by_boleta.get(boleta, set())),
+                filas_by_boleta.get(boleta, 0),
+                neto_sql_by_boleta.get(boleta, 0.0),
+                total,
+                duplicate_palets_by_boleta.get(boleta, {}),
+            )
             pct_total = (total / kg_campo * 100) if kg_campo > 0 else 0
             if pct_total < self.MIN_PCT_APROVECHAMIENTO_LOTEADO:
                 logger.warning("Loteado insuficiente para boleta %s: pct=%s", boleta, round(pct_total, 4))
