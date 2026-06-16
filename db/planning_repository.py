@@ -96,6 +96,8 @@ def canonical_get(row: dict[str, Any], key: str, default: Any = "") -> Any:
 
 
 class PlanningRepository:
+    MIN_PCT_APROVECHAMIENTO_LOTEADO = 10.0
+
     def __init__(self, base_dir: str | Path = DB_DIR) -> None:
         self.base_dir = Path(base_dir)
         self.db_loteado = self._db_path(DB_LOTEADO)
@@ -251,51 +253,78 @@ class PlanningRepository:
 
     @staticmethod
     def normalizar_calibre_a_set(calibre_texto: Any, calibre_map: dict[str, str] | None = None) -> set[str]:
-        text = str(calibre_texto or "").strip().upper()
+        raw_text = str(calibre_texto or "").strip()
+        text = raw_text.upper()
         if not text:
             return set()
         text = re.sub(r"\bCAL(?:\.)?\b", " ", text)
-        text = re.sub(r"\bPZS?\b|\bPIEZAS?\b", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
         mapped = (calibre_map or {}).get(text)
         if mapped and str(mapped).strip().upper() != text:
             return PlanningRepository.normalizar_calibre_a_set(mapped, calibre_map=calibre_map)
 
-        raw_text = str(calibre_texto or "")
-        raw_upper = raw_text.upper()
-
-        es_formato_piezas = bool(re.search(r"\bPZS?\b|\bPIEZA(?:S)?\b", raw_upper))
+        es_formato_piezas = bool(re.search(r"\bPZS?\b|\bPIEZA(?:S)?\b", raw_text.upper()))
         if not es_formato_piezas:
             m_formato_simple = re.match(r"^\s*(\d+)\s*/\s*(\d+)\s*$", raw_text)
             if m_formato_simple:
                 es_formato_piezas = int(m_formato_simple.group(2)) >= 10
-
         if es_formato_piezas:
             m = re.match(r"^\s*(\d+)\s*/", raw_text)
             return {m.group(1)} if m else set()
 
-        if "-" in text:
-            resultado: set[str] = set()
-            for bloque in re.split(r"\s*-\s*", text):
-                bloque = bloque.strip()
-                if not bloque:
-                    continue
-                resultado.update(PlanningRepository.normalizar_calibre_a_set(bloque, calibre_map=calibre_map))
-            if resultado:
-                logger.info("CALIBRE normalizado compuesto original=%s set=%s", calibre_texto, sorted(resultado))
-                return resultado
+        clean = re.sub(r"\bPZS?\b|\bPIEZAS?\b", " ", text)
+        clean = re.sub(r"\s+", " ", clean).strip()
+        nums = re.findall(r"\d+", clean)
+        if not nums:
+            return set()
+        if re.fullmatch(r"\d+", clean):
+            return {clean}
+        if re.fullmatch(r"\d+(?:\s*/\s*\d+)+", clean):
+            nums_int = [int(n) for n in nums]
+            if len(nums_int) == 2:
+                a, b = nums_int
+                if abs(a - b) <= 1:
+                    return {str(a), str(b)}
+                lo, hi = sorted((a, b))
+                result = {str(i) for i in range(lo, hi + 1)}
+                logger.info("Calibre compuesto expandido original=%s set=%s", calibre_texto, sorted(result))
+                return result
+            return {str(n) for n in nums_int}
+        m_range = re.fullmatch(r"(\d+)\s*[-.]\s*(\d+)", clean)
+        if m_range:
+            a, b = int(m_range.group(1)), int(m_range.group(2))
+            lo, hi = sorted((a, b))
+            result = {str(i) for i in range(lo, hi + 1)}
+            logger.info("Calibre compuesto expandido original=%s set=%s", calibre_texto, sorted(result))
+            return result
+        return set(nums)
 
-        if "/" in text:
-            nums = [n for n in re.split(r"\s*/\s*", text) if re.fullmatch(r"\d+", n)]
-            if len(nums) >= 3:
-                return set(nums)
-            if len(nums) == 2:
-                a, b = nums
-                if len(b) >= 2 and int(b) >= 10:
-                    return {a}
-                return {a, b}
-        parts = re.findall(r"\d+", text)
-        return set(parts)
+    @staticmethod
+    def _es_pesosfres_aprovechamiento_valido(distribucion_calibres: dict[str, float]) -> bool:
+        return len([kg for kg in distribucion_calibres.values() if float(kg or 0) > 0]) >= 2
+
+    @staticmethod
+    def _expandir_calibre_loteado(calibre: Any, calibre_map: dict | None = None) -> list[str]:
+        return sorted(PlanningRepository.normalizar_calibre_a_set(calibre, calibre_map=calibre_map), key=lambda x: int(x) if str(x).isdigit() else 9999)
+
+    @staticmethod
+    def _repartir_kg_loteado_por_calibres(kg: float, calibres: list[str], distribucion_referencia: dict[str, float] | None = None) -> dict[str, float]:
+        calibres = [str(c).replace("CAL ", "").strip() for c in calibres if str(c).strip()]
+        if kg <= 0 or not calibres:
+            return {}
+        ref = {str(k).replace("CAL ", "").strip(): float(v or 0) for k, v in (distribucion_referencia or {}).items()}
+        pesos = {c: ref.get(c, ref.get(f"CAL {c}", 0.0)) for c in calibres}
+        total_ref = sum(v for v in pesos.values() if v > 0)
+        if total_ref > 0:
+            out = {f"CAL {c}": round(kg * max(pesos[c], 0) / total_ref, 2) for c in calibres if pesos[c] > 0}
+        else:
+            parte = round(kg / len(calibres), 2)
+            out = {f"CAL {c}": parte for c in calibres}
+            diff = round(kg - sum(out.values()), 2)
+            if out and diff:
+                out[next(iter(out))] = round(out[next(iter(out))] + diff, 2)
+        logger.info("Kg repartidos por calibre kg=%s calibres=%s reparto=%s", kg, calibres, out)
+        return out
 
     def get_mcalibres_map(self) -> dict[str, str]:
         path = self._db_path(DB_PEDIDOS)
@@ -775,26 +804,40 @@ class PlanningRepository:
         return out
 
     def _get_campo_disponibilidad_aprovechamiento(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[list[dict[str, Any]], int]:
-        real_rows, sin_datos = self._get_pesosfres_campo_disponibilidad_real(stock_campo_rows, filters)
+        real_rows, sin_datos_pf, _rechazadas = self._get_pesosfres_campo_disponibilidad_real(stock_campo_rows, filters)
         boletas_con_real = {str(r.get("Boleta", "") or "").strip() for r in real_rows if str(r.get("Boleta", "") or "").strip()}
-        estimadas = self._rows_estimadas_para_stock_campo(stock_campo_rows, boletas_con_real=boletas_con_real)
-        return real_rows + estimadas, sin_datos
+        loteado_rows, sin_datos_loteado = self._get_loteado_campo_disponibilidad_real(stock_campo_rows, filters, boletas_excluidas=boletas_con_real)
+        boletas_con_loteado = {str(r.get("Boleta", "") or "").strip() for r in loteado_rows if str(r.get("Boleta", "") or "").strip()}
+        estimadas = self._rows_estimadas_para_stock_campo(stock_campo_rows, boletas_con_real=boletas_con_real | boletas_con_loteado)
+        boletas_estimadas = {str(r.get("Boleta", "") or "").strip() for r in estimadas if str(r.get("Boleta", "") or "").strip()}
+        for partida in stock_campo_rows:
+            boleta = str(partida.get("Boleta", "") or "").strip()
+            if boleta in boletas_con_real:
+                logger.info("APROVECHAMIENTO FUENTE boleta=%s fuente=REAL_PESOSFRES calibres=%s kg=%s", boleta, len({r.get('Calibre') for r in real_rows if str(r.get('Boleta','')).strip()==boleta}), sum(float(r.get('Kg disponibles',0) or 0) for r in real_rows if str(r.get('Boleta','')).strip()==boleta))
+            elif boleta in boletas_con_loteado:
+                logger.info("APROVECHAMIENTO FUENTE boleta=%s fuente=LOTEADO calibres=%s kg=%s", boleta, len({r.get('Calibre') for r in loteado_rows if str(r.get('Boleta','')).strip()==boleta}), sum(float(r.get('Kg disponibles',0) or 0) for r in loteado_rows if str(r.get('Boleta','')).strip()==boleta))
+            elif boleta in boletas_estimadas:
+                logger.info("APROVECHAMIENTO FUENTE boleta=%s fuente=ESTIMADO_MANUAL calibres=%s kg=%s", boleta, len({r.get('Calibre') for r in estimadas if str(r.get('Boleta','')).strip()==boleta}), sum(float(r.get('Kg disponibles',0) or 0) for r in estimadas if str(r.get('Boleta','')).strip()==boleta))
+            else:
+                logger.info("APROVECHAMIENTO FUENTE boleta=%s fuente=SIN_DATOS", boleta)
+        return real_rows + loteado_rows + estimadas, sin_datos_pf + sin_datos_loteado
 
-    def _get_pesosfres_campo_disponibilidad_real(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[list[dict[str, Any]], int]:
+    def _get_pesosfres_campo_disponibilidad_real(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[list[dict[str, Any]], int, set[str]]:
         fruta_path = self._db_path(DB_FRUTA)
         if not fruta_path.exists():
-            return [], 0
+            return [], 0, set()
         if not stock_campo_rows:
-            return [], 0
+            return [], 0, set()
 
         logger.info("CAMPO PesosFres: stock_campo filas=%s", len(stock_campo_rows))
         candidates: list[dict[str, Any]] = []
         sin_datos = 0
+        rechazadas: set[str] = set()
         with sqlite3.connect(fruta_path) as conn:
             conn.row_factory = sqlite3.Row
             cols = [r[1] for r in conn.execute('PRAGMA table_info("PesosFres")').fetchall()]
             if not cols:
-                return [], len(stock_campo_rows)
+                return [], len(stock_campo_rows), set()
             boleta_col = self._find_column(cols, ["Boleta"])
             campana_col = self._find_campana_column(cols) or '"CAMPAÑA"'
             cultivo_col = self._find_column(cols, ["CULTIVO"]) or "CULTIVO"
@@ -810,7 +853,7 @@ class PlanningRepository:
                 if col:
                     cal_cols.append((f"CAL {i}", col))
             if not cal_cols:
-                return [], len(stock_campo_rows)
+                return [], len(stock_campo_rows), set()
 
             for row in stock_campo_rows:
                 boleta = str(row.get("Boleta", "") or "").strip()
@@ -869,6 +912,12 @@ class PlanningRepository:
                 if not distribucion:
                     sin_datos += 1
                     continue
+                if not self._es_pesosfres_aprovechamiento_valido(distribucion):
+                    sin_datos += 1
+                    rechazadas.add(boleta)
+                    logger.warning("PesosFres no fiable: aprovechamiento concentrado en un único calibre. boleta=%s", boleta)
+                    continue
+                logger.info("PesosFres válido por boleta=%s calibres=%s", boleta, len(distribucion))
                 categoria = str(match_row.get(categoria_col, "") if categoria_col else "").strip()
                 for calibre, pct in distribucion.items():
                     kg_estimado = round(kg_campo * pct, 2)
@@ -888,11 +937,97 @@ class PlanningRepository:
                         "Socio": row.get("Socio", ""),
                         "Fecha carga": row.get("Fecha carga", row.get("FechaCarga", "")),
                         "% aprovechamiento": round(pct * 100, 4),
-                        "Origen aprovechamiento": "REAL",
+                        "Origen aprovechamiento": "REAL_PESOSFRES",
                         "Aviso": f"Aprovechamiento real PesosFres boleta {boleta}".strip(),
                         "Explicación": "Kg estimados por calibre calculados desde aprovechamiento real de PesosFres",
                     })
-        return candidates, sin_datos
+        return candidates, sin_datos, rechazadas
+
+    def _get_loteado_campo_disponibilidad_real(
+        self,
+        stock_campo_rows: list[dict[str, Any]],
+        filters: dict,
+        boletas_excluidas: set[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        boletas_excluidas = boletas_excluidas or set()
+        if not stock_campo_rows:
+            return [], 0
+        loteado_path = self.db_loteado
+        fruta_path = self._db_path(DB_FRUTA)
+        pendientes = {str(r.get("Boleta", "") or "").strip() for r in stock_campo_rows if str(r.get("Boleta", "") or "").strip()} - boletas_excluidas
+        if not loteado_path.exists() or not fruta_path.exists():
+            logger.warning("Loteado no disponible para aprovechamiento campo: loteado=%s fruta=%s", loteado_path.exists(), fruta_path.exists())
+            return [], len(pendientes)
+        stock_by_boleta = {str(r.get("Boleta", "") or "").strip(): r for r in stock_campo_rows if str(r.get("Boleta", "") or "").strip()}
+        if not pendientes:
+            return [], 0
+        try:
+            with sqlite3.connect(loteado_path) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute(f"ATTACH DATABASE '{fruta_path.as_posix()}' AS dbfruta")
+                ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
+                lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
+                if not ldo_table or not lote_table:
+                    logger.warning("No existe tabla Loteado o Lote para aprovechamiento por loteado")
+                    return [], len(pendientes)
+                ldo_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
+                lote_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{lote_table}")').fetchall()]
+                pf_cols = [r[1] for r in conn.execute('PRAGMA dbfruta.table_info("PesosFres")').fetchall()]
+                idpalet_ldo = self._find_column(ldo_cols, ["IdPalet"])
+                idpalet_lote = self._find_column(lote_cols, ["IdPalet"])
+                idlote_col = self._find_column(lote_cols, ["IdLote"])
+                neto_col = self._find_column(lote_cols, ["Neto"])
+                calibre_col = self._find_column(lote_cols, ["Calibre"])
+                categoria_col = self._find_column(lote_cols, ["Lote", "Categoria", "Categoría"])
+                terminado_col = self._find_column(ldo_cols, ["Terminado"])
+                estado_col = self._find_column(ldo_cols, ["Estado"])
+                albaran_col = self._find_column(pf_cols, ["AlbaranDef"])
+                boleta_col = self._find_column(pf_cols, ["Boleta"])
+                if not all([idpalet_ldo, idpalet_lote, idlote_col, neto_col, calibre_col, albaran_col, boleta_col]):
+                    logger.warning("Columnas insuficientes para aprovechamiento por loteado")
+                    return [], len(pendientes)
+                where = [f'CAST(lote."{neto_col}" AS REAL) > 0', f'TRIM(CAST(lote."{idlote_col}" AS TEXT)) <> ""', f'TRIM(CAST(lote."{calibre_col}" AS TEXT)) <> ""']
+                if terminado_col:
+                    where.append(f"UPPER(TRIM(CAST(ldo.\"{terminado_col}\" AS TEXT))) IN ('S','SI','SÍ')")
+                if estado_col:
+                    where.append(f"UPPER(TRIM(CAST(ldo.\"{estado_col}\" AS TEXT))) NOT IN ('BAJA','VOLCADO','EXPEDICION','EXPEDICIÓN')")
+                cat_expr = f'lote."{categoria_col}"' if categoria_col else "'NORMAL'"
+                sql = (f'SELECT pf."{boleta_col}" AS Boleta, lote."{neto_col}" AS Neto, '
+                       f'lote."{calibre_col}" AS Calibre, {cat_expr} AS Categoria '
+                       f'FROM "{lote_table}" lote JOIN "{ldo_table}" ldo ON TRIM(CAST(lote."{idpalet_lote}" AS TEXT)) = TRIM(CAST(ldo."{idpalet_ldo}" AS TEXT)) '
+                       f'JOIN dbfruta."PesosFres" pf ON TRIM(CAST(lote."{idlote_col}" AS TEXT)) = TRIM(CAST(pf."{albaran_col}" AS TEXT)) '
+                       f'WHERE {" AND ".join(where)}')
+                rows = [dict(r) for r in conn.execute(sql).fetchall()]
+        except Exception as exc:
+            logger.warning("No se pudo calcular aprovechamiento por Loteado: %s", exc)
+            return [], len(pendientes)
+
+        grouped: dict[tuple[str, str, str], float] = {}
+        total_by_boleta: dict[str, float] = {}
+        for r in rows:
+            boleta = str(r.get("Boleta", "") or "").strip()
+            if boleta not in pendientes:
+                continue
+            kg = float(r.get("Neto", 0) or 0)
+            calibres = self._expandir_calibre_loteado(r.get("Calibre"))
+            reparto = self._repartir_kg_loteado_por_calibres(kg, calibres)
+            categoria = str(r.get("Categoria", "") or "NORMAL").strip() or "NORMAL"
+            logger.info("Loteado encontrado por boleta=%s kg=%s calibre=%s reparto=%s", boleta, kg, r.get("Calibre"), reparto)
+            for calibre, kg_cal in reparto.items():
+                grouped[(boleta, calibre, categoria)] = grouped.get((boleta, calibre, categoria), 0.0) + kg_cal
+                total_by_boleta[boleta] = total_by_boleta.get(boleta, 0.0) + kg_cal
+        out: list[dict[str, Any]] = []
+        for boleta, total in total_by_boleta.items():
+            partida = stock_by_boleta[boleta]
+            kg_campo = float(partida.get("Kg campo", 0) or 0)
+            pct_total = (total / kg_campo * 100) if kg_campo > 0 else 0
+            if pct_total < self.MIN_PCT_APROVECHAMIENTO_LOTEADO:
+                logger.warning("Loteado insuficiente para boleta %s: pct=%s", boleta, round(pct_total, 4))
+                continue
+            for (b, calibre, categoria), kg_cal in grouped.items():
+                if b == boleta and kg_cal > 0:
+                    out.append({"Origen": "CAMPO_REAL_LOTEADO", "Tipo stock": "CAMPO", "Cultivo": partida.get("Cultivo", ""), "Campaña": partida.get("Campaña", partida.get("Campana", "")), "Grupo varietal": partida.get("Grupo varietal", ""), "Variedad": partida.get("Variedad", ""), "Calibre": calibre, "Categoría": categoria, "Kg disponibles": round(kg_cal, 2), "Kg campo origen": kg_campo, "Boleta": boleta, "Socio": partida.get("Socio", ""), "Fecha carga": partida.get("Fecha carga", partida.get("FechaCarga", "")), "% aprovechamiento": round((kg_cal / kg_campo * 100) if kg_campo > 0 else 0, 4), "Origen aprovechamiento": "LOTEADO", "Aviso": f"Aprovechamiento calculado desde loteado boleta {boleta}".strip(), "Explicación": "Kg estimados por calibre calculados desde netos loteados vinculados a PesosFres"})
+        return out, len(pendientes - {str(r.get("Boleta", "") or "").strip() for r in out})
 
     @staticmethod
     def read_text_safe(path: str | Path) -> str:
@@ -977,8 +1112,15 @@ class PlanningRepository:
             boleta = str(partida.get("Boleta", "") or "").strip()
             rows = by_boleta.get(boleta, [])
             if rows:
-                tiene_real = any(str(r.get("Origen aprovechamiento", "")).upper() == "REAL" for r in rows)
-                estado = "Real PesosFres" if tiene_real else "Estimado Manual"
+                origenes = {str(r.get("Origen aprovechamiento", "")).upper() for r in rows}
+                if origenes.intersection({"REAL", "REAL_PESOSFRES"}):
+                    estado = "Real PesosFres"
+                elif "LOTEADO" in origenes:
+                    estado = "Real Loteado"
+                elif "ESTIMADO_MANUAL" in origenes:
+                    estado = "Estimado Manual"
+                else:
+                    estado = "Sin aprovechamiento"
                 n_cal = len({str(r.get("Calibre", "")) for r in rows if str(r.get("Calibre", "")).strip()})
                 kg_est = round(sum(float(r.get("Kg disponibles", 0) or 0) for r in rows), 2)
             else:
@@ -1966,7 +2108,7 @@ class PlanningRepository:
                 if not acc:
                     acc = {
                         "__orden": 4,
-                        "Tipo cobertura": "Entrada estimada manual" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else "Entrada estimada real",
+                        "Tipo cobertura": ("Entrada estimada manual" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else ("Entrada estimada loteado" if str(row.get("Origen aprovechamiento", "")).upper() == "LOTEADO" else "Entrada estimada real")),
                         "Origen": row.get("Origen", "CAMPO_REAL_PESOSFRES"),
                         "Cultivo": stock_cultivo,
                         "Campaña": stock_campana,
@@ -1986,9 +2128,9 @@ class PlanningRepository:
                         "Palets": 0,
                         "Cajas": 0.0,
                         "Kg disponibles": 0.0,
-                        "Coincidencia": "Entrada campo estimada manual" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else "Entrada campo estimada real",
+                        "Coincidencia": ("Entrada campo estimada manual" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else ("Entrada campo desde loteado" if str(row.get("Origen aprovechamiento", "")).upper() == "LOTEADO" else "Entrada campo estimada real")),
                         "Score": 75,
-                        "Flexibilidad aplicada": "CAMPO_ESTIMADO_MANUAL" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else "CAMPO_REAL",
+                        "Flexibilidad aplicada": "CAMPO_ESTIMADO_MANUAL" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else row.get("Origen", "CAMPO_REAL"),
                         "Explicación": str(row.get("Explicación", "") or "").strip(),
                         "Aviso": aviso_base,
                     }
@@ -2123,8 +2265,8 @@ class PlanningRepository:
                 calibre = str(row.get("Calibre", "") or "").strip()
                 categoria = str(row.get("Categoría", "") or "").strip()
                 pools.append({
-                    "pool_id": f"{('CAMPO_ESTIMADO_MANUAL' if str(row.get('Origen aprovechamiento', '')).upper() == 'ESTIMADO_MANUAL' else 'CAMPO_REAL')}|{row.get('Cultivo','')}|{row.get('Campaña','')}|{row.get('Grupo varietal','')}|{row.get('Variedad','')}|{calibre}|{categoria}|{row.get('Boleta','')}",
-                    "origen": "CAMPO_ESTIMADO_MANUAL" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else "CAMPO_REAL",
+                    "pool_id": f"{('CAMPO_ESTIMADO_MANUAL' if str(row.get('Origen aprovechamiento', '')).upper() == 'ESTIMADO_MANUAL' else row.get('Origen', 'CAMPO_REAL'))}|{row.get('Cultivo','')}|{row.get('Campaña','')}|{row.get('Grupo varietal','')}|{row.get('Variedad','')}|{calibre}|{categoria}|{row.get('Boleta','')}",
+                    "origen": "CAMPO_ESTIMADO_MANUAL" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else row.get("Origen", "CAMPO_REAL"),
                     "tipo_stock": "CAMPO",
                     "variedad": str(row.get("Variedad", "") or "").strip(),
                     "grupo_varietal": str(row.get("Grupo varietal", "") or "").strip(),
@@ -2134,7 +2276,7 @@ class PlanningRepository:
                     "kg_restante_simulado": round(kg_fisicos, 2),
                     "destrio_pct": 0.0,
                     "coef_primera": 1.0,
-                    "Origen": "CAMPO_ESTIMADO_MANUAL" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else "CAMPO_REAL",
+                    "Origen": "CAMPO_ESTIMADO_MANUAL" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else row.get("Origen", "CAMPO_REAL"),
                     "Cultivo": str(row.get("Cultivo", "") or "").strip(),
                     "Campaña": str(row.get("Campaña", "") or "").strip(),
                     "Grupo varietal": str(row.get("Grupo varietal", "") or "").strip(),

@@ -606,14 +606,14 @@ class PlanificacionDiariaScreen(ttk.Frame):
         body.pack(fill="both", expand=True, padx=8, pady=(4, 8))
         msg = ttk.Label(body, text="")
         msg.pack(anchor="w", pady=(0, 6))
-        cols = ["Boleta", "Calibre", "Categoría", "Kg real", "% aprovechamiento", "Kg campo aplicado", "Kg estimado", "Origen"]
+        cols = ["Boleta", "Calibre", "Categoría", "Kg real", "% aprovechamiento", "Kg campo aplicado", "Kg estimado", "Origen", "Explicación"]
         tbl = DataTable(body, cols)
         tbl.pack(fill="both", expand=True)
 
         def load_rows() -> tuple[list[dict], bool]:
             _resumen, detalle_map = self.service.get_aprovechamiento_stock_campo(self.stock_campo_rows, self._filters_payload())
             rows = detalle_map.get(boleta, [])
-            tiene_real = any(str(r.get("Origen aprovechamiento", "")).upper() == "REAL" for r in rows)
+            tiene_real = any(str(r.get("Origen aprovechamiento", "")).upper() in {"REAL", "REAL_PESOSFRES", "LOTEADO"} for r in rows)
             return rows, tiene_real
 
         def selected_estimated_id() -> int | None:
@@ -633,7 +633,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         def open_form(existing: dict | None = None) -> None:
             rows_now, tiene_real_now = load_rows()
             if tiene_real_now:
-                messagebox.showinfo("Aprovechamiento boleta", "El aprovechamiento real de PesosFres tiene prioridad", parent=popup)
+                messagebox.showinfo("Aprovechamiento boleta", "El aprovechamiento real tiene prioridad", parent=popup)
                 return
             form = tk.Toplevel(popup)
             form.title("Editar estimado" if existing else "Añadir estimado")
@@ -742,10 +742,10 @@ class PlanificacionDiariaScreen(ttk.Frame):
             header_lbl.configure(text=(f"Cultivo: {partida.get('Cultivo', '')} | Campaña: {partida.get('Campaña', '')} | Fecha carga: {partida.get('Fecha carga', '')} | "
                                    f"Semana: {partida.get('Semana', '')} | Socio: {partida.get('Socio', '')} | Variedad: {partida.get('Variedad', '')} | "
                                    f"Grupo varietal: {partida.get('Grupo varietal', '')} | Boleta: {partida.get('Boleta', '')} | Kg campo: {float(partida.get('Kg campo', 0) or 0):,.2f} | "
-                                   f"Estado aprovechamiento: {'Real PesosFres' if tiene_real else ('Estimado Manual' if current_rows else 'Sin aprovechamiento')}"))
+                                   f"Estado aprovechamiento: {('Real Loteado' if any(str(r.get('Origen aprovechamiento', '')).upper() == 'LOTEADO' for r in current_rows) else ('Real PesosFres' if tiene_real else ('Estimado Manual' if current_rows else 'Sin aprovechamiento')))}"))
             body.configure(text="Vista por partida" if view_mode.get() == "partida" else "Vista aprovechamiento medio")
             if tiene_real:
-                msg.configure(text="El aprovechamiento real de PesosFres tiene prioridad")
+                msg.configure(text="El aprovechamiento real tiene prioridad")
             elif not current_rows:
                 msg.configure(text="Esta partida no tiene aprovechamiento real ni estimado manual")
             else:
@@ -758,11 +758,12 @@ class PlanificacionDiariaScreen(ttk.Frame):
                     "Boleta": boleta,
                     "Calibre": r.get("Calibre", ""),
                     "Categoría": r.get("Categoría", ""),
-                    "Kg real": kg if origen == "REAL" else 0,
+                    "Kg real": kg if origen in {"REAL", "REAL_PESOSFRES", "LOTEADO"} else 0,
                     "% aprovechamiento": r.get("% aprovechamiento", 0),
                     "Kg campo aplicado": r.get("Kg campo origen", 0),
                     "Kg estimado": kg,
-                    "Origen": "REAL" if origen == "REAL" else "ESTIMADO_MANUAL",
+                    "Origen": origen if origen in {"REAL", "REAL_PESOSFRES", "LOTEADO"} else "ESTIMADO_MANUAL",
+                    "Explicación": r.get("Explicación", ""),
                 })
             tbl.set_rows(rows)
             add_btn.configure(state="disabled" if tiene_real else "normal")
