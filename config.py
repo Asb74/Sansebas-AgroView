@@ -1,5 +1,6 @@
-from pathlib import Path
 import logging
+from datetime import datetime
+from pathlib import Path
 
 CENTRAL_SQLITE_DIR = r"\\Personal\C\BasesSQLite"
 RUNTIME_SQLITE_DIR = r"C:\Sansebas AgroView\runtime_db"
@@ -19,6 +20,7 @@ APP_DATA_DIR = Path(r"C:\Sansebas AgroView\data")
 APP_DB_PATH = APP_DATA_DIR / "app_config.sqlite"
 LOG_DIR = BASE_DIR / "logs"
 LOG_FILE = LOG_DIR / "app.log"
+SESSION_LOG_FILE = LOG_DIR / f"app_{datetime.now():%Y%m%d_%H%M%S}.log"
 
 
 def setup_logging() -> None:
@@ -27,7 +29,9 @@ def setup_logging() -> None:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
-            logging.FileHandler(LOG_FILE, encoding="utf-8"),
+            logging.FileHandler(SESSION_LOG_FILE, encoding="utf-8"),
             logging.StreamHandler(),
         ],
+        force=True,
     )
+    logging.getLogger(__name__).info("Logging de sesión iniciado en %s", SESSION_LOG_FILE)

@@ -238,6 +238,10 @@ class PlanningRepository:
         return [str(v).strip() for v in raw if str(v or "").strip()]
 
     @staticmethod
+    def _normalize_filter_values_upper(value: Any) -> list[str]:
+        return [v.upper() for v in PlanningRepository._normalize_filter_values(value)]
+
+    @staticmethod
     def _is_calibre_agrupado(calibre: Any) -> bool:
         text = str(calibre or "").strip()
         if not text:
@@ -956,14 +960,24 @@ class PlanningRepository:
         fruta_path = self._db_path(DB_FRUTA)
         pendientes = {str(r.get("Boleta", "") or "").strip() for r in stock_campo_rows if str(r.get("Boleta", "") or "").strip()} - boletas_excluidas
         boletas_pendientes = sorted(pendientes)
+        start = time.perf_counter()
+        rows: list[dict[str, Any]] = []
+
+        def log_loteado_exit(filas: int | None = None) -> None:
+            elapsed = time.perf_counter() - start
+            filas_log = len(rows) if filas is None else filas
+            logger.info("SALIENDO LOTEADO tiempo=%.2fs filas=%s", elapsed, filas_log)
+            if elapsed > 3:
+                logger.warning("LOTEADO lento: tiempo=%.2f segundos", elapsed)
+
         logger.info("ENTRANDO LOTEADO pendientes=%s", len(boletas_pendientes))
         if not loteado_path.exists() or not fruta_path.exists():
             logger.warning("Loteado no disponible para aprovechamiento campo: loteado=%s fruta=%s", loteado_path.exists(), fruta_path.exists())
-            logger.info("SALIENDO LOTEADO")
+            log_loteado_exit()
             return [], len(pendientes)
         stock_by_boleta = {str(r.get("Boleta", "") or "").strip(): r for r in stock_campo_rows if str(r.get("Boleta", "") or "").strip()}
         if not pendientes:
-            logger.info("SALIENDO LOTEADO")
+            log_loteado_exit()
             return [], 0
         try:
             with sqlite3.connect(loteado_path) as conn:
@@ -973,6 +987,7 @@ class PlanningRepository:
                 lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
                 if not ldo_table or not lote_table:
                     logger.warning("No existe tabla Loteado o Lote para aprovechamiento por loteado")
+                    log_loteado_exit()
                     return [], len(pendientes)
                 ldo_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
                 lote_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{lote_table}")').fetchall()]
@@ -992,32 +1007,35 @@ class PlanningRepository:
                 boleta_col = self._find_column(pf_cols, ["Boleta"])
                 if not all([idpalet_ldo, idpalet_lote, idlote_col, neto_col, calibre_col, albaran_col, boleta_col]):
                     logger.warning("Columnas insuficientes para aprovechamiento por loteado")
-                    logger.info("SALIENDO LOTEADO")
+                    log_loteado_exit()
                     return [], len(pendientes)
                 campanas = self._normalize_filter_values(filters.get("campana")) or sorted({str(r.get("Campaña", r.get("Campana", "")) or "").strip() for r in stock_campo_rows if str(r.get("Campaña", r.get("Campana", "")) or "").strip()})
-                cultivos = self._normalize_filter_values(filters.get("cultivo")) or sorted({str(r.get("Cultivo", "") or "").strip() for r in stock_campo_rows if str(r.get("Cultivo", "") or "").strip()})
+                cultivos = self._normalize_filter_values_upper(filters.get("cultivo")) or sorted({str(r.get("Cultivo", "") or "").strip().upper() for r in stock_campo_rows if str(r.get("Cultivo", "") or "").strip()})
                 empresas = self._normalize_filter_values(filters.get("empresa")) or sorted({str(r.get("Empresa", "") or "").strip() for r in stock_campo_rows if str(r.get("Empresa", "") or "").strip()})
                 campanas = [v for v in campanas if v.upper() != "TODOS"]
                 cultivos = [v for v in cultivos if v.upper() != "TODOS"]
                 empresas = [v for v in empresas if v.upper() != "TODOS"]
-                logger.info("LOTEADO filtros campana=%s cultivo=%s empresa=%s", campanas, cultivos, empresas)
+                logger.info("LOTEADO filtros normalizados campana=%s cultivo=%s empresa=%s", campanas, cultivos, empresas)
                 where_base = [f'CAST(lote."{neto_col}" AS REAL) > 0', f'TRIM(CAST(lote."{idlote_col}" AS TEXT)) <> ""', f'TRIM(CAST(lote."{calibre_col}" AS TEXT)) <> ""']
                 params_base: list[Any] = []
                 if terminado_col:
                     where_base.append(f"UPPER(TRIM(CAST(ldo.\"{terminado_col}\" AS TEXT))) IN ('S','SI','SÍ')")
                 if estado_col:
                     where_base.append(f"UPPER(TRIM(CAST(ldo.\"{estado_col}\" AS TEXT))) NOT IN ('BAJA','VOLCADO','EXPEDICION','EXPEDICIÓN')")
-                for values, column in ((campanas, campana_col), (cultivos, cultivo_col), (empresas, empresa_col)):
+                for values, column, use_upper in ((campanas, campana_col, False), (cultivos, cultivo_col, True), (empresas, empresa_col, False)):
                     if values and column:
                         placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
-                        where_base.append(f'UPPER(TRIM(CAST(ldo."{column}" AS TEXT))) IN ({placeholders})')
+                        if use_upper:
+                            where_base.append(f'UPPER(TRIM(CAST(ldo."{column}" AS TEXT))) IN ({placeholders})')
+                        else:
+                            placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(values))
+                            where_base.append(f'TRIM(CAST(ldo."{column}" AS TEXT)) IN ({placeholders})')
                         params_base.extend(values)
                 cat_expr = f'lote."{categoria_col}"' if categoria_col else "'NORMAL'"
                 select_sql = (f'SELECT pf."{boleta_col}" AS Boleta, lote."{neto_col}" AS Neto, '
                               f'lote."{calibre_col}" AS Calibre, {cat_expr} AS Categoria '
                               f'FROM "{lote_table}" lote JOIN "{ldo_table}" ldo ON TRIM(CAST(lote."{idpalet_lote}" AS TEXT)) = TRIM(CAST(ldo."{idpalet_ldo}" AS TEXT)) '
                               f'JOIN dbfruta."PesosFres" pf ON TRIM(CAST(lote."{idlote_col}" AS TEXT)) = TRIM(CAST(pf."{albaran_col}" AS TEXT)) ')
-                rows: list[dict[str, Any]] = []
                 chunk_size = 200
                 for i in range(0, len(boletas_pendientes), chunk_size):
                     chunk = boletas_pendientes[i:i + chunk_size]
@@ -1028,7 +1046,7 @@ class PlanningRepository:
                 logger.info("LOTEADO filas recuperadas=%s", len(rows))
         except Exception as exc:
             logger.warning("No se pudo calcular aprovechamiento por Loteado: %s", exc)
-            logger.info("SALIENDO LOTEADO")
+            log_loteado_exit()
             return [], len(pendientes)
 
         grouped: dict[tuple[str, str, str], float] = {}
@@ -1049,6 +1067,7 @@ class PlanningRepository:
         for boleta, total in total_by_boleta.items():
             partida = stock_by_boleta[boleta]
             kg_campo = float(partida.get("Kg campo", 0) or 0)
+            logger.info("LOTEADO detalle boleta=%s kg_partida=%s kg_base_usada=%s", boleta, kg_campo, kg_campo)
             pct_total = (total / kg_campo * 100) if kg_campo > 0 else 0
             if pct_total < self.MIN_PCT_APROVECHAMIENTO_LOTEADO:
                 logger.warning("Loteado insuficiente para boleta %s: pct=%s", boleta, round(pct_total, 4))
@@ -1056,7 +1075,7 @@ class PlanningRepository:
             for (b, calibre, categoria), kg_cal in grouped.items():
                 if b == boleta and kg_cal > 0:
                     out.append({"Origen": "CAMPO_REAL_LOTEADO", "Tipo stock": "CAMPO", "Cultivo": partida.get("Cultivo", ""), "Campaña": partida.get("Campaña", partida.get("Campana", "")), "Grupo varietal": partida.get("Grupo varietal", ""), "Variedad": partida.get("Variedad", ""), "Calibre": calibre, "Categoría": categoria, "Kg disponibles": round(kg_cal, 2), "Kg campo origen": kg_campo, "Boleta": boleta, "Socio": partida.get("Socio", ""), "Fecha carga": partida.get("Fecha carga", partida.get("FechaCarga", "")), "% aprovechamiento": round((kg_cal / kg_campo * 100) if kg_campo > 0 else 0, 4), "Origen aprovechamiento": "LOTEADO", "Aviso": f"Aprovechamiento calculado desde loteado boleta {boleta}".strip(), "Explicación": "Kg estimados por calibre calculados desde netos loteados vinculados a PesosFres"})
-        logger.info("SALIENDO LOTEADO")
+        log_loteado_exit()
         return out, len(pendientes - {str(r.get("Boleta", "") or "").strip() for r in out})
 
     @staticmethod
