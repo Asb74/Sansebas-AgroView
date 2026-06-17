@@ -371,6 +371,25 @@ class CommercialPdfReportService:
         cols = ["Cultivo", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Kg reales", "Kg estimados", "Kg total", "% sobre calculado"]
         story.append(self._table([cols] + [[self._format_cell(r.get(c, ""), c) for c in cols] for r in rows[:80]]))
         story.append(Spacer(1, 6))
+        grouped_rows = list(volcado.get("grouped_partidas") or [])
+        grouped_summary = volcado.get("grouped_summary") or {}
+        story.append(Paragraph("PARTIDAS AGRUPADAS EN VOLCADO", self._normal))
+        grouped_resume = [
+            ["Nº partidas principales volcadas", "Nº partidas incluidas totales", "Nº partidas agrupadas adicionales", "Kg total agrupado según Partidas.kgP"],
+            [
+                grouped_summary.get("principales", 0),
+                grouped_summary.get("incluidas", 0),
+                grouped_summary.get("adicionales", 0),
+                self._num(grouped_summary.get("kg_total", 0)),
+            ],
+        ]
+        story.append(self._table(grouped_resume))
+        if grouped_rows:
+            grouped_cols = ["Partida principal", "Partida incluida", "Kg asociado", "Tipo"]
+            story.append(self._table([grouped_cols] + [[self._format_cell(r.get(c, ""), c) for c in grouped_cols] for r in grouped_rows[:120]], col_widths=[4.2*cm, 4.2*cm, 3.5*cm, 4.2*cm]))
+        else:
+            story.append(Paragraph("Sin trazabilidad de partidas agrupadas para el periodo y filtros actuales.", self._normal))
+        story.append(Spacer(1, 6))
         story.append(Paragraph("CALIDAD DE INFORMACIÓN DEL VOLCADO", self._normal))
         qcols = ["Tipo dato", "Palets/líneas", "Kg", "%"]
         story.append(self._table([qcols] + [[r.get(c, "") for c in qcols] for r in (volcado.get("quality") or [])], col_widths=[7*cm, 4*cm, 4*cm, 3*cm]))
