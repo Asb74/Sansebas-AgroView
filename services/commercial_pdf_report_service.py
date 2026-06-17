@@ -346,9 +346,10 @@ class CommercialPdfReportService:
             txt = str(self._value(row, "Estado aprovechamiento") or self._value(row, "Origen aprovechamiento") or self._value(row, "Origen") or "").upper()
             if "PESOSFRES" in txt or ("REAL" in txt and "LOTEADO" not in txt): return "Real PesosFres"
             if "LOTEADO" in txt: return "Real Loteado"
+            if "HARVESTSYNC" in txt: return "HarvestSync"
             if "MANUAL" in txt or "ESTIMADO" in txt: return "Estimado manual"
             return "Sin aprovechamiento"
-        blocks = [("Real PesosFres", []), ("Real Loteado", []), ("Estimado manual", []), ("Sin aprovechamiento", [])]
+        blocks = [("Real PesosFres", []), ("Real Loteado", []), ("HarvestSync", []), ("Estimado manual", []), ("Sin aprovechamiento", [])]
         by = {k: v for k, v in blocks}
         for r in rows: by[estado(r)].append(r)
         data = [["Bloque", "Nº partidas", "Kg campo afectado", "%"]]

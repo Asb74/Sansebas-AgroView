@@ -106,7 +106,8 @@ class PlanningRepository:
         self._harvestsync_client = None
         self._harvestsync_unavailable = False
         self._harvestsync_cache: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
-        self._harvestsync_template_cache: dict[tuple[str, str], list[str]] = {}
+        self._harvestsync_plantillas_calibre: dict[str, list[str]] = {}
+        self._harvestsync_plantillas_aprovechamiento: dict[str, list[str]] = {}
         self.ensure_aprovechamientos_estimados_schema()
 
     def _db_path(self, filename: str) -> Path:
@@ -822,21 +823,90 @@ class PlanningRepository:
     def _get_harvestsync_client(self):
         if self._harvestsync_unavailable:
             return None
+        if self._harvestsync_client is not None:
+            return self._harvestsync_client
         cred_path = Path("firebase") / "harvestsync.json"
         if not cred_path.exists():
             self._harvestsync_unavailable = True
-            logger.info("HARVESTSYNC credenciales no disponibles en %s", cred_path)
+            logger.warning("HarvestSync no disponible: credenciales no encontradas")
             return None
         try:
-            service_account = importlib.import_module("google.oauth2.service_account")
-            firestore = importlib.import_module("google.cloud.firestore")
-            credentials = service_account.Credentials.from_service_account_file(str(cred_path))
-            self._harvestsync_client = firestore.Client(credentials=credentials, project=credentials.project_id)
+            firebase_admin = importlib.import_module("firebase_admin")
+            credentials = importlib.import_module("firebase_admin.credentials")
+            firestore = importlib.import_module("firebase_admin.firestore")
+            if not firebase_admin._apps:
+                cred = credentials.Certificate(str(cred_path))
+                firebase_admin.initialize_app(cred)
+            self._harvestsync_client = firestore.client()
+            logger.info("HARVESTSYNC init ok")
         except Exception as exc:
             self._harvestsync_unavailable = True
             logger.warning("HARVESTSYNC no disponible: %s", exc)
             return None
         return self._harvestsync_client
+
+    @staticmethod
+    def _parse_firestore_fecha(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value.replace(tzinfo=None)
+        if hasattr(value, "to_datetime"):
+            converted = value.to_datetime()
+            return converted.replace(tzinfo=None) if isinstance(converted, datetime) else None
+        if hasattr(value, "year") and hasattr(value, "month") and hasattr(value, "day"):
+            try:
+                return datetime(int(value.year), int(value.month), int(value.day))
+            except Exception:
+                return None
+        text = str(value).strip()
+        if not text:
+            return None
+        normalized = (
+            text.replace("a.m.", "AM")
+            .replace("p.m.", "PM")
+            .replace("a. m.", "AM")
+            .replace("p. m.", "PM")
+        )
+        normalized = re.sub(r"\s+UTC[+-]\d{1,2}(?::?\d{2})?$", "", normalized, flags=re.IGNORECASE)
+        iso = normalized.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(iso).replace(tzinfo=None)
+        except ValueError:
+            pass
+        meses = {
+            "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+            "julio": 7, "agosto": 8, "septiembre": 9, "setiembre": 9, "octubre": 10,
+            "noviembre": 11, "diciembre": 12,
+        }
+        m = re.match(r"(\d{1,2})\s+de\s+([a-záéíóúñ]+)\s+de\s+(\d{4})(?:,\s*(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?", normalized, re.IGNORECASE)
+        if m:
+            mes = meses.get(m.group(2).lower())
+            if mes:
+                hour = int(m.group(4) or 0)
+                minute = int(m.group(5) or 0)
+                second = int(m.group(6) or 0)
+                meridian = (m.group(7) or "").upper()
+                if meridian == "PM" and hour < 12:
+                    hour += 12
+                if meridian == "AM" and hour == 12:
+                    hour = 0
+                return datetime(int(m.group(3)), mes, int(m.group(1)), hour, minute, second)
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
+            try:
+                return datetime.strptime(normalized, fmt)
+            except ValueError:
+                continue
+        logger.debug("HARVESTSYNC fecha no parseable: %s", text)
+        return None
+
+    @staticmethod
+    def expandir_grupo_calibre_harvestsync(texto: Any) -> list[str]:
+        raw = str(texto or "").strip()
+        if not raw or raw.upper().replace(" ", "") in {"FUERACAL", "FUERACALIBRE"}:
+            return []
+        nums = PlanningRepository.normalizar_calibre_a_set(raw)
+        return [f"CAL {n}" for n in sorted(nums, key=lambda x: int(x) if str(x).isdigit() else 9999)]
 
     @staticmethod
     def _harvestsync_get_field(data: dict[str, Any], name: str) -> Any:
@@ -852,9 +922,9 @@ class PlanningRepository:
         cultivo_norm = str(cultivo or "").strip().upper()
         if not cultivo_norm:
             return []
-        cache_key = (collection, cultivo_norm)
-        if cache_key in self._harvestsync_template_cache:
-            return self._harvestsync_template_cache[cache_key]
+        cache = self._harvestsync_plantillas_calibre if collection == "PlantillasCalibre" else self._harvestsync_plantillas_aprovechamiento
+        if cultivo_norm in cache:
+            return cache[cultivo_norm]
         client = self._get_harvestsync_client()
         if client is None:
             return []
@@ -866,10 +936,18 @@ class PlanningRepository:
                 values = [str(v).strip() for v in campo.values() if str(v).strip()]
             else:
                 values = [str(v).strip() for v in campo if str(v).strip()]
+            logger.info(
+                "HARVESTSYNC plantilla %s cultivo=%s campos=%s",
+                "calibre" if collection == "PlantillasCalibre" else "aprovechamiento",
+                cultivo_norm,
+                len(values),
+            )
         except Exception as exc:
             logger.warning("HARVESTSYNC no pudo leer plantilla %s/%s: %s", collection, cultivo_norm, exc)
             values = []
-        self._harvestsync_template_cache[cache_key] = values
+        if not values:
+            logger.warning("HarvestSync sin plantilla calibre/aprovechamiento para cultivo=%s", cultivo_norm)
+        cache[cultivo_norm] = values
         return values
 
     def _get_harvestsync_aprovechamiento_por_partida(self, partida: dict[str, Any]) -> list[dict[str, Any]]:
@@ -893,16 +971,16 @@ class PlanningRepository:
             query = client.collection("Muestras").where("Boleta", "==", boleta).where("CULTIVO", "==", cultivo)
             for snap in query.stream():
                 data = snap.to_dict() or {}
-                f_muestra = self._parse_date(data.get("FCarga") or data.get("FechaCarga") or data.get("fecha_carga"))
+                f_muestra = self._parse_firestore_fecha(data.get("FechaHora"))
                 if f_muestra and desde <= f_muestra.date() <= hasta:
                     muestras.append(data)
         except Exception as exc:
             logger.warning("HARVESTSYNC error consultando muestras boleta=%s: %s", boleta, exc)
             self._harvestsync_cache[cache_key] = []
             return []
-        logger.info("HARVESTSYNC muestras encontradas boleta=%s cultivo=%s desde=%s hasta=%s n=%s", boleta, cultivo, desde, hasta, len(muestras))
+        logger.info("HARVESTSYNC muestras boleta=%s cultivo=%s desde=%s hasta=%s n=%s", boleta, cultivo, desde, hasta, len(muestras))
         if not muestras:
-            logger.info("HARVESTSYNC sin muestras boleta=%s", boleta)
+            logger.info("HARVESTSYNC sin muestras boleta=%s cultivo=%s", boleta, cultivo)
             self._harvestsync_cache[cache_key] = []
             return []
         campos_aprov = self._get_harvestsync_template("PlantillasAprovechamiento", cultivo)
@@ -915,25 +993,19 @@ class PlanningRepository:
         industria = avg_aprov.get("Industria", 0.0)
         fruta_comercial = max(0.0, 100.0 - float(destrio or 0) - float(industria or 0))
         avg_cal = {c: sum(normalizar_numero(self._harvestsync_get_field(m, c)) for m in muestras) / len(muestras) for c in campos_calibre}
-        total_cal = sum(v for v in avg_cal.values() if v > 0)
+        total_cal = sum(v for c, v in avg_cal.items() if v > 0 and self.expandir_grupo_calibre_harvestsync(c))
         if fruta_comercial <= 0 or total_cal <= 0:
             self._harvestsync_cache[cache_key] = []
             return []
-        categoria_campos = [c for c in campos_aprov if str(c).strip().upper() not in {"DESTRIO", "DESTRÍO", "INDUSTRIA"}]
-        total_categoria = sum(max(avg_aprov.get(c, 0.0), 0.0) for c in categoria_campos)
-        categoria_shares = (
-            {c: max(avg_aprov.get(c, 0.0), 0.0) / total_categoria for c in categoria_campos if max(avg_aprov.get(c, 0.0), 0.0) > 0}
-            if total_categoria > 0
-            else {"Categoria I": 1.0}
-        )
         rows: list[dict[str, Any]] = []
         for grupo, valor in avg_cal.items():
+            calibres = self.expandir_grupo_calibre_harvestsync(grupo)
+            if not calibres:
+                continue
             pct_grupo = fruta_comercial * max(valor, 0.0) / total_cal
-            calibres = self._expandir_calibre_loteado(grupo)
             for calibre, pct_puro in self._repartir_kg_loteado_por_calibres(pct_grupo, calibres).items():
-                for categoria, share in categoria_shares.items():
-                    rows.append({"Origen": "HARVESTSYNC", "Calibre": calibre, "Categoría": categoria, "% aprovechamiento": round(pct_puro * share, 4), "Origen aprovechamiento": "HARVESTSYNC", "Aviso": f"Aprovechamiento HarvestSync boleta {boleta}".strip(), "Explicación": "Distribución HarvestSync sobre fruta comercial (100 - Destrio - Industria)"})
-        logger.info("HARVESTSYNC aprovechamiento aplicado boleta=%s pct_comercial=%s", boleta, round(fruta_comercial, 4))
+                rows.append({"Origen": "CAMPO_ESTIMADO_HARVESTSYNC", "Calibre": calibre, "Categoría": "NORMAL", "% aprovechamiento": round(pct_puro, 4), "Origen aprovechamiento": "HARVESTSYNC", "Aviso": f"Aprovechamiento HarvestSync boleta {boleta}".strip(), "Explicación": "Estimación media HarvestSync últimos 3 días"})
+        logger.info("HARVESTSYNC aplicado boleta=%s fruta_comercial=%s calibres=%s", boleta, round(fruta_comercial, 4), len(rows))
         self._harvestsync_cache[cache_key] = rows
         return [dict(r) for r in rows]
 
