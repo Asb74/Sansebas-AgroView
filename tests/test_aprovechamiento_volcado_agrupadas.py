@@ -31,7 +31,7 @@ def test_partidas_agrupadas_volcado_usa_partidas_y_trazabilidad_pesosfres(tmp_pa
             "INSERT INTO PesosFres VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
                 ("P1", "NO_USAR", "2052", "1234", "CANO MANZANARES, LUIS", "2026-06-13", "24"),
-                ("A1", "NO_USAR", "2053", "1235", "AGRICULTOR A", "13/06/2026", "24"),
+                (" a 1 ", "NO_USAR", "2053", "1235", "AGRICULTOR A", "13/06/2026", "24"),
                 ("A2", "NO_USAR", "2054", "1236", "AGRICULTOR B", "2026-06-14", "25"),
             ],
         )
