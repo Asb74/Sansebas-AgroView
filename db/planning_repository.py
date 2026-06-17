@@ -1004,7 +1004,7 @@ class PlanningRepository:
                 continue
             pct_grupo = fruta_comercial * max(valor, 0.0) / total_cal
             for calibre, pct_puro in self._repartir_kg_loteado_por_calibres(pct_grupo, calibres).items():
-                rows.append({"Origen": "CAMPO_ESTIMADO_HARVESTSYNC", "Calibre": calibre, "Categoría": "NORMAL", "% aprovechamiento": round(pct_puro, 4), "Origen aprovechamiento": "HARVESTSYNC", "Aviso": f"Aprovechamiento HarvestSync boleta {boleta}".strip(), "Explicación": "Estimación media HarvestSync últimos 3 días"})
+                rows.append({"Origen": "CAMPO_ESTIMADO_HARVESTSYNC", "Calibre": calibre, "Categoría": "NORMAL", "% aprovechamiento": round(pct_puro, 4), "Destrío %": round(float(destrio or 0), 4), "Industria %": round(float(industria or 0), 4), "Origen aprovechamiento": "HARVESTSYNC", "Aviso": f"Aprovechamiento HarvestSync boleta {boleta}".strip(), "Explicación": "Estimación media HarvestSync últimos 3 días"})
         logger.info("HARVESTSYNC aplicado boleta=%s fruta_comercial=%s calibres=%s", boleta, round(fruta_comercial, 4), len(rows))
         self._harvestsync_cache[cache_key] = rows
         return [dict(r) for r in rows]
@@ -1813,6 +1813,7 @@ class PlanningRepository:
             logger.info("APROVECHAMIENTO partida key=%s estado=%s calibres=%s kg_estimados=%s", partida_key, estado, n_cal, kg_est)
             resumen[partida_key] = {"Estado aprovechamiento": estado, "Nº calibres aprovechamiento": n_cal, "Kg estimados calculados": kg_est}
             detalle[boleta] = by_boleta.get(boleta, [])
+            detalle["PARTIDA|" + "|".join(map(str, partida_key))] = rows
         return resumen, detalle
 
 
@@ -2132,7 +2133,8 @@ class PlanningRepository:
             if "MVariedad" not in eepl_tables:
                 logger.warning("No existe tabla MVariedad en DBEEPPL.sqlite")
             query = """
-                SELECT p.CULTIVO as Cultivo, p."CAMPAÑA" as Campana, p.Fcarga as FechaCarga,
+                SELECT p.AlbaranDef as IdPartida, p.IdSocio as IdSocio,
+                       p.CULTIVO as Cultivo, p."CAMPAÑA" as Campana, p.Fcarga as FechaCarga,
                        p.Socio, p.Variedad, p.Boleta, p.Plataforma, p.EMPRESA as Empresa,
                        p.Restricciones, m.Valor as Color, p.Neto, p.NetoPartida,
                        TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')) AS GrupoVarietal
@@ -2179,6 +2181,8 @@ class PlanningRepository:
             data.append(
                 {
                     "Cultivo": r.get("Cultivo", ""),
+                    "IdPartida": r.get("IdPartida", ""),
+                    "IdSocio": r.get("IdSocio", ""),
                     "Campaña": r.get("Campana", ""),
                     "Fecha carga": dt.strftime("%Y-%m-%d") if dt else (r.get("FechaCarga") or ""),
                     "Semana": semana,

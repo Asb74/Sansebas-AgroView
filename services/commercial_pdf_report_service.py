@@ -56,6 +56,7 @@ class CommercialPdfReportService:
         pedidos_pendientes_rows: list[dict] | None = None,
         pedidos_previstos_rows: list[dict] | None = None,
         aprovechamiento_volcado: dict[str, Any] | None = None,
+        aprovechamiento_campo_detalle: dict[str, list[dict]] | None = None,
         generated_at: datetime | None = None,
     ) -> Path:
         target = Path(target_path)
@@ -69,6 +70,7 @@ class CommercialPdfReportService:
                 pedidos_pendientes_rows=list(pedidos_pendientes_rows or []),
                 pedidos_previstos_rows=list(pedidos_previstos_rows or []),
                 aprovechamiento_volcado=aprovechamiento_volcado or {},
+                aprovechamiento_campo_detalle=aprovechamiento_campo_detalle or {},
                 generated_at=generated_at or datetime.now(),
             )
             return target
@@ -90,6 +92,7 @@ class CommercialPdfReportService:
         self._add_summary(story, campo, almacen, pendientes, previstos)
         self._add_stock_campo(story, campo)
         self._add_aprovechamientos(story, campo)
+        self._add_aprovechamiento_detalle_partida(story, campo, aprovechamiento_campo_detalle or {})
         self._add_aprovechamiento_volcado(story, aprovechamiento_volcado or {})
         self._add_comparativa_aprovechamientos(story, campo, aprovechamiento_volcado or {})
         self._add_stock_almacen(story, almacen)
@@ -172,6 +175,9 @@ class CommercialPdfReportService:
             "Tipo palet": ("Tipo palet", "TipoPalet", "Tipo Palet", "tipo_palet", "Tipo"),
             "Nombre palet": ("Nombre palet", "NombrePalet", "Nombre Palet", "nombre_palet", "Palet"),
             "Pedido": ("Pedido", "IdPedidoLora"),
+            "IdPartida": ("IdPartida", "AlbaranDef"),
+            "IdSocio": ("IdSocio",),
+            "Nombre socio": ("Nombre socio", "Socio"),
         }
         for key in aliases.get(column, (column,)):
             if key in row:
@@ -359,6 +365,105 @@ class CommercialPdfReportService:
         story.append(self._table(data, col_widths=[8*cm, 4*cm, 5*cm, 3*cm]))
         story.append(PageBreak())
 
+    def _add_aprovechamiento_detalle_partida(self, story: list, stock_rows: list[dict], detalle_map: dict[str, list[dict]]) -> None:
+        story.append(Paragraph("DETALLE APROVECHAMIENTO ESTIMADO POR PARTIDA", self._section))
+        if not stock_rows:
+            story.append(Paragraph("Sin stock campo para detallar aprovechamientos.", self._normal)); story.append(PageBreak()); return
+
+        cal_cols = [f"CAL {i}" for i in range(11)]
+        columns = [
+            "IdPartida", "Boleta", "IdSocio", "Nombre socio", "Fecha carga", "Kg entregado",
+            "Origen", "Destrío %", "Industria %",
+        ] + cal_cols + ["Kg estimados total"]
+        data: list[list[Any]] = [columns]
+        styles: list[tuple[int, str]] = []
+        totals_cal = {str(i): 0.0 for i in range(11)}
+        total_kg_entregado = 0.0
+        total_kg_estimado = 0.0
+        seen: set[tuple[str, str, str, str]] = set()
+
+        for partida in sorted(stock_rows, key=lambda r: (str(self._value(r, "Fecha carga")), str(self._value(r, "Boleta")), str(self._value(r, "IdPartida")))):
+            unique_key = (
+                str(self._value(partida, "IdPartida") or ""),
+                str(self._value(partida, "Boleta") or ""),
+                str(self._value(partida, "Fecha carga") or ""),
+                str(self._value(partida, "Kg campo") or ""),
+            )
+            if unique_key in seen:
+                continue
+            seen.add(unique_key)
+            boleta = str(self._value(partida, "Boleta") or "").strip()
+            rows = list(detalle_map.get(self._detalle_partida_key(partida)) or detalle_map.get(boleta) or [])
+            origen = self._aprovechamiento_origen(rows)
+            kg_by_cal = {str(i): 0.0 for i in range(11)}
+            destrio_vals: list[float] = []
+            industria_vals: list[float] = []
+            for row in rows:
+                cal = self._pure_calibre(row.get("Calibre"))
+                if cal in kg_by_cal:
+                    kg_by_cal[cal] += self._sum([row], "Kg disponibles")
+                if origen == "HARVESTSYNC":
+                    for src, dest in (("Destrío %", destrio_vals), ("Destrio %", destrio_vals), ("Industria %", industria_vals)):
+                        try:
+                            value = float(str(row.get(src, "")).replace(",", "."))
+                            dest.append(value)
+                        except Exception:
+                            pass
+            kg_entregado = self._sum([partida], "Kg campo")
+            kg_estimado = sum(kg_by_cal.values()) if rows else 0.0
+            total_kg_entregado += kg_entregado
+            total_kg_estimado += kg_estimado
+            for cal, kg in kg_by_cal.items():
+                totals_cal[cal] += kg
+            destrio = self._num(sum(destrio_vals) / len(destrio_vals), 2) if origen == "HARVESTSYNC" and destrio_vals else "-"
+            industria = self._num(sum(industria_vals) / len(industria_vals), 2) if origen == "HARVESTSYNC" and industria_vals else "-"
+            data.append([
+                self._format_cell(self._value(partida, "IdPartida"), "IdPartida"),
+                self._format_cell(self._value(partida, "Boleta"), "Boleta"),
+                self._format_cell(self._value(partida, "IdSocio"), "IdSocio"),
+                self._format_cell(self._value(partida, "Nombre socio") or self._value(partida, "Socio"), "Nombre socio"),
+                self._format_cell(self._value(partida, "Fecha carga"), "Fecha carga"),
+                self._num(kg_entregado),
+                origen,
+                destrio,
+                industria,
+            ] + [self._num(kg_by_cal[str(i)]) for i in range(11)] + [self._num(kg_estimado)])
+            styles.append((len(data) - 1, origen))
+
+        data.append(["TOTALES", "", "", "", "", self._num(total_kg_entregado), "", "", ""] + [self._num(totals_cal[str(i)]) for i in range(11)] + [self._num(total_kg_estimado)])
+        story.append(self._table(data, row_styles=styles, col_widths=[
+            1.4*cm, 1.2*cm, 1.2*cm, 2.3*cm, 1.6*cm, 1.6*cm, 2.0*cm, 1.2*cm, 1.2*cm,
+            *([0.9*cm] * 11), 1.8*cm,
+        ]))
+        story.append(PageBreak())
+
+    def _aprovechamiento_origen(self, rows: list[dict]) -> str:
+        if not rows:
+            return "SIN_APROVECHAMIENTO"
+        txt = " ".join(str(r.get("Origen aprovechamiento", r.get("Origen", "")) or "").upper() for r in rows)
+        if "HARVESTSYNC" in txt:
+            return "HARVESTSYNC"
+        if "LOTEADO" in txt:
+            return "LOTEADO"
+        if "PESOSFRES" in txt or "REAL" in txt:
+            return "REAL_PESOSFRES"
+        return str(rows[0].get("Origen aprovechamiento") or rows[0].get("Origen") or "SIN_APROVECHAMIENTO").upper()
+
+    def _detalle_partida_key(self, row: dict) -> str:
+        kg_campo = self._sum([row], "Kg campo")
+        return "PARTIDA|" + "|".join([
+            str(self._value(row, "Boleta") or "").strip(),
+            str(self._value(row, "Fecha carga") or "").strip(),
+            str(self._value(row, "Socio") or "").strip(),
+            str(self._value(row, "Variedad") or "").strip(),
+            str(self._value(row, "Grupo varietal") or "").strip(),
+            str(float(kg_campo)),
+        ])
+
+    def _pure_calibre(self, value: Any) -> str:
+        text = str(value or "").strip().upper().replace("CAL", "").strip()
+        return text if text.isdigit() and 0 <= int(text) <= 10 else ""
+
     def _add_aprovechamiento_volcado(self, story: list, volcado: dict[str, Any]) -> None:
         story.append(Paragraph("APROVECHAMIENTO DE VOLCADO", self._section))
         story.append(Paragraph(f"Periodo de volcado analizado: {volcado.get('periodo_texto') or 'Sin periodo disponible'}", self._normal))
@@ -527,7 +632,11 @@ class CommercialPdfReportService:
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#9DC3E6"))]
             elif first.startswith(("Subtotal", "Total", "TOTAL")):
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#F1F1F1"))]
-        color_map = {"VERDE": "#E2F0D9", "AMARILLO": "#FFF2CC", "ROJO": "#F4CCCC", "GRIS": "#E7E6E6"}
+        color_map = {
+            "VERDE": "#E2F0D9", "AMARILLO": "#FFF2CC", "ROJO": "#F4CCCC", "GRIS": "#E7E6E6",
+            "HARVESTSYNC": "#D9EAF7", "REAL_PESOSFRES": "#E2F0D9", "LOTEADO": "#E7E6E6",
+            "SIN_APROVECHAMIENTO": "#F4CCCC",
+        }
         for row_idx, marker in row_styles or []:
             marker_text = str(marker).upper()
             if marker_text in color_map:
