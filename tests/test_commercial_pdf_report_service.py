@@ -102,3 +102,52 @@ def test_pedidos_incluye_mix_timeline_y_matriz(monkeypatch, tmp_path):
     assert any(t and t[0] == ["Grupo confección", "% palets", "Palets", "Kg pendiente"] for t in captured)
     assert any(t and t[0] == ["Fecha", "Kg teórico", "Kg terminado", "Kg pendiente", "Palets pendientes", "Barra visual"] for t in captured)
     assert any(t and "BLANCA SIN SEMILLAS Palets" in t[0] and "TOTAL Pendiente" in t[0] for t in captured)
+
+@pytest.mark.skipif(not REPORTLAB_AVAILABLE, reason="ReportLab no instalado")
+def test_aprovechamiento_detalle_partida_muestra_toneladas(monkeypatch, tmp_path):
+    captured = []
+    service = CommercialPdfReportService()
+    original = service._table
+
+    def spy(data, *args, **kwargs):
+        captured.append(data)
+        return original(data, *args, **kwargs)
+
+    monkeypatch.setattr(service, "_table", spy)
+    stock_row = {
+        "IdPartida": "P1",
+        "Boleta": "B1",
+        "IdSocio": "S1",
+        "Nombre socio": "Socio Uno",
+        "Fecha carga": "2026-06-17",
+        "Kg campo": 437916,
+    }
+    detalle_key = service._detalle_partida_key(stock_row)
+
+    service.generate(
+        tmp_path / "aprovechamiento_toneladas.pdf",
+        stock_campo_rows=[stock_row],
+        aprovechamiento_campo_detalle={
+            detalle_key: [
+                {"Calibre": "CAL 0", "Kg disponibles": 8648, "Origen aprovechamiento": "HARVESTSYNC", "Destrío %": 5, "Industria %": 2},
+                {"Calibre": "CAL 10", "Kg disponibles": 9220, "Origen aprovechamiento": "HARVESTSYNC", "Destrío %": 5, "Industria %": 2},
+            ]
+        },
+    )
+
+    detalle_tables = [t for t in captured if t and t[0] and t[0][0] == "IdPartida" and "T entregadas" in t[0]]
+    assert detalle_tables
+    table = detalle_tables[0]
+    assert "Kg entregado" not in table[0]
+    assert table[0][5] == "T entregadas"
+    assert table[0][9] == "T CAL 0"
+    assert table[0][19] == "T CAL 10"
+    assert table[0][20] == "T estimadas"
+    assert table[1][5] == "437.9"
+    assert table[1][9] == "8.6"
+    assert table[1][19] == "9.2"
+    assert table[1][20] == "17.9"
+    assert table[-1][5] == "437.9"
+    assert table[-1][9] == "8.6"
+    assert table[-1][19] == "9.2"
+    assert table[-1][20] == "17.9"

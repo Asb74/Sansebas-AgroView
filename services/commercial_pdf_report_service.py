@@ -112,6 +112,12 @@ class CommercialPdfReportService:
         try: return f"{float(str(value).replace(',', '.')):,.{decimals}f}"
         except Exception: return str(value or "")
 
+    def _format_toneladas(self, value: Any) -> str:
+        try:
+            return f"{float(value or 0) / 1000:.1f}"
+        except Exception:
+            return "0.0"
+
     def _sum(self, rows: Iterable[dict], field: str) -> float:
         total = 0.0
         for r in rows:
@@ -370,11 +376,11 @@ class CommercialPdfReportService:
         if not stock_rows:
             story.append(Paragraph("Sin stock campo para detallar aprovechamientos.", self._normal)); story.append(PageBreak()); return
 
-        cal_cols = [f"CAL {i}" for i in range(11)]
+        cal_cols = [f"T CAL {i}" for i in range(11)]
         columns = [
-            "IdPartida", "Boleta", "IdSocio", "Nombre socio", "Fecha carga", "Kg entregado",
+            "IdPartida", "Boleta", "IdSocio", "Nombre socio", "Fecha carga", "T entregadas",
             "Origen", "Destrío %", "Industria %",
-        ] + cal_cols + ["Kg estimados total"]
+        ] + cal_cols + ["T estimadas"]
         data: list[list[Any]] = [columns]
         styles: list[tuple[int, str]] = []
         totals_cal = {str(i): 0.0 for i in range(11)}
@@ -423,14 +429,14 @@ class CommercialPdfReportService:
                 self._format_cell(self._value(partida, "IdSocio"), "IdSocio"),
                 self._format_cell(self._value(partida, "Nombre socio") or self._value(partida, "Socio"), "Nombre socio"),
                 self._format_cell(self._value(partida, "Fecha carga"), "Fecha carga"),
-                self._num(kg_entregado),
+                self._format_toneladas(kg_entregado),
                 origen,
                 destrio,
                 industria,
-            ] + [self._num(kg_by_cal[str(i)]) for i in range(11)] + [self._num(kg_estimado)])
+            ] + [self._format_toneladas(kg_by_cal[str(i)]) for i in range(11)] + [self._format_toneladas(kg_estimado)])
             styles.append((len(data) - 1, origen))
 
-        data.append(["TOTALES", "", "", "", "", self._num(total_kg_entregado), "", "", ""] + [self._num(totals_cal[str(i)]) for i in range(11)] + [self._num(total_kg_estimado)])
+        data.append(["TOTALES", "", "", "", "", self._format_toneladas(total_kg_entregado), "", "", ""] + [self._format_toneladas(totals_cal[str(i)]) for i in range(11)] + [self._format_toneladas(total_kg_estimado)])
         story.append(self._table(data, row_styles=styles, col_widths=[
             1.4*cm, 1.2*cm, 1.2*cm, 2.3*cm, 1.6*cm, 1.6*cm, 2.0*cm, 1.2*cm, 1.2*cm,
             *([0.9*cm] * 11), 1.8*cm,
