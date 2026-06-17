@@ -728,7 +728,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         def load_rows() -> tuple[list[dict], bool]:
             _resumen, detalle_map = self.service.get_aprovechamiento_stock_campo([partida], self._filters_payload())
             rows = detalle_map.get(boleta, [])
-            tiene_real = any(str(r.get("Origen aprovechamiento", "")).upper() in {"REAL", "REAL_PESOSFRES", "LOTEADO"} for r in rows)
+            tiene_real = any(str(r.get("Origen aprovechamiento", "")).upper() in {"REAL", "REAL_PESOSFRES", "LOTEADO", "HARVESTSYNC"} for r in rows)
             return rows, tiene_real
 
         def selected_estimated_id() -> int | None:
@@ -859,7 +859,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             header_lbl.configure(text=(f"Cultivo: {partida.get('Cultivo', '')} | Campaña: {partida.get('Campaña', '')} | Fecha carga: {partida.get('Fecha carga', '')} | "
                                    f"Semana: {partida.get('Semana', '')} | Socio: {partida.get('Socio', '')} | Variedad: {partida.get('Variedad', '')} | "
                                    f"Grupo varietal: {partida.get('Grupo varietal', '')} | Boleta: {partida.get('Boleta', '')} | Kg campo: {float(partida.get('Kg campo', 0) or 0):,.2f} | "
-                                   f"Estado aprovechamiento: {('Real Loteado' if any(str(r.get('Origen aprovechamiento', '')).upper() == 'LOTEADO' for r in current_rows) else ('Real PesosFres' if tiene_real else ('Estimado Manual' if current_rows else 'Sin aprovechamiento')))}"))
+                                   f"Estado aprovechamiento: {('Real Loteado' if any(str(r.get('Origen aprovechamiento', '')).upper() == 'LOTEADO' for r in current_rows) else ('HarvestSync' if any(str(r.get('Origen aprovechamiento', '')).upper() == 'HARVESTSYNC' for r in current_rows) else ('Real PesosFres' if tiene_real else ('Estimado Manual' if current_rows else 'Sin aprovechamiento'))))}"))
             body.configure(text="Vista por partida" if view_mode.get() == "partida" else "Vista aprovechamiento medio")
             if tiene_real:
                 msg.configure(text="El aprovechamiento real tiene prioridad")
@@ -875,11 +875,11 @@ class PlanificacionDiariaScreen(ttk.Frame):
                     "Boleta": boleta,
                     "Calibre": r.get("Calibre", ""),
                     "Categoría": r.get("Categoría", ""),
-                    "Kg real": kg if origen in {"REAL", "REAL_PESOSFRES", "LOTEADO"} else 0,
+                    "Kg real": kg if origen in {"REAL", "REAL_PESOSFRES", "LOTEADO", "HARVESTSYNC"} else 0,
                     "% aprovechamiento": r.get("% aprovechamiento", 0),
                     "Kg campo aplicado": r.get("Kg campo origen", 0),
                     "Kg estimado": kg,
-                    "Origen": origen if origen in {"REAL", "REAL_PESOSFRES", "LOTEADO"} else "ESTIMADO_MANUAL",
+                    "Origen": origen if origen in {"REAL", "REAL_PESOSFRES", "LOTEADO", "HARVESTSYNC"} else "ESTIMADO_MANUAL",
                     "Explicación": r.get("Explicación", ""),
                 })
             tbl.set_rows(rows)
@@ -1129,6 +1129,25 @@ class PlanificacionDiariaScreen(ttk.Frame):
         else:
             subprocess.call(["xdg-open", path_str])
 
+    def _diagnostico_aprovechamiento_campo_rows(self, payload: dict) -> list[dict]:
+        _resumen, detalle_map = self.service.get_aprovechamiento_stock_campo(self.stock_campo_rows, payload)
+        rows: list[dict] = []
+        for detalle_rows in detalle_map.values():
+            for r in detalle_rows:
+                rows.append({
+                    "Boleta": r.get("Boleta", ""),
+                    "Cultivo": r.get("Cultivo", ""),
+                    "Campaña": r.get("Campaña", ""),
+                    "Fecha carga": r.get("Fecha carga", ""),
+                    "Calibre": r.get("Calibre", ""),
+                    "Categoría": r.get("Categoría", ""),
+                    "Kg disponibles": r.get("Kg disponibles", 0),
+                    "% aprovechamiento": r.get("% aprovechamiento", 0),
+                    "Origen aprovechamiento": r.get("Origen aprovechamiento", ""),
+                    "Explicación": r.get("Explicación", ""),
+                })
+        return rows
+
     def export_diagnostico(self) -> None:
         payload = self._filters_payload()
         try:
@@ -1155,6 +1174,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             ("Pedidos_pendientes", pedidos_pendientes, list(self.pedidos_table.columns)),
             ("Pedidos_previstos", self._diagnostico_pedidos_previstos_rows(cap), ["Id previsto", "Estado", "Fecha salida", "Cliente", "Cultivo", "Campaña", "Empresa", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "Confección prevista", "Grupo confección", "Perfil confección", "Kg estimados", "Palets estimados", "Familia productiva", "Línea productiva", "Observaciones"]),
             ("Aprovechamientos_estimados", self.service.get_aprovechamientos_estimados_filtrados(payload, boletas=[r.get("Boleta", "") for r in self.stock_campo_rows]), ["Id", "Boleta", "Campana", "Cultivo", "Variedad", "GrupoVarietal", "Categoria", "Calibre", "KgCampoAplicado", "Porcentaje", "KgEstimado", "Origen", "Activo", "Observaciones", "FechaCreacion", "FechaModificacion"]),
+            ("Aprovechamiento_campo", self._diagnostico_aprovechamiento_campo_rows(payload), ["Boleta", "Cultivo", "Campaña", "Fecha carga", "Calibre", "Categoría", "Kg disponibles", "% aprovechamiento", "Origen aprovechamiento", "Explicación"]),
             ("Filtros_aplicados", self._diagnostico_filter_rows(payload), ["Filtro", "Valor"]),
         ]
         wb = Workbook()
