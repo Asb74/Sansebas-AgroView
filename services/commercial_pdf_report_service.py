@@ -385,8 +385,14 @@ class CommercialPdfReportService:
         ]
         story.append(self._table(grouped_resume))
         if grouped_rows:
-            grouped_cols = ["Partida principal", "Partida incluida", "Kg asociado", "Tipo"]
-            story.append(self._table([grouped_cols] + [[self._format_cell(r.get(c, ""), c) for c in grouped_cols] for r in grouped_rows[:120]], col_widths=[4.2*cm, 4.2*cm, 3.5*cm, 4.2*cm]))
+            grouped_cols = ["Partida principal", "Partida incluida", "Boleta", "Socio", "Nombre socio", "Fecha carga", "Semana", "Kg asociado", "Tipo"]
+            table_rows = [grouped_cols] + [[self._format_cell(r.get(c, ""), c) for c in grouped_cols] for r in grouped_rows[:120]]
+            row_styles = [(idx, "DESTACADO") for idx, r in enumerate(grouped_rows[:120], start=1) if str(r.get("Tipo", "")).startswith("Principal")]
+            story.append(self._table(
+                table_rows,
+                col_widths=[3.0*cm, 3.0*cm, 1.8*cm, 1.8*cm, 4.6*cm, 2.2*cm, 1.5*cm, 2.1*cm, 2.3*cm],
+                row_styles=row_styles,
+            ))
         else:
             story.append(Paragraph("Sin trazabilidad de partidas agrupadas para el periodo y filtros actuales.", self._normal))
         story.append(Spacer(1, 6))

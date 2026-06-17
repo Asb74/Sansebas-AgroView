@@ -1780,6 +1780,26 @@ class PlanningRepository:
                     for r in conn.execute(sql, chunk).fetchall():
                         partidas_by_principal[str(r[idp_col]).strip()] = dict(r)
 
+        def _fecha_pdf(value: Any) -> str:
+            dt = self._parse_date(value)
+            if dt:
+                return dt.strftime("%d/%m/%Y")
+            return str(value or "").strip() or "-"
+
+        def _empty_trace() -> dict[str, Any]:
+            return {
+                "Boleta": "NO ENCONTRADA",
+                "Socio": "NO ENCONTRADO",
+                "Nombre socio": "NO ENCONTRADO",
+                "Fecha carga": "-",
+                "Semana": "-",
+            }
+
+        trazabilidad_por_partida: dict[str, dict[str, Any]] = {}
+        pesosfres_table = self._find_table(conn, ["PesosFres", "pesosfres", "PESOSFRES"])
+        if not pesosfres_table:
+            logger.warning("Tabla PesosFres no encontrada para trazabilidad de partidas agrupadas")
+
         kg_total = 0.0
         for principal in ids:
             partida = partidas_by_principal.get(principal)
@@ -1802,6 +1822,49 @@ class PlanningRepository:
                     "Kg asociado": round(float(_ci_get(partida, f"kg{n}", 0) or 0), 2),
                     "Tipo": "Principal" if n == 0 or incluida == principal else "Agrupada",
                 })
+
+        if pesosfres_table and rows:
+            pf_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{pesosfres_table}")').fetchall()]
+            albaran_col = self._find_column(pf_cols, ["AlbaranDef"])
+            wanted_cols = {
+                "Boleta": self._find_column(pf_cols, ["Boleta"]),
+                "Socio": self._find_column(pf_cols, ["Socio"]),
+                "Nombre socio": self._find_column(pf_cols, ["Nombre socio", "NombreSocio", "Nombre", "NombreSocioAgricultor", "NomSocio"]),
+                "Fecha carga": self._find_column(pf_cols, ["Fcarga", "Fecha carga", "FechaCarga"]),
+                "Semana": self._find_column(pf_cols, ["Apodo"]),
+            }
+            if albaran_col:
+                select_cols = [albaran_col] + [c for c in wanted_cols.values() if c]
+                quoted_cols = ", ".join(f'"{c}"' for c in dict.fromkeys(select_cols))
+                incluidas = sorted({str(r.get("Partida incluida") or "").strip() for r in rows if str(r.get("Partida incluida") or "").strip()})
+                for chunk_start in range(0, len(incluidas), 900):
+                    chunk = incluidas[chunk_start:chunk_start + 900]
+                    ph = ",".join(["?"] * len(chunk))
+                    sql = f'SELECT {quoted_cols} FROM "{pesosfres_table}" WHERE TRIM(CAST("{albaran_col}" AS TEXT)) IN ({ph})'
+                    for pf_row in conn.execute(sql, chunk).fetchall():
+                        partida_key = str(pf_row[albaran_col] or "").strip()
+                        if partida_key in trazabilidad_por_partida:
+                            continue
+                        trazabilidad_por_partida[partida_key] = {
+                            "Boleta": str(pf_row[wanted_cols["Boleta"]] or "").strip() if wanted_cols["Boleta"] else "",
+                            "Socio": str(pf_row[wanted_cols["Socio"]] or "").strip() if wanted_cols["Socio"] else "",
+                            "Nombre socio": str(pf_row[wanted_cols["Nombre socio"]] or "").strip() if wanted_cols["Nombre socio"] else "",
+                            "Fecha carga": _fecha_pdf(pf_row[wanted_cols["Fecha carga"]]) if wanted_cols["Fecha carga"] else "-",
+                            "Semana": str(pf_row[wanted_cols["Semana"]] or "").strip() if wanted_cols["Semana"] else "-",
+                        }
+            else:
+                logger.warning("PesosFres sin columna AlbaranDef para trazabilidad de partidas agrupadas")
+
+        for row in rows:
+            incluida = str(row.get("Partida incluida") or "").strip()
+            trazabilidad = trazabilidad_por_partida.get(incluida)
+            if not trazabilidad:
+                logger.warning("Partida incluida sin coincidencia en PesosFres.AlbaranDef: %s", incluida)
+                trazabilidad = _empty_trace()
+            for key, value in trazabilidad.items():
+                row[key] = value or (_empty_trace()[key] if key in {"Boleta", "Socio", "Nombre socio"} else "-")
+
+        rows.sort(key=lambda r: (str(r.get("Partida principal") or ""), str(r.get("Partida incluida") or "")))
 
         summary = {
             "principales": len(ids),
