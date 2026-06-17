@@ -2112,6 +2112,7 @@ class PlanningRepository:
                 self.enriquecer_pedido_con_confeccion(r, mconfecciones)
                 for r in rows
             ]
+            rows = [r for r in rows if normalizar_numero(r.get("Kg pendiente", 0)) > 0]
             logger.info(
                 "Pedidos pendientes enriquecidos con MConfecciones: %s filas, con grupo: %s",
                 len(rows),
