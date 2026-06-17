@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+import logging
 import re
 import unicodedata
 
@@ -16,6 +17,9 @@ try:
     REPORTLAB_AVAILABLE = True
 except ModuleNotFoundError:  # pragma: no cover - fallback para entornos sin dependencias instaladas
     REPORTLAB_AVAILABLE = False
+
+
+logger = logging.getLogger(__name__)
 
 
 class CommercialPdfReportService:
@@ -51,6 +55,7 @@ class CommercialPdfReportService:
         stock_almacen_rows: list[dict] | None = None,
         pedidos_pendientes_rows: list[dict] | None = None,
         pedidos_previstos_rows: list[dict] | None = None,
+        aprovechamiento_volcado: dict[str, Any] | None = None,
         generated_at: datetime | None = None,
     ) -> Path:
         target = Path(target_path)
@@ -63,6 +68,7 @@ class CommercialPdfReportService:
                 stock_almacen_rows=list(stock_almacen_rows or []),
                 pedidos_pendientes_rows=list(pedidos_pendientes_rows or []),
                 pedidos_previstos_rows=list(pedidos_previstos_rows or []),
+                aprovechamiento_volcado=aprovechamiento_volcado or {},
                 generated_at=generated_at or datetime.now(),
             )
             return target
@@ -84,6 +90,8 @@ class CommercialPdfReportService:
         self._add_summary(story, campo, almacen, pendientes, previstos)
         self._add_stock_campo(story, campo)
         self._add_aprovechamientos(story, campo)
+        self._add_aprovechamiento_volcado(story, aprovechamiento_volcado or {})
+        self._add_comparativa_aprovechamientos(story, campo, aprovechamiento_volcado or {})
         self._add_stock_almacen(story, almacen)
         self._add_pedidos(story, "PEDIDOS PENDIENTES", pendientes, kg_field="Kg pendiente", confeccion_field="Confección", previsto=False)
         self._add_pedidos(story, "PEDIDOS PREVISTOS / NO CONFIRMADOS", previstos, kg_field="Kg estimados", confeccion_field="Confección prevista", previsto=True)
@@ -330,14 +338,68 @@ class CommercialPdfReportService:
         story.append(Paragraph("Matriz operativa por semana, fecha, cliente y grupo varietal", self._normal)); story.append(self._table(data))
 
     def _add_aprovechamientos(self, story: list, rows: list[dict]) -> None:
-        story.append(Paragraph("APROVECHAMIENTOS", self._section))
+        story.append(Paragraph("APROVECHAMIENTO ESTIMADO", self._section))
         if not rows:
             story.append(Paragraph("Sin stock campo para analizar aprovechamientos.", self._normal)); story.append(PageBreak()); return
-        origen_real = [r for r in rows if str(self._value(r, "Origen aprovechamiento") or self._value(r, "Origen") or "").lower().find("real") >= 0]
-        origen_manual = [r for r in rows if str(self._value(r, "Origen aprovechamiento") or self._value(r, "Origen") or "").lower().find("manual") >= 0]
-        sin = [r for r in rows if r not in origen_real and r not in origen_manual]
-        data = [["Bloque", "Nº partidas", "Kg campo afectado"], ["Aprovechamientos reales PesosFres", len(origen_real), self._num(self._sum(origen_real, "Kg campo"))], ["Aprovechamientos estimados manuales", len(origen_manual), self._num(self._sum(origen_manual, "Kg campo"))], ["Sin aprovechamiento", len(sin), self._num(self._sum(sin, "Kg campo"))]]
-        story.append(self._table(data, col_widths=[8*cm, 4*cm, 5*cm]))
+        total = self._sum(rows, "Kg campo")
+        def estado(row: dict) -> str:
+            txt = str(self._value(row, "Estado aprovechamiento") or self._value(row, "Origen aprovechamiento") or self._value(row, "Origen") or "").upper()
+            if "PESOSFRES" in txt or ("REAL" in txt and "LOTEADO" not in txt): return "Real PesosFres"
+            if "LOTEADO" in txt: return "Real Loteado"
+            if "MANUAL" in txt or "ESTIMADO" in txt: return "Estimado manual"
+            return "Sin aprovechamiento"
+        blocks = [("Real PesosFres", []), ("Real Loteado", []), ("Estimado manual", []), ("Sin aprovechamiento", [])]
+        by = {k: v for k, v in blocks}
+        for r in rows: by[estado(r)].append(r)
+        data = [["Bloque", "Nº partidas", "Kg campo afectado", "%"]]
+        for label, part_rows in blocks:
+            kg = self._sum(part_rows, "Kg campo")
+            data.append([label, len(part_rows), self._num(kg), f"{(kg / total * 100 if total else 0):.1f}%"])
+        story.append(self._table(data, col_widths=[8*cm, 4*cm, 5*cm, 3*cm]))
+        story.append(PageBreak())
+
+    def _add_aprovechamiento_volcado(self, story: list, volcado: dict[str, Any]) -> None:
+        story.append(Paragraph("APROVECHAMIENTO DE VOLCADO", self._section))
+        story.append(Paragraph(f"Periodo de volcado analizado: {volcado.get('periodo_texto') or 'Sin periodo disponible'}", self._normal))
+        rows = list(volcado.get("rows") or [])
+        summary = volcado.get("summary") or {}
+        if not rows:
+            story.append(Paragraph("Sin partidas volcadas o sin líneas de loteado para el periodo y filtros actuales.", self._normal)); story.append(PageBreak()); return
+        sem = summary.get("semaforo", "Rojo")
+        resumen = [["Nº partidas volcadas", "Líneas peso real", "Líneas estimadas", "Sin estimación", "Kg reales", "Kg estimados", "Cobertura líneas"], [summary.get("partidas", 0), summary.get("lineas_reales", 0), summary.get("lineas_estimadas", 0), summary.get("sin_estimacion", 0), self._num(summary.get("kg_real", 0)), self._num(summary.get("kg_estimado", 0)), f"{summary.get('cobertura_palets', 0):.1f}% ({sem})"]]
+        story.append(self._table(resumen, row_styles=[(1, str(sem).upper())]))
+        cols = ["Cultivo", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Kg reales", "Kg estimados", "Kg total", "% sobre calculado"]
+        story.append(self._table([cols] + [[self._format_cell(r.get(c, ""), c) for c in cols] for r in rows[:80]]))
+        story.append(Spacer(1, 6))
+        story.append(Paragraph("CALIDAD DE INFORMACIÓN DEL VOLCADO", self._normal))
+        qcols = ["Tipo dato", "Palets/líneas", "Kg", "%"]
+        story.append(self._table([qcols] + [[r.get(c, "") for c in qcols] for r in (volcado.get("quality") or [])], col_widths=[7*cm, 4*cm, 4*cm, 3*cm]))
+        story.append(PageBreak())
+
+    def _add_comparativa_aprovechamientos(self, story: list, campo: list[dict], volcado: dict[str, Any]) -> None:
+        story.append(Paragraph("COMPARATIVA ESTIMADO VS VOLCADO", self._section))
+        est: dict[str, float] = {}
+        for r in campo:
+            cal = str(self._value(r, "Calibre") or "").strip()
+            if not cal: continue
+            kg_est = self._sum([r], "Kg disponibles")
+            if kg_est <= 0:
+                kg_est = self._sum([r], "Kg estimados calculados") or self._sum([r], "Kg campo")
+            est[cal] = est.get(cal, 0.0) + kg_est
+        vol = {str(r.get("Calibre") or ""): float(r.get("Kg total") or 0) for r in (volcado.get("rows") or [])}
+        total_est = sum(est.values()); total_vol = sum(vol.values())
+        data = [["Calibre", "% estimado", "% volcado", "Diferencia p.p.", "Lectura"]]
+        for cal in sorted(set(est) | set(vol)):
+            pe = est.get(cal, 0) / total_est * 100 if total_est else 0
+            pv = vol.get(cal, 0) / total_vol * 100 if total_vol else 0
+            diff = pv - pe
+            lectura = "Volcado superior" if diff > 5 else "Volcado inferior" if diff < -5 else "Similar"
+            data.append([cal, f"{pe:.1f}%", f"{pv:.1f}%", f"{diff:+.1f}", lectura])
+        logger.info("INFORME PDF comparativa calibres=%s", max(0, len(data) - 1))
+        if len(data) == 1:
+            story.append(Paragraph("Sin calibres suficientes para comparar estimado y volcado.", self._normal))
+        else:
+            story.append(self._table(data, col_widths=[4*cm, 4*cm, 4*cm, 4*cm, 6*cm]))
         story.append(PageBreak())
 
     def _add_agenda(self, story: list, rows: list[dict], selected_cultivos: set[str] | None = None) -> None:
@@ -428,7 +490,16 @@ class CommercialPdfReportService:
         style = [("GRID", (0,0), (-1,-1), 0.25, colors.lightgrey), ("VALIGN", (0,0), (-1,-1), "TOP"), ("LEFTPADDING", (0,0), (-1,-1), 2), ("RIGHTPADDING", (0,0), (-1,-1), 2)]
         if header: style += [("BACKGROUND", (0,0), (-1,0), colors.HexColor("#D9EAF7")), ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold")]
         for i, row in enumerate(data):
-            if row and str(row[0]).startswith(("Subtotal", "Total", "TOTAL")):
+            first = str(row[0]) if row else ""
+            if first.startswith("Subtotal confección"):
+                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#F1F1F1"))]
+            elif first.startswith("Subtotal marca"):
+                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#EAF3F8"))]
+            elif first.startswith("Total grupo varietal"):
+                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#D9EAF7"))]
+            elif first.startswith("TOTAL ALMACÉN"):
+                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#9DC3E6"))]
+            elif first.startswith(("Subtotal", "Total", "TOTAL")):
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#F1F1F1"))]
         color_map = {"VERDE": "#E2F0D9", "AMARILLO": "#FFF2CC", "ROJO": "#F4CCCC", "GRIS": "#E7E6E6"}
         for row_idx, marker in row_styles or []:

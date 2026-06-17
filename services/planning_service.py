@@ -27,6 +27,9 @@ class PlanningService:
     def load_stock_almacen_detalle_palets(self, filters: dict) -> list[dict]:
         return self.repo.get_stock_almacen_detalle_palets(filters)
 
+    def load_aprovechamiento_volcado(self, filters: dict, today=None) -> dict:
+        return self.repo.get_aprovechamiento_volcado(filters, today=today)
+
     def load_pedidos_pendientes(self, filters: dict, modo_pedidos: str = "10_dias") -> tuple[list[dict], dict]:
         return self.repo.get_pedidos_pendientes(filters, modo_pedidos=modo_pedidos)
 
