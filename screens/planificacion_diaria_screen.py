@@ -1036,12 +1036,13 @@ class PlanificacionDiariaScreen(ttk.Frame):
         payload["pedidos_modo_label"] = self._pedidos_mode_label(self.pedidos_modo_var.get())
         return payload
 
-    def _ensure_commercial_pdf_rows_loaded(self) -> tuple[list[dict], list[dict], list[dict], list[dict], dict]:
+    def _ensure_commercial_pdf_rows_loaded(self) -> tuple[list[dict], list[dict], list[dict], list[dict], dict, dict]:
         payload = self._filters_payload()
         stock_campo_rows: list[dict] = []
         stock_almacen_rows: list[dict] = []
         pedidos_pendientes_rows: list[dict] = []
         aprovechamiento_volcado: dict = {}
+        aprovechamiento_campo_detalle: dict = {}
         try:
             stock_campo_rows, _updated, _warning = self.service.load_stock_campo(payload)
         except Exception:
@@ -1060,8 +1061,13 @@ class PlanificacionDiariaScreen(ttk.Frame):
             aprovechamiento_volcado = self.service.load_aprovechamiento_volcado(payload, today=datetime.now())
         except Exception:
             logging.getLogger(__name__).exception("No se pudo asegurar aprovechamiento de volcado para PDF comercial")
+        try:
+            _resumen_aprov, aprovechamiento_campo_detalle = self.service.get_aprovechamiento_stock_campo(stock_campo_rows, payload)
+        except Exception:
+            logging.getLogger(__name__).exception("No se pudo asegurar detalle de aprovechamiento campo para PDF comercial")
+            aprovechamiento_campo_detalle = {}
         pedidos_previstos_rows = self._rows_from_table(self.pedidos_previstos_panel["table"]) if self.pedidos_previstos_panel else []
-        return stock_campo_rows, stock_almacen_rows, pedidos_pendientes_rows, pedidos_previstos_rows, aprovechamiento_volcado
+        return stock_campo_rows, stock_almacen_rows, pedidos_pendientes_rows, pedidos_previstos_rows, aprovechamiento_volcado, aprovechamiento_campo_detalle
 
     def export_informe_comercial_pdf(self) -> None:
         generated_at = datetime.now()
@@ -1090,7 +1096,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             target = temp_dir / suggested_filename
 
         try:
-            stock_campo, stock_almacen, pedidos_pendientes, pedidos_previstos, aprovechamiento_volcado = self._ensure_commercial_pdf_rows_loaded()
+            stock_campo, stock_almacen, pedidos_pendientes, pedidos_previstos, aprovechamiento_volcado, aprovechamiento_campo_detalle = self._ensure_commercial_pdf_rows_loaded()
         except Exception as exc:
             messagebox.showerror("Informe comercial PDF", f"No se pudieron preparar los datos del informe: {exc}", parent=self)
             return
@@ -1103,6 +1109,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 pedidos_pendientes_rows=[dict(r) for r in pedidos_pendientes],
                 pedidos_previstos_rows=[dict(r) for r in pedidos_previstos],
                 aprovechamiento_volcado=aprovechamiento_volcado,
+                aprovechamiento_campo_detalle={k: [dict(r) for r in v] for k, v in aprovechamiento_campo_detalle.items()},
                 generated_at=generated_at,
             )
             self._open_pdf_preview(path)
