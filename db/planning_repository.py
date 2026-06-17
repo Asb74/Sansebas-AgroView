@@ -1831,9 +1831,9 @@ class PlanningRepository:
             albaran_col = self._find_column(pf_cols, ["AlbaranDef"])
             wanted_cols = {
                 "Boleta": self._find_column(pf_cols, ["Boleta"]),
-                "Socio": self._find_column(pf_cols, ["Socio"]),
-                "Nombre socio": self._find_column(pf_cols, ["Nombre socio", "NombreSocio", "Nombre", "NombreSocioAgricultor", "NomSocio"]),
-                "Fecha carga": self._find_column(pf_cols, ["Fcarga", "Fecha carga", "FechaCarga"]),
+                "Socio": self._find_column(pf_cols, ["IdSocio"]),
+                "Nombre socio": self._find_column(pf_cols, ["Socio"]),
+                "Fecha carga": self._find_column(pf_cols, ["FCarga", "Fcarga", "Fecha carga", "FechaCarga"]),
                 "Semana": self._find_column(pf_cols, ["Apodo"]),
             }
             if albaran_col:
