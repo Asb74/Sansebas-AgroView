@@ -55,17 +55,19 @@ class CommercialPdfReportService:
 
         campo = list(stock_campo_rows or [])
         almacen = list(stock_almacen_rows or [])
-        pendientes = list(pedidos_pendientes_rows or [])
+        active_filters = filters or {}
+        selected_cultivos = self._selected_filter_values(active_filters.get("cultivo"))
+        pendientes = self._filter_pending_rows(list(pedidos_pendientes_rows or []), selected_cultivos)
         previstos = list(pedidos_previstos_rows or [])
         story: list[Any] = []
-        self._add_header(story, filters or {}, generated_at or datetime.now())
+        self._add_header(story, active_filters, generated_at or datetime.now())
         self._add_summary(story, campo, almacen, pendientes, previstos)
         self._add_stock_campo(story, campo)
         self._add_aprovechamientos(story, campo)
         self._add_stock_almacen(story, almacen)
         self._add_pedidos(story, "PEDIDOS PENDIENTES", pendientes, kg_field="Kg pendiente", confeccion_field="Confección", previsto=False)
         self._add_pedidos(story, "PEDIDOS PREVISTOS / NO CONFIRMADOS", previstos, kg_field="Kg estimados", confeccion_field="Confección prevista", previsto=True)
-        self._add_agenda(story, pendientes)
+        self._add_agenda(story, pendientes, selected_cultivos)
         self._add_alertas(story, campo, almacen, pendientes, previstos)
         self._add_capacidad(story)
         doc = SimpleDocTemplate(str(target), pagesize=landscape(A4), leftMargin=0.7*cm, rightMargin=0.7*cm, topMargin=0.7*cm, bottomMargin=0.7*cm)
@@ -89,6 +91,20 @@ class CommercialPdfReportService:
     def _filter_text(self, value: Any) -> str:
         if isinstance(value, list): return ", ".join(map(str, value)) if value else "TODOS"
         return str(value or "TODOS")
+
+    def _selected_filter_values(self, value: Any) -> set[str]:
+        values = value if isinstance(value, (list, tuple, set)) else [value]
+        return {str(v or "").strip().upper() for v in values if str(v or "").strip() and str(v or "").strip().upper() != "TODOS"}
+
+    def _filter_pending_rows(self, rows: list[dict], selected_cultivos: set[str] | None = None) -> list[dict]:
+        filtered: list[dict] = []
+        for row in rows:
+            if self._sum([row], "Kg pendiente") <= 0:
+                continue
+            if selected_cultivos and str(self._value(row, "Cultivo") or "").strip().upper() not in selected_cultivos:
+                continue
+            filtered.append(row)
+        return filtered
 
     def _add_header(self, story: list, filters: dict, generated_at: datetime) -> None:
         story.append(Paragraph("INFORME OPERATIVO DIARIO", self._title))
@@ -245,7 +261,7 @@ class CommercialPdfReportService:
     def _add_pedidos(self, story: list, title: str, rows: list[dict], *, kg_field: str, confeccion_field: str, previsto: bool) -> None:
         story.append(Paragraph(title, self._section))
         if not rows:
-            msg = "Sin pedidos previstos para los filtros actuales." if previsto else "Sin datos para los filtros actuales."
+            msg = "Sin pedidos previstos para los filtros actuales." if previsto else "No hay pedidos pendientes para el cultivo seleccionado."
             story.append(Paragraph(msg, self._normal)); story.append(PageBreak()); return
         pedido_kg = "Kg estimados" if previsto else "Kg pedido teórico"
         palets = "Palets estimados" if previsto else "Palets pendientes"
@@ -304,21 +320,24 @@ class CommercialPdfReportService:
         story.append(self._table(data, col_widths=[8*cm, 4*cm, 5*cm]))
         story.append(PageBreak())
 
-    def _add_agenda(self, story: list, rows: list[dict]) -> None:
+    def _add_agenda(self, story: list, rows: list[dict], selected_cultivos: set[str] | None = None) -> None:
         story.append(Paragraph("AGENDA DE PRODUCCIÓN", self._section))
         if not rows:
             story.append(Paragraph("Sin pedidos pendientes para agenda de producción.", self._normal)); story.append(PageBreak()); return
-        columns = ["Fecha salida", "Cliente", "Pedido", "Grupo confección", "Grupo varietal", "Kg pendiente", "Palets pendientes"]
+        columns = ["Fecha salida", "Cliente", "Pedido", "Cultivo", "Grupo confección", "Grupo varietal", "Kg pendiente", "Palets pendientes"]
         for optional in ("Prioridad", "Estado"):
             if self._has_any_value(rows, optional):
                 columns.append(optional)
         data = [columns + ["Semáforo"]]
         today = datetime.now().date()
+        styles = []
         for r in sorted(rows, key=lambda x: (str(self._value(x, "Fecha salida")), -self._sum([x], "Kg pendiente"))):
             kg = self._sum([r], "Kg pendiente")
             sem = "Verde" if kg <= 0 else "Rojo" if self._parse_date(self._value(r, "Fecha salida")) == today else "Amarillo" if self._parse_date(self._value(r, "Fecha salida")) == today + timedelta(days=1) else "Pendiente"
             data.append([self._format_cell(self._value(r, c), c) for c in columns] + [sem])
-        story.append(self._table(data))
+            if selected_cultivos and str(self._value(r, "Cultivo") or "").strip().upper() in selected_cultivos:
+                styles.append((len(data) - 1, "DESTACADO"))
+        story.append(self._table(data, row_styles=styles))
         story.append(PageBreak())
 
     def _add_alertas(self, story: list, campo: list[dict], almacen: list[dict], pendientes: list[dict], previstos: list[dict]) -> None:
@@ -396,6 +415,9 @@ class CommercialPdfReportService:
             marker_text = str(marker).upper()
             if marker_text in color_map:
                 style.append(("BACKGROUND", (0, row_idx), (-1, row_idx), colors.HexColor(color_map[marker_text])))
+            elif marker_text == "DESTACADO":
+                style.append(("FONTNAME", (0, row_idx), (-1, row_idx), "Helvetica-Bold"))
+                style.append(("BACKGROUND", (0, row_idx), (-1, row_idx), colors.HexColor("#EAF3F8")))
             elif marker_text in {"socio", "variedad", "cultivo", "general"}:
                 style.append(("FONTNAME", (0, row_idx), (-1, row_idx), "Helvetica-Bold"))
                 style.append(("BACKGROUND", (0, row_idx), (-1, row_idx), colors.HexColor("#F1F1F1")))
@@ -411,11 +433,13 @@ class CommercialPdfReportService:
             f"Cultivo: {self._filter_text(filters.get('cultivo'))}",
             f"Empresa: {self._filter_text(filters.get('empresa'))}",
         ]
+        selected_cultivos = self._selected_filter_values(filters.get("cultivo"))
+        pending_rows = self._filter_pending_rows(kwargs.get("pedidos_pendientes_rows", []), selected_cultivos)
         sections = [
             ("RESUMEN EJECUTIVO", []),
             ("STOCK CAMPO", kwargs.get("stock_campo_rows", [])),
             ("STOCK ALMACÉN", kwargs.get("stock_almacen_rows", [])),
-            ("PEDIDOS PENDIENTES", kwargs.get("pedidos_pendientes_rows", [])),
+            ("PEDIDOS PENDIENTES", pending_rows),
             ("PEDIDOS PREVISTOS / NO CONFIRMADOS", kwargs.get("pedidos_previstos_rows", [])),
         ]
         for title, rows in sections:
@@ -425,7 +449,7 @@ class CommercialPdfReportService:
                 for row in rows[:40]:
                     lines.append(" | ".join(f"{k}: {v}" for k, v in row.items() if not str(k).startswith("__"))[:150])
             else:
-                lines.append("Sin datos para los filtros actuales.")
+                lines.append("No hay pedidos pendientes para el cultivo seleccionado." if title == "PEDIDOS PENDIENTES" else "Sin datos para los filtros actuales.")
         content_lines = []
         y = 560
         for line in lines:

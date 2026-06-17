@@ -1037,25 +1037,26 @@ class PlanificacionDiariaScreen(ttk.Frame):
         return payload
 
     def _ensure_commercial_pdf_rows_loaded(self) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
-        if not self.stock_campo_rows:
-            try:
-                self.stock_campo_rows, _updated, _warning = self.service.load_stock_campo(self._filters_payload())
-            except Exception:
-                logging.getLogger(__name__).exception("No se pudo asegurar stock campo para PDF comercial")
-        if not self.stock_almacen_rows:
-            try:
-                self.stock_almacen_rows, _warning = self.service.load_stock_almacen(self._filters_payload())
-            except Exception:
-                logging.getLogger(__name__).exception("No se pudo asegurar stock almacén para PDF comercial")
-        if not self.pedidos_pendientes_rows:
-            try:
-                pedidos_rows, pedidos_kpi = self.service.load_pedidos_pendientes(self._filters_payload(), self.pedidos_modo_var.get())
-                self._refresh_pedidos_local_filter_options(pedidos_rows)
-                self.pedidos_pendientes_rows, _ = self._apply_pedidos_local_filters(pedidos_rows, pedidos_kpi)
-            except Exception:
-                logging.getLogger(__name__).exception("No se pudo asegurar pedidos pendientes para PDF comercial")
+        payload = self._filters_payload()
+        stock_campo_rows: list[dict] = []
+        stock_almacen_rows: list[dict] = []
+        pedidos_pendientes_rows: list[dict] = []
+        try:
+            stock_campo_rows, _updated, _warning = self.service.load_stock_campo(payload)
+        except Exception:
+            logging.getLogger(__name__).exception("No se pudo asegurar stock campo para PDF comercial")
+        try:
+            stock_almacen_rows, _warning = self.service.load_stock_almacen(payload)
+        except Exception:
+            logging.getLogger(__name__).exception("No se pudo asegurar stock almacén para PDF comercial")
+        try:
+            pedidos_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, self.pedidos_modo_var.get())
+            self._refresh_pedidos_local_filter_options(pedidos_rows)
+            pedidos_pendientes_rows, _ = self._apply_pedidos_local_filters(pedidos_rows, pedidos_kpi)
+        except Exception:
+            logging.getLogger(__name__).exception("No se pudo asegurar pedidos pendientes para PDF comercial")
         pedidos_previstos_rows = self._rows_from_table(self.pedidos_previstos_panel["table"]) if self.pedidos_previstos_panel else []
-        return self.stock_campo_rows, self.stock_almacen_rows, self.pedidos_pendientes_rows, pedidos_previstos_rows
+        return stock_campo_rows, stock_almacen_rows, pedidos_pendientes_rows, pedidos_previstos_rows
 
     def export_informe_comercial_pdf(self) -> None:
         try:
