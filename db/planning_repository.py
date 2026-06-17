@@ -2148,6 +2148,7 @@ class PlanningRepository:
                 "CAST(REPLACE(COALESCE(p.KgAprox,0), ',', '.') AS REAL) > 0",
             ]
             params: list[Any] = []
+            until_date = today_date + timedelta(days=6)
             for field, col in (("var_coop", "p.Variedad"),):
                 values = self._normalize_filter_values(filters.get(field))
                 if values:
@@ -2180,13 +2181,15 @@ class PlanningRepository:
             select_group = ""
             if has_mvariedad:
                 select_group = ", (SELECT TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')) FROM dbeepl.MVariedad mv WHERE UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(p.Variedad)) LIMIT 1) AS GrupoVarietal"
+                if "Cultivo" not in cols and "CULTIVO" not in cols:
+                    select_group += ", (SELECT TRIM(mv.CULTIVO) FROM dbeepl.MVariedad mv WHERE UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(p.Variedad)) LIMIT 1) AS Cultivo"
             sql = f'SELECT p.*{select_group} FROM "{table}" p WHERE {' AND '.join(where)}'
             raw_rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
 
         rows: list[dict[str, Any]] = []
         for row in raw_rows:
             dt = self._parse_date(row.get("FechaR"))
-            if not dt or dt.date() < today_date or dt.strftime("%d/%m/%Y") == "31/12/1899":
+            if not dt or dt.date() < today_date or dt.date() > until_date or dt.strftime("%d/%m/%Y") == "31/12/1899":
                 continue
             kg = normalizar_numero(str(row.get("KgAprox") or "0").replace(",", "."))
             if kg <= 0:
@@ -2197,9 +2200,14 @@ class PlanningRepository:
             out["KgAprox"] = kg
             out["Matricula"] = out.get("Matricual") or out.get("Matricula") or out.get("Matrícula") or ""
             rows.append(out)
+        total_kg = round(sum(float(r.get("KgAprox") or 0) for r in rows), 2)
         logger.info("[PDF] Registros encontrados: %s", len(rows))
         logger.info("[PDF] Días encontrados: %s", len({r.get("FechaR_date") for r in rows}))
-        logger.info("[PDF] Kg previstos totales: %s", round(sum(float(r.get("KgAprox") or 0) for r in rows), 2))
+        logger.info("[PDF] Kg previstos totales: %s", total_kg)
+        logger.info("[PDF] Previsión semanal registros=%s", len(rows))
+        logger.info("[PDF] Previsión semanal filas=%s", len({(str(r.get("Socio") or ""), str(r.get("Cultivo") or ""), str(r.get("Variedad") or "")) for r in rows}))
+        logger.info("[PDF] Previsión semanal kg_total=%s", total_kg)
+        logger.info("[PDF] Previsión semanal desde=%s hasta=%s", today_date.isoformat(), until_date.isoformat())
         logger.info("[PDF] Tiempo de generación: %.3fs", time.perf_counter() - start)
         return rows
 

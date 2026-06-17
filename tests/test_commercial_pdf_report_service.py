@@ -95,12 +95,12 @@ def test_pedidos_incluye_mix_timeline_y_matriz(monkeypatch, tmp_path):
     service.generate(
         tmp_path / "pendientes_matriz.pdf",
         pedidos_pendientes_rows=[
-            {"Semana": "24", "Fecha salida": "2026-06-16", "Cliente": "Cliente A", "Grupo confección": "ENCAJADO", "Grupo varietal": "BLANCA SIN SEMILLAS", "Kg pedido teórico": 1000, "Kg hecho real": 200, "Kg pendiente": 800, "Palets pendientes": 4},
-            {"Semana": "24", "Fecha salida": "2026-06-16", "Cliente": "Cliente A", "Grupo confección": "GRANEL", "Grupo varietal": "NEGRA CON SEMILLAS", "Kg pedido teórico": 500, "Kg hecho real": 100, "Kg pendiente": 400, "Palets pendientes": 2},
+            {"Semana": "24", "Fecha salida": "2026-06-17", "Cliente": "Cliente A", "Grupo confección": "ENCAJADO", "Grupo varietal": "BLANCA SIN SEMILLAS", "Kg pedido teórico": 1000, "Kg hecho real": 200, "Kg pendiente": 800, "Palets pendientes": 4},
+            {"Semana": "24", "Fecha salida": "2026-06-17", "Cliente": "Cliente A", "Grupo confección": "GRANEL", "Grupo varietal": "NEGRA CON SEMILLAS", "Kg pedido teórico": 500, "Kg hecho real": 100, "Kg pendiente": 400, "Palets pendientes": 2},
         ],
     )
     assert any(t and t[0] == ["Grupo confección", "% palets", "Palets", "Kg pendiente"] for t in captured)
-    assert any(t and t[0] == ["Fecha", "Kg teórico", "Kg terminado", "Kg pendiente", "Palets pendientes", "Barra visual"] for t in captured)
+    assert any(t and t[0] == ["Fecha salida", "Nº pedidos", "Palets pendientes", "Kg teórico", "Kg terminado", "Kg pendiente", "% pendiente", "Barra visual"] for t in captured)
     assert any(t and "BLANCA SIN SEMILLAS Palets" in t[0] and "TOTAL Pendiente" in t[0] for t in captured)
 
 @pytest.mark.skipif(not REPORTLAB_AVAILABLE, reason="ReportLab no instalado")
@@ -151,3 +151,32 @@ def test_aprovechamiento_detalle_partida_muestra_toneladas(monkeypatch, tmp_path
     assert table[-1][9] == "8.6"
     assert table[-1][19] == "9.2"
     assert table[-1][20] == "17.9"
+
+@pytest.mark.skipif(not REPORTLAB_AVAILABLE, reason="ReportLab no instalado")
+def test_prevision_recoleccion_incluye_matriz_semanal(monkeypatch, tmp_path):
+    captured = []
+    service = CommercialPdfReportService()
+    original = service._table
+
+    def spy(data, *args, **kwargs):
+        captured.append(data)
+        return original(data, *args, **kwargs)
+
+    monkeypatch.setattr(service, "_table", spy)
+    service.generate(
+        tmp_path / "prevision_matriz.pdf",
+        filters={"cultivo": ["SANDIA"]},
+        prevision_recoleccion_rows=[
+            {"FechaR_date": "2026-06-17", "IdSocio": "1", "Socio": "Socio A", "Boleta": "B1", "Variedad": "V1", "KgAprox": 60000},
+            {"FechaR_date": "2026-06-18", "IdSocio": "1", "Socio": "Socio A", "Boleta": "B2", "Variedad": "V1", "KgAprox": 10000},
+            {"FechaR_date": "2026-06-17", "IdSocio": "2", "Socio": "Socio B", "Boleta": "B3", "Variedad": "V2", "Cultivo": "CITRICOS", "KgAprox": 5000},
+        ],
+    )
+
+    matrix_tables = [t for t in captured if t and t[0][:3] == ["Socio", "Cult.", "Variedad"] and "miércoles-17" in t[0]]
+    assert matrix_tables
+    table = matrix_tables[0]
+    assert table[0] == ["Socio", "Cult.", "Variedad", "miércoles-17", "jueves-18", "viernes-19", "sábado-20", "domingo-21", "lunes-22", "martes-23", "Total"]
+    assert ["Socio A", "SA", "V1", "60.0", "10.0", "-", "-", "-", "-", "-", "70.0"] in table
+    assert ["Socio B", "CI", "V2", "5.0", "-", "-", "-", "-", "-", "-", "5.0"] in table
+    assert table[-1] == ["TOTAL", "", "", "65.0", "10.0", "-", "-", "-", "-", "-", "75.0"]

@@ -94,7 +94,7 @@ class CommercialPdfReportService:
         self._add_header(story, active_filters, generated_at or datetime.now())
         self._add_summary(story, campo, almacen, pendientes, previstos)
         self._add_stock_campo(story, campo)
-        self._add_prevision_recoleccion(story, prevision)
+        self._add_prevision_recoleccion(story, prevision, active_filters)
         self._add_aprovechamientos(story, campo)
         self._add_aprovechamiento_detalle_partida(story, campo, aprovechamiento_campo_detalle or {})
         self._add_aprovechamiento_volcado(story, aprovechamiento_volcado or {})
@@ -273,7 +273,7 @@ class CommercialPdfReportService:
     def _fmt_t(self, kg: Any) -> str:
         return f"{self._format_toneladas(kg).replace('.', ',')} t"
 
-    def _add_prevision_recoleccion(self, story: list, rows: list[dict]) -> None:
+    def _add_prevision_recoleccion(self, story: list, rows: list[dict], filters: dict[str, Any] | None = None) -> None:
         story.append(Paragraph("PREVISIÓN DE RECOLECCIÓN", self._section))
         if not rows:
             story.append(Paragraph("Sin previsión de recolección desde hoy para los filtros actuales.", self._normal))
@@ -289,6 +289,8 @@ class CommercialPdfReportService:
             [self._fmt_t(total_kg), len(socios), len(boletas), len(variedades), len(dias)],
         ], col_widths=[5*cm, 4*cm, 4*cm, 4*cm, 4*cm]))
         story.append(Spacer(1, 6))
+
+        self._add_prevision_weekly_matrix(story, rows, filters or {})
 
         by_day: dict[str, list[dict]] = {}
         for r in rows:
@@ -329,6 +331,63 @@ class CommercialPdfReportService:
         story.append(Paragraph("Resumen final por variedad", self._normal))
         story.append(self._table(final_rows, col_widths=[8*cm, 5*cm, 4*cm, 4*cm]))
         story.append(PageBreak())
+
+
+    def _single_selected_cultivo(self, filters: dict[str, Any]) -> str:
+        selected = sorted(self._selected_filter_values((filters or {}).get("cultivo")))
+        return selected[0] if len(selected) == 1 else ""
+
+    def _cultivo_for_prevision_row(self, row: dict, filters: dict[str, Any]) -> str:
+        cultivo = str(row.get("Cultivo") or row.get("CULTIVO") or "").strip()
+        if cultivo:
+            return cultivo
+        return self._single_selected_cultivo(filters)
+
+    def _cultivo_abbrev(self, cultivo: Any) -> str:
+        text = str(cultivo or "").strip().upper()
+        mapping = {"SANDIA": "SA", "SANDÍA": "SA", "CITRICOS": "CI", "CÍTRICOS": "CI"}
+        return mapping.get(text, text[:2]) if text else ""
+
+    def _weekly_day_labels(self, rows: list[dict]) -> list[tuple[str, str]]:
+        parsed_dates = [self._parse_date(r.get("FechaR_date") or r.get("FechaR")) for r in rows]
+        parsed_dates = [d for d in parsed_dates if d]
+        start = min(parsed_dates) if parsed_dates else datetime.now().date()
+        days = [start + timedelta(days=i) for i in range(7)]
+        return [(d.isoformat(), f"{self._weekday_es(d.isoformat()).lower()}-{d.day:02d}") for d in days]
+
+    def _format_weekly_tons(self, kg: float) -> str:
+        return f"{kg / 1000:.1f}" if kg else "-"
+
+    def _add_prevision_weekly_matrix(self, story: list, rows: list[dict], filters: dict[str, Any]) -> None:
+        days = self._weekly_day_labels(rows)
+        grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for row in rows:
+            day = self._parse_date(row.get("FechaR_date") or row.get("FechaR"))
+            if not day:
+                continue
+            iso = day.isoformat()
+            if iso not in {d[0] for d in days}:
+                continue
+            socio = str(row.get("Socio") or self._value(row, "Nombre socio") or "").strip()
+            cultivo = self._cultivo_for_prevision_row(row, filters)
+            variedad = str(row.get("Variedad") or "").strip()
+            key = (socio, cultivo, variedad)
+            bucket = grouped.setdefault(key, {"Socio": socio, "Cult.": self._cultivo_abbrev(cultivo), "Variedad": variedad, "days": {d[0]: 0.0 for d in days}})
+            bucket["days"][iso] += self._sum([row], "KgAprox")
+
+        header = ["Socio", "Cult.", "Variedad"] + [label for _, label in days] + ["Total"]
+        data = [header]
+        day_totals = {d[0]: 0.0 for d in days}
+        for key in sorted(grouped):
+            bucket = grouped[key]
+            values = [bucket["days"][d[0]] for d in days]
+            for iso, kg in zip([d[0] for d in days], values):
+                day_totals[iso] += kg
+            data.append([bucket["Socio"], bucket["Cult."], bucket["Variedad"]] + [self._format_weekly_tons(kg) for kg in values] + [self._format_weekly_tons(sum(values))])
+        data.append(["TOTAL", "", ""] + [self._format_weekly_tons(day_totals[d[0]]) for d in days] + [self._format_weekly_tons(sum(day_totals.values()))])
+        story.append(Paragraph("RESUMEN SEMANAL DE RECOLECCIÓN PREVISTA", self._normal))
+        story.append(self._table(data, col_widths=[4.2*cm, 1.2*cm, 4.2*cm] + [1.9*cm] * 8, right_cols=list(range(3, 11)), center_cols=list(range(1, 11))))
+        story.append(Spacer(1, 8))
 
     def _has_any_value(self, rows: Sequence[dict], column: str) -> bool:
         return any(str(self._value(row, column) or "").strip() for row in rows)
@@ -692,11 +751,15 @@ class CommercialPdfReportService:
         if any(x in column for x in ("Palets", "Cajas")): return self._num(value, 2).rstrip('0').rstrip('.') if str(value).strip() else ""
         return str(value or "")
 
-    def _table(self, data: list[list[Any]], repeat: int = 1, header: bool = True, col_widths: list[float] | None = None, row_styles: list[tuple[int, str]] | None = None) -> Table:
+    def _table(self, data: list[list[Any]], repeat: int = 1, header: bool = True, col_widths: list[float] | None = None, row_styles: list[tuple[int, str]] | None = None, right_cols: Sequence[int] | None = None, center_cols: Sequence[int] | None = None) -> Table:
         wrapped = [[self._p(c) for c in row] for row in data]
         t = Table(wrapped, repeatRows=repeat, colWidths=col_widths)
         style = [("GRID", (0,0), (-1,-1), 0.25, colors.lightgrey), ("VALIGN", (0,0), (-1,-1), "TOP"), ("LEFTPADDING", (0,0), (-1,-1), 2), ("RIGHTPADDING", (0,0), (-1,-1), 2)]
         if header: style += [("BACKGROUND", (0,0), (-1,0), colors.HexColor("#D9EAF7")), ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold")]
+        for col in center_cols or []:
+            style.append(("ALIGN", (col, 0), (col, -1), "CENTER"))
+        for col in right_cols or []:
+            style.append(("ALIGN", (col, 1), (col, -1), "RIGHT"))
         for i, row in enumerate(data):
             first = str(row[0]) if row else ""
             if first.startswith("Subtotal confección"):
