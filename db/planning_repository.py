@@ -1795,6 +1795,9 @@ class PlanningRepository:
                 "Semana": "-",
             }
 
+        def _norm_partida(value: Any) -> str:
+            return str(value or "").strip().replace(" ", "").upper()
+
         trazabilidad_por_partida: dict[str, dict[str, Any]] = {}
         pesosfres_table = self._find_table(conn, ["PesosFres", "pesosfres", "PESOSFRES"])
         if not pesosfres_table:
@@ -1837,12 +1840,16 @@ class PlanningRepository:
                 select_cols = [albaran_col] + [c for c in wanted_cols.values() if c]
                 quoted_cols = ", ".join(f'"{c}"' for c in dict.fromkeys(select_cols))
                 incluidas = sorted({str(r.get("Partida incluida") or "").strip() for r in rows if str(r.get("Partida incluida") or "").strip()})
-                for chunk_start in range(0, len(incluidas), 900):
-                    chunk = incluidas[chunk_start:chunk_start + 900]
+                incluidas_norm = [_norm_partida(value) for value in incluidas]
+                for chunk_start in range(0, len(incluidas_norm), 900):
+                    chunk = incluidas_norm[chunk_start:chunk_start + 900]
                     ph = ",".join(["?"] * len(chunk))
-                    sql = f'SELECT {quoted_cols} FROM "{pesosfres_table}" WHERE TRIM(CAST("{albaran_col}" AS TEXT)) IN ({ph})'
+                    sql = (
+                        f'SELECT {quoted_cols} FROM "{pesosfres_table}" '
+                        f"WHERE UPPER(REPLACE(TRIM(CAST(\"{albaran_col}\" AS TEXT)), ' ', '')) IN ({ph})"
+                    )
                     for pf_row in conn.execute(sql, chunk).fetchall():
-                        partida_key = str(pf_row[albaran_col] or "").strip()
+                        partida_key = _norm_partida(pf_row[albaran_col])
                         if partida_key in trazabilidad_por_partida:
                             continue
                         trazabilidad_por_partida[partida_key] = {
@@ -1857,7 +1864,7 @@ class PlanningRepository:
 
         for row in rows:
             incluida = str(row.get("Partida incluida") or "").strip()
-            trazabilidad = trazabilidad_por_partida.get(incluida)
+            trazabilidad = trazabilidad_por_partida.get(_norm_partida(incluida))
             if not trazabilidad:
                 logger.warning("Partida incluida sin coincidencia en PesosFres.AlbaranDef: %s", incluida)
                 trazabilidad = _empty_trace()
@@ -1872,6 +1879,14 @@ class PlanningRepository:
             "adicionales": sum(1 for r in rows if r.get("Tipo") == "Agrupada"),
             "kg_total": round(kg_total, 2),
         }
+        encontradas_pf = sum(1 for r in rows if r.get("Boleta") != "NO ENCONTRADA")
+        no_encontradas = max(0, len(rows) - encontradas_pf)
+        logger.info(
+            "INFORME PDF trazabilidad partidas incluidas=%s encontradas_pf=%s no_encontradas=%s",
+            len(rows),
+            encontradas_pf,
+            no_encontradas,
+        )
         logger.info(
             "INFORME PDF partidas agrupadas principales=%s incluidas=%s adicionales=%s kg_total=%s",
             summary["principales"],
