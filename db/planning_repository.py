@@ -1620,7 +1620,7 @@ class PlanningRepository:
         logger.info("INFORME PDF volcado periodo=%s", periodo_txt)
         calidad_path = self._db_path(DB_CALIDAD)
         loteado_path = self._db_path(DB_LOTEADO)
-        result: dict[str, Any] = {"periodo": (start, end), "periodo_texto": periodo_txt, "rows": [], "quality": [], "summary": {}}
+        result: dict[str, Any] = {"periodo": (start, end), "periodo_texto": periodo_txt, "rows": [], "quality": [], "summary": {}, "grouped_partidas": [], "grouped_summary": {}}
         if not calidad_path.exists() or not loteado_path.exists():
             logger.warning("INFORME PDF volcado sin bases calidad=%s loteado=%s", calidad_path.exists(), loteado_path.exists())
             return result
@@ -1639,7 +1639,11 @@ class PlanningRepository:
             if not id_col or not fecha_col:
                 return result
             fecha_expr = self._fecha_expr_sql("dc", fecha_col)
-            query = f'SELECT DISTINCT TRIM(CAST(dc."{id_col}" AS TEXT)) AS IdPartida FROM "{table}" dc WHERE TRIM(CAST(dc."{id_col}" AS TEXT)) <> "" AND date({fecha_expr}) BETWEEN date(?) AND date(?)'
+            kg_col = self._find_column(cols, ["KgPartida", "Kg partida", "Kg", "KilosPartida"])
+            neto_col = self._find_column(cols, ["Neto", "KgNeto", "KilosNetos"])
+            kg_expr = f'COALESCE(MAX(dc."{kg_col}"), 0)' if kg_col else "0"
+            neto_expr = f'COALESCE(MAX(dc."{neto_col}"), 0)' if neto_col else "0"
+            query = f'SELECT TRIM(CAST(dc."{id_col}" AS TEXT)) AS IdPartida, {kg_expr} AS KgPartida, {neto_expr} AS Neto FROM "{table}" dc WHERE TRIM(CAST(dc."{id_col}" AS TEXT)) <> "" AND date({fecha_expr}) BETWEEN date(?) AND date(?)'
             params: list[Any] = [start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")]
             for field, col in (("campana", camp_col), ("cultivo", cult_col), ("empresa", emp_col)):
                 vals = self._normalize_filter_values(filters.get(field)) if col else []
@@ -1647,7 +1651,13 @@ class PlanningRepository:
                     ph = ",".join(["UPPER(TRIM(?))"] * len(vals))
                     query += f' AND UPPER(TRIM(dc."{col}")) IN ({ph})'
                     params.extend(vals)
-            ids = [str(r["IdPartida"]) for r in conn.execute(query, params).fetchall()]
+            query += f' GROUP BY TRIM(CAST(dc."{id_col}" AS TEXT))'
+            datos_rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+            ids = [str(r["IdPartida"]) for r in datos_rows]
+            kg_por_partida = {str(r["IdPartida"]): (float(r.get("KgPartida") or 0) or float(r.get("Neto") or 0)) for r in datos_rows}
+            grouped_rows, grouped_summary = self._get_partidas_agrupadas_volcado(conn, ids, kg_por_partida)
+            result["grouped_partidas"] = grouped_rows
+            result["grouped_summary"] = grouped_summary
         logger.info("INFORME PDF volcado partidas=%s", len(ids))
         if not ids:
             return result
@@ -1725,6 +1735,88 @@ class PlanningRepository:
         result["summary"] = {"partidas": len(ids), "lineas": total_lines, "lineas_reales": quality["Peso real"]["lineas"], "lineas_estimadas": quality["Estimado por confección"]["lineas"] + quality["Estimado por grupo confección"]["lineas"], "sin_estimacion": quality["Sin estimación"]["lineas"], "kg_real": round(quality["Peso real"]["kg"], 2), "kg_estimado": round(quality["Estimado por confección"]["kg"] + quality["Estimado por grupo confección"]["kg"], 2), "cobertura_palets": round(cobertura, 2), "semaforo": "Verde" if cobertura >= 95 else "Amarillo" if cobertura >= 85 else "Rojo"}
         logger.info("INFORME PDF volcado kg_real=%s kg_estimado=%s sin_estimacion=%s cobertura=%s", result["summary"]["kg_real"], result["summary"]["kg_estimado"], result["summary"]["sin_estimacion"], result["summary"]["cobertura_palets"])
         return result
+
+    def _get_partidas_agrupadas_volcado(
+        self,
+        conn: sqlite3.Connection,
+        ids: list[str],
+        kg_por_partida: dict[str, float],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        if not ids:
+            return rows, {"principales": 0, "incluidas": 0, "adicionales": 0, "kg_total": 0.0}
+
+        def _ci_get(row: dict[str, Any], key: str, default: Any = "") -> Any:
+            if key in row:
+                return row[key]
+            wanted = key.upper()
+            for col, value in row.items():
+                if col.upper() == wanted:
+                    return value
+            return default
+
+        partidas_table = self._find_table(conn, ["Partidas", "partidas", "PARTIDAS"])
+        partidas_by_principal: dict[str, dict[str, Any]] = {}
+        if partidas_table:
+            cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{partidas_table}")').fetchall()]
+            idp_col = self._find_column(cols, ["IdPartidaP"])
+            if idp_col:
+                select_cols = [idp_col]
+                for n in range(10):
+                    idn_col = self._find_column(cols, [f"IdPartida{n}"])
+                    kgn_col = self._find_column(cols, [f"kg{n}", f"Kg{n}"])
+                    if idn_col:
+                        select_cols.append(idn_col)
+                    if kgn_col:
+                        select_cols.append(kgn_col)
+                kgp_col = self._find_column(cols, ["kgP", "KgP"])
+                if kgp_col:
+                    select_cols.append(kgp_col)
+                quoted_cols = ", ".join(f'"{c}"' for c in dict.fromkeys(select_cols))
+                for chunk_start in range(0, len(ids), 900):
+                    chunk = ids[chunk_start:chunk_start + 900]
+                    ph = ",".join(["?"] * len(chunk))
+                    sql = f'SELECT {quoted_cols} FROM "{partidas_table}" WHERE TRIM(CAST("{idp_col}" AS TEXT)) IN ({ph})'
+                    for r in conn.execute(sql, chunk).fetchall():
+                        partidas_by_principal[str(r[idp_col]).strip()] = dict(r)
+
+        kg_total = 0.0
+        for principal in ids:
+            partida = partidas_by_principal.get(principal)
+            if not partida:
+                rows.append({
+                    "Partida principal": principal,
+                    "Partida incluida": principal,
+                    "Kg asociado": round(float(kg_por_partida.get(principal) or 0), 2),
+                    "Tipo": "Principal sin agrupación",
+                })
+                continue
+            kg_total += float(_ci_get(partida, "kgP", 0) or 0)
+            for n in range(10):
+                incluida = str(_ci_get(partida, f"IdPartida{n}") or "").strip()
+                if not incluida:
+                    continue
+                rows.append({
+                    "Partida principal": principal,
+                    "Partida incluida": incluida,
+                    "Kg asociado": round(float(_ci_get(partida, f"kg{n}", 0) or 0), 2),
+                    "Tipo": "Principal" if n == 0 or incluida == principal else "Agrupada",
+                })
+
+        summary = {
+            "principales": len(ids),
+            "incluidas": len(rows),
+            "adicionales": sum(1 for r in rows if r.get("Tipo") == "Agrupada"),
+            "kg_total": round(kg_total, 2),
+        }
+        logger.info(
+            "INFORME PDF partidas agrupadas principales=%s incluidas=%s adicionales=%s kg_total=%s",
+            summary["principales"],
+            summary["incluidas"],
+            summary["adicionales"],
+            summary["kg_total"],
+        )
+        return rows, summary
 
     def get_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
         fruta_path = self._db_path(DB_FRUTA)
