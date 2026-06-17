@@ -2116,6 +2116,93 @@ class PlanningRepository:
         )
         return rows, summary
 
+
+    def get_prevision_recoleccion(self, filters: dict | None = None, today: datetime | None = None) -> list[dict[str, Any]]:
+        start = time.perf_counter()
+        logger.info("[PDF] Previsión recolección")
+        filters = filters or {}
+        today_date = (today or datetime.now()).date()
+        fruta_path = self._db_path(DB_FRUTA)
+        if not fruta_path.exists():
+            raise FileNotFoundError(f"No existe la base: {fruta_path}")
+
+        with sqlite3.connect(fruta_path) as conn:
+            conn.row_factory = sqlite3.Row
+            table = self._find_table(conn, ["Prevision", "Previsión"])
+            if not table:
+                logger.warning("[PDF] Previsión recolección: no existe tabla Prevision en %s", fruta_path)
+                return []
+            cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()]
+            eepl_path = self._db_path(DB_EEPPL)
+            has_mvariedad = False
+            if eepl_path.exists():
+                conn.execute(f"ATTACH DATABASE '{eepl_path.as_posix()}' AS dbeepl")
+                has_mvariedad = any(r[0] == "MVariedad" for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall())
+            else:
+                logger.warning("[PDF] Previsión recolección: no se puede relacionar Cultivo/Grupo varietal; no existe %s", eepl_path)
+
+            where = [
+                "p.FechaR IS NOT NULL",
+                "TRIM(CAST(p.FechaR AS TEXT)) <> ''",
+                "TRIM(CAST(p.FechaR AS TEXT)) <> '31/12/1899'",
+                "CAST(REPLACE(COALESCE(p.KgAprox,0), ',', '.') AS REAL) > 0",
+            ]
+            params: list[Any] = []
+            for field, col in (("var_coop", "p.Variedad"),):
+                values = self._normalize_filter_values(filters.get(field))
+                if values:
+                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
+                    where.append(f"UPPER(TRIM({col})) IN ({placeholders})")
+                    params.extend(values)
+
+            cultivo_values = self._normalize_filter_values(filters.get("cultivo"))
+            if cultivo_values:
+                if has_mvariedad:
+                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(cultivo_values))
+                    where.append(f"EXISTS (SELECT 1 FROM dbeepl.MVariedad mvf WHERE UPPER(TRIM(mvf.Variedad)) = UPPER(TRIM(p.Variedad)) AND UPPER(TRIM(mvf.CULTIVO)) IN ({placeholders}))")
+                    params.extend(cultivo_values)
+                else:
+                    logger.warning("[PDF] Previsión recolección: filtro Cultivo activo sin relación disponible con Prevision")
+            for field in ("campana", "empresa"):
+                values = self._normalize_filter_values(filters.get(field))
+                if values:
+                    logger.warning("[PDF] Previsión recolección: filtro %s activo sin relación disponible con Prevision", field)
+
+            group_values = self._normalize_filter_values(filters.get("grupo_varietal"))
+            if group_values:
+                if has_mvariedad:
+                    placeholders = ",".join(["UPPER(TRIM(?))"] * len(group_values))
+                    where.append(f"EXISTS (SELECT 1 FROM dbeepl.MVariedad mvg WHERE UPPER(TRIM(mvg.Variedad)) = UPPER(TRIM(p.Variedad)) AND UPPER(TRIM(COALESCE(mvg.GRUPO,'') || ' ' || COALESCE(mvg.SUBGRUPO,''))) IN ({placeholders}))")
+                    params.extend(group_values)
+                else:
+                    logger.warning("[PDF] Previsión recolección: filtro Grupo varietal activo sin relación disponible con Prevision")
+
+            select_group = ""
+            if has_mvariedad:
+                select_group = ", (SELECT TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')) FROM dbeepl.MVariedad mv WHERE UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(p.Variedad)) LIMIT 1) AS GrupoVarietal"
+            sql = f'SELECT p.*{select_group} FROM "{table}" p WHERE {' AND '.join(where)}'
+            raw_rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+        rows: list[dict[str, Any]] = []
+        for row in raw_rows:
+            dt = self._parse_date(row.get("FechaR"))
+            if not dt or dt.date() < today_date or dt.strftime("%d/%m/%Y") == "31/12/1899":
+                continue
+            kg = normalizar_numero(str(row.get("KgAprox") or "0").replace(",", "."))
+            if kg <= 0:
+                continue
+            out = dict(row)
+            out["FechaR_date"] = dt.date().isoformat()
+            out["FechaR_display"] = dt.strftime("%d/%m/%Y")
+            out["KgAprox"] = kg
+            out["Matricula"] = out.get("Matricual") or out.get("Matricula") or out.get("Matrícula") or ""
+            rows.append(out)
+        logger.info("[PDF] Registros encontrados: %s", len(rows))
+        logger.info("[PDF] Días encontrados: %s", len({r.get("FechaR_date") for r in rows}))
+        logger.info("[PDF] Kg previstos totales: %s", round(sum(float(r.get("KgAprox") or 0) for r in rows), 2))
+        logger.info("[PDF] Tiempo de generación: %.3fs", time.perf_counter() - start)
+        return rows
+
     def get_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
         fruta_path = self._db_path(DB_FRUTA)
         calidad_path = self._db_path(DB_CALIDAD)

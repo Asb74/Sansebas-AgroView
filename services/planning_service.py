@@ -27,6 +27,9 @@ class PlanningService:
     def load_stock_almacen_detalle_palets(self, filters: dict) -> list[dict]:
         return self.repo.get_stock_almacen_detalle_palets(filters)
 
+    def load_prevision_recoleccion(self, filters: dict, today=None) -> list[dict]:
+        return self.repo.get_prevision_recoleccion(filters, today=today)
+
     def load_aprovechamiento_volcado(self, filters: dict, today=None) -> dict:
         return self.repo.get_aprovechamiento_volcado(filters, today=today)
 
