@@ -1059,14 +1059,37 @@ class PlanificacionDiariaScreen(ttk.Frame):
         return stock_campo_rows, stock_almacen_rows, pedidos_pendientes_rows, pedidos_previstos_rows
 
     def export_informe_comercial_pdf(self) -> None:
+        generated_at = datetime.now()
+        suggested_filename = self.commercial_pdf_service.default_filename(
+            self.filter_widgets["cultivo"].get_selected(),
+            now=generated_at,
+        )
+        should_save = messagebox.askyesno(
+            "Informe comercial PDF",
+            "¿Quieres guardar el informe?",
+            parent=self,
+        )
+        if should_save:
+            target = filedialog.asksaveasfilename(
+                defaultextension=".pdf",
+                filetypes=[("PDF", "*.pdf")],
+                initialfile=suggested_filename,
+                parent=self,
+            )
+            if not target:
+                messagebox.showinfo("Informe comercial PDF", "Guardado cancelado. No se generó el informe.", parent=self)
+                return
+        else:
+            temp_dir = Path(tempfile.gettempdir()) / "SansebasAgroView"
+            temp_dir.mkdir(exist_ok=True)
+            target = temp_dir / suggested_filename
+
         try:
             stock_campo, stock_almacen, pedidos_pendientes, pedidos_previstos = self._ensure_commercial_pdf_rows_loaded()
         except Exception as exc:
             messagebox.showerror("Informe comercial PDF", f"No se pudieron preparar los datos del informe: {exc}", parent=self)
             return
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                target = tmp.name
             path = self.commercial_pdf_service.generate(
                 target,
                 filters=self._commercial_pdf_filters(),
@@ -1074,17 +1097,21 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 stock_almacen_rows=[dict(r) for r in stock_almacen],
                 pedidos_pendientes_rows=[dict(r) for r in pedidos_pendientes],
                 pedidos_previstos_rows=[dict(r) for r in pedidos_previstos],
+                generated_at=generated_at,
             )
             self._open_pdf_preview(path)
         except Exception as exc:
             logging.getLogger(__name__).exception("No se pudo generar informe comercial PDF")
             messagebox.showerror("Informe comercial PDF", f"No se pudo generar el PDF: {exc}", parent=self)
             return
-        messagebox.showinfo(
-            "Informe comercial PDF",
-            "Informe generado en vista previa. Revíselo y guárdelo desde el visor PDF si lo desea.",
-            parent=self,
-        )
+        if should_save:
+            messagebox.showinfo("Informe comercial PDF", f"Informe guardado y abierto:\n{path}", parent=self)
+        else:
+            messagebox.showinfo(
+                "Informe comercial PDF",
+                "Informe generado en vista previa temporal. Guárdelo desde el visor PDF si lo desea.",
+                parent=self,
+            )
 
     def _open_pdf_preview(self, path: str | Path) -> None:
         path_str = str(path)
