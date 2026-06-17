@@ -22,8 +22,8 @@ def test_partidas_agrupadas_volcado_usa_partidas_y_trazabilidad_pesosfres(tmp_pa
         conn.execute(
             """
             CREATE TABLE PesosFres (
-                AlbaranDef TEXT, AlbaranD TEXT, Boleta TEXT, Socio TEXT,
-                NombreSocio TEXT, Fcarga TEXT, Apodo TEXT
+                AlbaranDef TEXT, AlbaranD TEXT, Boleta TEXT, IdSocio TEXT,
+                Socio TEXT, FCarga TEXT, Apodo TEXT
             )
             """
         )
