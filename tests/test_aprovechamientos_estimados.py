@@ -130,6 +130,99 @@ def test_loteado_reparte_calibres_compuestos():
     assert PlanningRepository._expandir_calibre_loteado("1/3") == ["1", "2", "3"]
 
 
+def test_harvestsync_expande_grupos_calibre():
+    assert PlanningRepository.expandir_grupo_calibre_harvestsync("Cal 0-1") == ["CAL 0", "CAL 1"]
+    assert PlanningRepository.expandir_grupo_calibre_harvestsync("Cal 1-3") == ["CAL 1", "CAL 2", "CAL 3"]
+    assert PlanningRepository.expandir_grupo_calibre_harvestsync("Cal 6-10") == ["CAL 6", "CAL 7", "CAL 8", "CAL 9", "CAL 10"]
+    assert PlanningRepository.expandir_grupo_calibre_harvestsync("Fuera Cal") == []
+
+
+class _FakeDoc:
+    def __init__(self, data, exists=True):
+        self._data = data
+        self.exists = exists
+
+    def to_dict(self):
+        return dict(self._data)
+
+    def get(self):
+        return self
+
+
+class _FakeQuery:
+    def __init__(self, docs):
+        self._docs = docs
+
+    def where(self, *_args):
+        return self
+
+    def stream(self):
+        return [_FakeDoc(d) for d in self._docs]
+
+
+class _FakeCollection:
+    def __init__(self, docs=None, templates=None):
+        self._docs = docs or []
+        self._templates = templates or {}
+
+    def document(self, name):
+        data = self._templates.get(name)
+        return _FakeDoc(data or {}, exists=data is not None)
+
+    def where(self, *_args):
+        return _FakeQuery(self._docs)
+
+
+class _FakeFirestore:
+    def __init__(self, muestras):
+        self.muestras = muestras
+
+    def collection(self, name):
+        if name == "PlantillasCalibre":
+            return _FakeCollection(templates={"NECTARINA": {"CAMPO": ["Cal 1-3", "Cal 6-10", "Fuera Cal"]}})
+        if name == "PlantillasAprovechamiento":
+            return _FakeCollection(templates={"NECTARINA": {"CAMPO": ["Destrio", "Industria", "Categoria I", "Categoria II"]}})
+        return _FakeCollection(docs=self.muestras)
+
+
+def test_harvestsync_calcula_fruta_comercial_y_media_simple(tmp_path, monkeypatch):
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    muestras = [
+        {"Boleta": "B1", "CULTIVO": "NECTARINA", "FechaHora": "2026-01-01", "Cal 1-3": 60, "Cal 6-10": 40, "Fuera Cal": 99, "Destrio": 5, "Industria": 15},
+        {"Boleta": "B1", "CULTIVO": "NECTARINA", "FechaHora": "2026-01-02", "Cal 1-3": "30", "Cal 6-10": "70", "Fuera Cal": 99, "Destrio": "5", "Industria": "15"},
+    ]
+    repo = PlanningRepository(base_dir=tmp_path)
+    monkeypatch.setattr(repo, "_get_harvestsync_client", lambda: _FakeFirestore(muestras))
+
+    rows = repo._get_harvestsync_aprovechamiento_por_partida({"Boleta": "B1", "Cultivo": "NECTARINA", "Fecha carga": "2026-01-02"})
+
+    assert {r["Origen aprovechamiento"] for r in rows} == {"HARVESTSYNC"}
+    assert {r["Categoría"] for r in rows} == {"NORMAL"}
+    assert round(sum(r["% aprovechamiento"] for r in rows), 2) == 80
+    assert {r["Calibre"] for r in rows} == {"CAL 1", "CAL 2", "CAL 3", "CAL 6", "CAL 7", "CAL 8", "CAL 9", "CAL 10"}
+    assert next(r for r in rows if r["Calibre"] == "CAL 1")["% aprovechamiento"] == 12
+    assert next(r for r in rows if r["Calibre"] == "CAL 6")["% aprovechamiento"] == 8.8
+
+
+def test_prioridad_harvestsync_antes_de_manual_y_despues_de_reales(tmp_path, monkeypatch):
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    repo = PlanningRepository(base_dir=tmp_path)
+    repo.upsert_aprovechamiento_estimado({"Boleta": "B1", "Calibre": "2", "KgCampoAplicado": 1000, "Porcentaje": 40})
+    monkeypatch.setattr(
+        repo,
+        "_get_harvestsync_aprovechamiento_por_partida",
+        lambda partida: [{"Origen": "CAMPO_ESTIMADO_HARVESTSYNC", "Calibre": "CAL 1", "Categoría": "NORMAL", "% aprovechamiento": 80, "Origen aprovechamiento": "HARVESTSYNC", "Explicación": "Estimación media HarvestSync últimos 3 días"}],
+    )
+    rows, _ = repo._get_campo_disponibilidad_aprovechamiento([{"Cultivo": "NECTARINA", "Campaña": "2026", "Fecha carga": "2026-01-02", "Grupo varietal": "GRUPO", "Variedad": "VAR", "Boleta": "B1", "Kg campo": 1000}], {})
+    assert {r["Origen aprovechamiento"] for r in rows} == {"HARVESTSYNC"}
+
+    repo2 = PlanningRepository(base_dir=tmp_path)
+    repo2.upsert_aprovechamiento_estimado({"Boleta": "B2", "Calibre": "2", "KgCampoAplicado": 1000, "Porcentaje": 40})
+    monkeypatch.setattr(repo2, "_get_harvestsync_aprovechamiento_por_partida", lambda partida: [])
+    rows, _ = repo2._get_campo_disponibilidad_aprovechamiento(_stock("B2", 1000), {})
+    assert {r["Origen aprovechamiento"] for r in rows} == {"ESTIMADO_MANUAL"}
+
+
 def test_loteado_insuficiente_se_usa_como_distribucion_porcentual(tmp_path, monkeypatch):
     monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
     _crear_pesosfres(tmp_path, [{"Boleta": "B1", "AlbaranDef": "A1", "Cal1": 1000}])
