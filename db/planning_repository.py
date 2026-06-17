@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from collections import Counter, defaultdict
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
 import time
@@ -1602,6 +1602,129 @@ class PlanningRepository:
             resumen[partida_key] = {"Estado aprovechamiento": estado, "Nº calibres aprovechamiento": n_cal, "Kg estimados calculados": kg_est}
             detalle[boleta] = by_boleta.get(boleta, [])
         return resumen, detalle
+
+
+    def _volcado_periodo(self, today: datetime | None = None) -> tuple[datetime, datetime]:
+        today = today or datetime.now()
+        if today.weekday() == 0:
+            start = today - timedelta(days=3)
+            end = today - timedelta(days=2)
+        else:
+            start = today - timedelta(days=1)
+            end = start
+        return start.replace(hour=0, minute=0, second=0, microsecond=0), end.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def get_aprovechamiento_volcado(self, filters: dict, today: datetime | None = None) -> dict[str, Any]:
+        start, end = self._volcado_periodo(today)
+        periodo_txt = f"{start:%d/%m/%Y}" if start.date() == end.date() else f"{start:%d/%m/%Y} - {end:%d/%m/%Y}"
+        logger.info("INFORME PDF volcado periodo=%s", periodo_txt)
+        calidad_path = self._db_path(DB_CALIDAD)
+        loteado_path = self._db_path(DB_LOTEADO)
+        result: dict[str, Any] = {"periodo": (start, end), "periodo_texto": periodo_txt, "rows": [], "quality": [], "summary": {}}
+        if not calidad_path.exists() or not loteado_path.exists():
+            logger.warning("INFORME PDF volcado sin bases calidad=%s loteado=%s", calidad_path.exists(), loteado_path.exists())
+            return result
+
+        with sqlite3.connect(calidad_path) as conn:
+            conn.row_factory = sqlite3.Row
+            table = self._find_table(conn, ["DatosCalibre", "datoscalibre"])
+            if not table:
+                return result
+            cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()]
+            id_col = self._find_column(cols, ["IdPartida"])
+            fecha_col = self._find_column(cols, ["Fecha"])
+            camp_col = self._find_campana_column(cols)
+            cult_col = self._find_column(cols, ["CULTIVO", "Cultivo"])
+            emp_col = self._find_column(cols, ["EMPRESA", "Empresa"])
+            if not id_col or not fecha_col:
+                return result
+            fecha_expr = self._fecha_expr_sql("dc", fecha_col)
+            query = f'SELECT DISTINCT TRIM(CAST(dc."{id_col}" AS TEXT)) AS IdPartida FROM "{table}" dc WHERE TRIM(CAST(dc."{id_col}" AS TEXT)) <> "" AND date({fecha_expr}) BETWEEN date(?) AND date(?)'
+            params: list[Any] = [start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")]
+            for field, col in (("campana", camp_col), ("cultivo", cult_col), ("empresa", emp_col)):
+                vals = self._normalize_filter_values(filters.get(field)) if col else []
+                if vals:
+                    ph = ",".join(["UPPER(TRIM(?))"] * len(vals))
+                    query += f' AND UPPER(TRIM(dc."{col}")) IN ({ph})'
+                    params.extend(vals)
+            ids = [str(r["IdPartida"]) for r in conn.execute(query, params).fetchall()]
+        logger.info("INFORME PDF volcado partidas=%s", len(ids))
+        if not ids:
+            return result
+
+        calibre_map = self.get_mcalibres_map()
+        lines: list[dict[str, Any]] = []
+        with sqlite3.connect(loteado_path) as conn:
+            conn.row_factory = sqlite3.Row
+            db_pedidos = self._db_path(DB_PEDIDOS)
+            db_eepl = self._db_path(DB_EEPPL)
+            if db_pedidos.exists():
+                conn.execute(f"ATTACH DATABASE '{db_pedidos.as_posix()}' AS dbpedidos")
+            if db_eepl.exists():
+                conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
+            ldo = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
+            lote = self._find_table(conn, ["Lote", "lote", "LOTE"])
+            if not ldo or not lote:
+                return result
+            for chunk_start in range(0, len(ids), 900):
+                chunk = ids[chunk_start:chunk_start + 900]
+                ph = ",".join(["?"] * len(chunk))
+                query = f"""
+                    SELECT l.IdLote, l.IdPalet, l.Calibre, l.Lote AS Categoria, l.Neto, l.Cajas, l.IdConfeccion, l.Confeccion,
+                           COALESCE(ldo.CULTIVO, '') AS Cultivo, COALESCE(l.Variedad, '') AS Variedad,
+                           TRIM(COALESCE(mv.GRUPO,'') || ' ' || COALESCE(mv.SUBGRUPO,'')) AS GrupoVarietal,
+                           COALESCE(mc.GRUPO, '') AS GrupoConfeccion
+                    FROM "{lote}" l
+                    LEFT JOIN "{ldo}" ldo ON ldo.IdPalet = l.IdPalet
+                    LEFT JOIN dbpedidos.MConfecciones mc ON CAST(mc.CODIGO AS TEXT) = CAST(l.IdConfeccion AS TEXT)
+                    LEFT JOIN dbeepl.MVariedad mv ON UPPER(TRIM(mv.Variedad)) = UPPER(TRIM(l.Variedad)) AND UPPER(TRIM(mv.CULTIVO)) = UPPER(TRIM(ldo.CULTIVO))
+                    WHERE TRIM(CAST(l.IdLote AS TEXT)) IN ({ph})
+                """
+                lines.extend(dict(r) for r in conn.execute(query, chunk).fetchall())
+        logger.info("INFORME PDF volcado lineas_lote=%s", len(lines))
+
+        conf_ref: dict[str, tuple[float, float]] = defaultdict(lambda: (0.0, 0.0))
+        group_ref: dict[str, tuple[float, float]] = defaultdict(lambda: (0.0, 0.0))
+        for r in lines:
+            neto = float(r.get("Neto") or 0); cajas = float(r.get("Cajas") or 0)
+            if neto > 0 and cajas > 0:
+                k = normalizar_codigo_confeccion(r.get("IdConfeccion"))
+                g = normalizar_texto(r.get("GrupoConfeccion") or r.get("Confeccion") or "DESCONOCIDO")
+                a, b = conf_ref[k]; conf_ref[k] = (a + neto, b + cajas)
+                a, b = group_ref[g]; group_ref[g] = (a + neto, b + cajas)
+
+        quality = defaultdict(lambda: {"lineas": 0, "kg": 0.0})
+        grouped = defaultdict(lambda: {"kg_real": 0.0, "kg_estimado": 0.0})
+        for r in lines:
+            neto = float(r.get("Neto") or 0); cajas = float(r.get("Cajas") or 0)
+            origen = "Sin estimación"; kg = 0.0; real = False
+            if neto > 0:
+                kg = neto; origen = "Peso real"; real = True
+            elif cajas > 0:
+                k = normalizar_codigo_confeccion(r.get("IdConfeccion")); cref = conf_ref.get(k, (0, 0))
+                if cref[0] > 0 and cref[1] > 0:
+                    kg = cajas * cref[0] / cref[1]; origen = "Estimado por confección"
+                else:
+                    g = normalizar_texto(r.get("GrupoConfeccion") or r.get("Confeccion") or "DESCONOCIDO"); gref = group_ref.get(g, (0, 0))
+                    if gref[0] > 0 and gref[1] > 0:
+                        kg = cajas * gref[0] / gref[1]; origen = "Estimado por grupo confección"
+            quality[origen]["lineas"] += 1; quality[origen]["kg"] += kg
+            if kg <= 0:
+                continue
+            calibs = self._expandir_calibre_loteado(r.get("Calibre"), calibre_map=calibre_map) or [str(r.get("Calibre") or "Sin calibre")]
+            for cal, kg_cal in self._repartir_kg_loteado_por_calibres(kg, calibs).items():
+                key = (r.get("Cultivo") or "", r.get("GrupoVarietal") or "", r.get("Variedad") or "", cal, r.get("Categoria") or "")
+                grouped[key]["kg_real" if real else "kg_estimado"] += kg_cal
+
+        total_calc = sum(v["kg_real"] + v["kg_estimado"] for v in grouped.values())
+        result["rows"] = [{"Cultivo": k[0], "Grupo varietal": k[1], "Variedad": k[2], "Calibre": k[3], "Categoría": k[4], "Kg reales": round(v["kg_real"], 2), "Kg estimados": round(v["kg_estimado"], 2), "Kg total": round(v["kg_real"] + v["kg_estimado"], 2), "% sobre calculado": round(((v["kg_real"] + v["kg_estimado"]) / total_calc * 100) if total_calc else 0, 2)} for k, v in sorted(grouped.items())]
+        total_lines = len(lines)
+        calc_lines = sum(v["lineas"] for k, v in quality.items() if k != "Sin estimación")
+        result["quality"] = [{"Tipo dato": k, "Palets/líneas": v["lineas"], "Kg": round(v["kg"], 2) if k != "Sin estimación" or v["kg"] else "-", "%": round((v["kg"] / total_calc * 100) if total_calc and k != "Sin estimación" else (v["lineas"] / total_lines * 100 if total_lines else 0), 2)} for k, v in quality.items()]
+        cobertura = (calc_lines / total_lines * 100) if total_lines else 0
+        result["summary"] = {"partidas": len(ids), "lineas": total_lines, "lineas_reales": quality["Peso real"]["lineas"], "lineas_estimadas": quality["Estimado por confección"]["lineas"] + quality["Estimado por grupo confección"]["lineas"], "sin_estimacion": quality["Sin estimación"]["lineas"], "kg_real": round(quality["Peso real"]["kg"], 2), "kg_estimado": round(quality["Estimado por confección"]["kg"] + quality["Estimado por grupo confección"]["kg"], 2), "cobertura_palets": round(cobertura, 2), "semaforo": "Verde" if cobertura >= 95 else "Amarillo" if cobertura >= 85 else "Rojo"}
+        logger.info("INFORME PDF volcado kg_real=%s kg_estimado=%s sin_estimacion=%s cobertura=%s", result["summary"]["kg_real"], result["summary"]["kg_estimado"], result["summary"]["sin_estimacion"], result["summary"]["cobertura_palets"])
+        return result
 
     def get_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
         fruta_path = self._db_path(DB_FRUTA)
