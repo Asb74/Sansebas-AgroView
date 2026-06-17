@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Sequence
+import re
+import unicodedata
 
 try:
     from reportlab.lib import colors
@@ -19,8 +21,26 @@ except ModuleNotFoundError:  # pragma: no cover - fallback para entornos sin dep
 class CommercialPdfReportService:
     """Genera el informe comercial diario desde las filas ya filtradas en pantalla."""
 
-    def default_filename(self, now: datetime | None = None) -> str:
-        return f"InformeComercial_{(now or datetime.now()).strftime('%Y%m%d_%H%M')}.pdf"
+    def default_filename(self, cultivos: Sequence[Any] | None = None, now: datetime | None = None) -> str:
+        cultivo_slug = self._cultivo_filename_slug(cultivos)
+        timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M")
+        return f"Informe_comercial_{cultivo_slug}_{timestamp}.pdf"
+
+    def _cultivo_filename_slug(self, cultivos: Sequence[Any] | None = None) -> str:
+        valid_cultivos = [
+            str(cultivo).strip()
+            for cultivo in (cultivos or [])
+            if str(cultivo or "").strip() and str(cultivo or "").strip().upper() != "TODOS"
+        ]
+        if len(valid_cultivos) != 1:
+            return "TODOS"
+        normalized = unicodedata.normalize("NFKD", valid_cultivos[0])
+        ascii_text = "".join(char for char in normalized if not unicodedata.combining(char))
+        ascii_text = ascii_text.replace("/", "_").replace("\\", "_")
+        ascii_text = re.sub(r"\s+", "_", ascii_text.strip())
+        ascii_text = re.sub(r"[^A-Za-z0-9_-]+", "_", ascii_text)
+        ascii_text = re.sub(r"_+", "_", ascii_text).strip("_-")
+        return ascii_text.upper() or "TODOS"
 
     def generate(
         self,
