@@ -53,6 +53,7 @@ class CommercialPdfReportService:
         filters: dict[str, Any] | None = None,
         stock_campo_rows: list[dict] | None = None,
         stock_almacen_rows: list[dict] | None = None,
+        prevision_recoleccion_rows: list[dict] | None = None,
         pedidos_pendientes_rows: list[dict] | None = None,
         pedidos_previstos_rows: list[dict] | None = None,
         aprovechamiento_volcado: dict[str, Any] | None = None,
@@ -67,6 +68,7 @@ class CommercialPdfReportService:
                 filters=filters or {},
                 stock_campo_rows=list(stock_campo_rows or []),
                 stock_almacen_rows=list(stock_almacen_rows or []),
+                prevision_recoleccion_rows=list(prevision_recoleccion_rows or []),
                 pedidos_pendientes_rows=list(pedidos_pendientes_rows or []),
                 pedidos_previstos_rows=list(pedidos_previstos_rows or []),
                 aprovechamiento_volcado=aprovechamiento_volcado or {},
@@ -83,6 +85,7 @@ class CommercialPdfReportService:
 
         campo = list(stock_campo_rows or [])
         almacen = list(stock_almacen_rows or [])
+        prevision = list(prevision_recoleccion_rows or [])
         active_filters = filters or {}
         selected_cultivos = self._selected_filter_values(active_filters.get("cultivo"))
         pendientes = self._filter_pending_rows(list(pedidos_pendientes_rows or []), selected_cultivos)
@@ -91,6 +94,7 @@ class CommercialPdfReportService:
         self._add_header(story, active_filters, generated_at or datetime.now())
         self._add_summary(story, campo, almacen, pendientes, previstos)
         self._add_stock_campo(story, campo)
+        self._add_prevision_recoleccion(story, prevision)
         self._add_aprovechamientos(story, campo)
         self._add_aprovechamiento_detalle_partida(story, campo, aprovechamiento_campo_detalle or {})
         self._add_aprovechamiento_volcado(story, aprovechamiento_volcado or {})
@@ -257,6 +261,73 @@ class CommercialPdfReportService:
             subtotal(f"Total grupo varietal: {current['Grupo varietal']}", self._sum(buckets["Grupo varietal"], "Kg campo"), "cultivo")
         subtotal("TOTAL GENERAL STOCK CAMPO", self._sum(sorted_rows, "Kg campo"), "general")
         story.append(self._table(data, row_styles=styles))
+        story.append(PageBreak())
+
+
+    def _weekday_es(self, iso_date: Any, upper: bool = False) -> str:
+        names = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+        dt = self._parse_date(iso_date)
+        name = names[dt.weekday()] if dt else ""
+        return name.upper() if upper else name
+
+    def _fmt_t(self, kg: Any) -> str:
+        return f"{self._format_toneladas(kg).replace('.', ',')} t"
+
+    def _add_prevision_recoleccion(self, story: list, rows: list[dict]) -> None:
+        story.append(Paragraph("PREVISIÓN DE RECOLECCIÓN", self._section))
+        if not rows:
+            story.append(Paragraph("Sin previsión de recolección desde hoy para los filtros actuales.", self._normal))
+            story.append(PageBreak())
+            return
+        total_kg = self._sum(rows, "KgAprox")
+        socios = {str(self._value(r, "IdSocio") or r.get("Socio") or "").strip() for r in rows if str(self._value(r, "IdSocio") or r.get("Socio") or "").strip()}
+        boletas = {str(r.get("Boleta") or "").strip() for r in rows if str(r.get("Boleta") or "").strip()}
+        variedades = {str(r.get("Variedad") or "").strip() for r in rows if str(r.get("Variedad") or "").strip()}
+        dias = sorted({str(r.get("FechaR_date") or r.get("FechaR") or "") for r in rows if str(r.get("FechaR_date") or r.get("FechaR") or "")})
+        story.append(self._table([
+            ["Kg previstos", "Nº socios", "Nº boletas", "Nº variedades", "Nº días"],
+            [self._fmt_t(total_kg), len(socios), len(boletas), len(variedades), len(dias)],
+        ], col_widths=[5*cm, 4*cm, 4*cm, 4*cm, 4*cm]))
+        story.append(Spacer(1, 6))
+
+        by_day: dict[str, list[dict]] = {}
+        for r in rows:
+            by_day.setdefault(str(r.get("FechaR_date") or r.get("FechaR")), []).append(r)
+        day_summary = [["Día", "Fecha", "Kg previstos", "Nº socios", "Nº boletas"]]
+        for day in sorted(by_day):
+            day_rows = by_day[day]
+            day_summary.append([self._weekday_es(day), self._parse_date(day).strftime("%d/%m/%Y") if self._parse_date(day) else day, self._fmt_t(self._sum(day_rows, "KgAprox")), len({str(r.get("IdSocio") or r.get("Socio") or "").strip() for r in day_rows if str(r.get("IdSocio") or r.get("Socio") or "").strip()}), len({str(r.get("Boleta") or "").strip() for r in day_rows if str(r.get("Boleta") or "").strip()})])
+        story.append(Paragraph("Resumen por día", self._normal))
+        story.append(self._table(day_summary, col_widths=[4*cm, 4*cm, 4*cm, 4*cm, 4*cm]))
+        story.append(Spacer(1, 8))
+
+        detail_cols = ["IdSocio", "Socio", "Boleta", "Variedad", "Manijero", "Matrícula", "Destino", "Cajas", "Kg aprox (t)", "Hora"]
+        for day in sorted(by_day):
+            day_rows = sorted(by_day[day], key=lambda r: (str(r.get("Variedad") or ""), str(r.get("Socio") or ""), str(r.get("Boleta") or "")))
+            date_text = self._parse_date(day).strftime("%d/%m/%Y") if self._parse_date(day) else day
+            story.append(Paragraph(f"{self._weekday_es(day, upper=True)} {date_text}", self._normal))
+            data = [detail_cols]
+            for r in day_rows:
+                data.append([r.get("IdSocio", ""), r.get("Socio", ""), r.get("Boleta", ""), r.get("Variedad", ""), r.get("Manijero", ""), r.get("Matricula", r.get("Matricual", "")), r.get("Destino", ""), self._format_cell(r.get("Cajas", ""), "Cajas"), self._fmt_t(r.get("KgAprox")), r.get("Hora", "")])
+            for label, key in (("Subtotal variedad", "Variedad"), ("Subtotal socio", "Socio")):
+                totals: dict[str, float] = {}
+                for r in day_rows:
+                    name = str(r.get(key) or "Sin especificar")
+                    totals[name] = totals.get(name, 0.0) + float(r.get("KgAprox") or 0)
+                for name, kg in sorted(totals.items()):
+                    data.append([f"{label}: {name}"] + [""] * 7 + [self._fmt_t(kg), ""])
+            data.append(["TOTAL DÍA"] + [""] * 7 + [self._fmt_t(self._sum(day_rows, "KgAprox")), ""])
+            story.append(self._table(data))
+            story.append(Spacer(1, 6))
+
+        final: dict[str, list[dict]] = {}
+        for r in rows:
+            final.setdefault(str(r.get("Variedad") or "Sin especificar"), []).append(r)
+        final_rows = [["Variedad", "Kg previstos", "Nº socios", "Nº boletas"]]
+        for variedad, vrows in sorted(final.items(), key=lambda item: self._sum(item[1], "KgAprox"), reverse=True):
+            final_rows.append([variedad, self._fmt_t(self._sum(vrows, "KgAprox")), len({str(r.get("IdSocio") or r.get("Socio") or "").strip() for r in vrows if str(r.get("IdSocio") or r.get("Socio") or "").strip()}), len({str(r.get("Boleta") or "").strip() for r in vrows if str(r.get("Boleta") or "").strip()})])
+        story.append(Paragraph("Resumen final por variedad", self._normal))
+        story.append(self._table(final_rows, col_widths=[8*cm, 5*cm, 4*cm, 4*cm]))
         story.append(PageBreak())
 
     def _has_any_value(self, rows: Sequence[dict], column: str) -> bool:
@@ -670,6 +741,7 @@ class CommercialPdfReportService:
         sections = [
             ("RESUMEN EJECUTIVO", []),
             ("STOCK CAMPO", kwargs.get("stock_campo_rows", [])),
+            ("PREVISIÓN DE RECOLECCIÓN", kwargs.get("prevision_recoleccion_rows", [])),
             ("STOCK ALMACÉN", kwargs.get("stock_almacen_rows", [])),
             ("PEDIDOS PENDIENTES", pending_rows),
             ("PEDIDOS PREVISTOS / NO CONFIRMADOS", kwargs.get("pedidos_previstos_rows", [])),
