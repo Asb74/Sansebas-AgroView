@@ -1799,9 +1799,6 @@ class PlanningRepository:
             return str(value or "").strip().replace(" ", "").upper()
 
         trazabilidad_por_partida: dict[str, dict[str, Any]] = {}
-        pesosfres_table = self._find_table(conn, ["PesosFres", "pesosfres", "PESOSFRES"])
-        if not pesosfres_table:
-            logger.warning("Tabla PesosFres no encontrada para trazabilidad de partidas agrupadas")
 
         kg_total = 0.0
         for principal in ids:
@@ -1826,41 +1823,51 @@ class PlanningRepository:
                     "Tipo": "Principal" if n == 0 or incluida == principal else "Agrupada",
                 })
 
-        if pesosfres_table and rows:
-            pf_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{pesosfres_table}")').fetchall()]
-            albaran_col = self._find_column(pf_cols, ["AlbaranDef"])
-            wanted_cols = {
-                "Boleta": self._find_column(pf_cols, ["Boleta"]),
-                "Socio": self._find_column(pf_cols, ["IdSocio"]),
-                "Nombre socio": self._find_column(pf_cols, ["Socio"]),
-                "Fecha carga": self._find_column(pf_cols, ["FCarga", "Fcarga", "Fecha carga", "FechaCarga"]),
-                "Semana": self._find_column(pf_cols, ["Apodo"]),
-            }
-            if albaran_col:
-                select_cols = [albaran_col] + [c for c in wanted_cols.values() if c]
-                quoted_cols = ", ".join(f'"{c}"' for c in dict.fromkeys(select_cols))
-                incluidas = sorted({str(r.get("Partida incluida") or "").strip() for r in rows if str(r.get("Partida incluida") or "").strip()})
-                incluidas_norm = [_norm_partida(value) for value in incluidas]
-                for chunk_start in range(0, len(incluidas_norm), 900):
-                    chunk = incluidas_norm[chunk_start:chunk_start + 900]
-                    ph = ",".join(["?"] * len(chunk))
-                    sql = (
-                        f'SELECT {quoted_cols} FROM "{pesosfres_table}" '
-                        f"WHERE UPPER(REPLACE(TRIM(CAST(\"{albaran_col}\" AS TEXT)), ' ', '')) IN ({ph})"
-                    )
-                    for pf_row in conn.execute(sql, chunk).fetchall():
-                        partida_key = _norm_partida(pf_row[albaran_col])
-                        if partida_key in trazabilidad_por_partida:
-                            continue
-                        trazabilidad_por_partida[partida_key] = {
-                            "Boleta": str(pf_row[wanted_cols["Boleta"]] or "").strip() if wanted_cols["Boleta"] else "",
-                            "Socio": str(pf_row[wanted_cols["Socio"]] or "").strip() if wanted_cols["Socio"] else "",
-                            "Nombre socio": str(pf_row[wanted_cols["Nombre socio"]] or "").strip() if wanted_cols["Nombre socio"] else "",
-                            "Fecha carga": _fecha_pdf(pf_row[wanted_cols["Fecha carga"]]) if wanted_cols["Fecha carga"] else "-",
-                            "Semana": str(pf_row[wanted_cols["Semana"]] or "").strip() if wanted_cols["Semana"] else "-",
+        fruta_path = self._db_path(DB_FRUTA)
+        if rows:
+            if fruta_path.exists():
+                with sqlite3.connect(fruta_path) as conn_fruta:
+                    conn_fruta.row_factory = sqlite3.Row
+                    pesosfres_table = self._find_table(conn_fruta, ["PesosFres", "pesosfres", "PESOSFRES"])
+                    if not pesosfres_table:
+                        logger.warning("Tabla PesosFres no encontrada en DB_FRUTA para trazabilidad de partidas agrupadas")
+                    else:
+                        pf_cols = [r[1] for r in conn_fruta.execute(f'PRAGMA table_info("{pesosfres_table}")').fetchall()]
+                        albaran_col = self._find_column(pf_cols, ["AlbaranDef"])
+                        wanted_cols = {
+                            "Boleta": self._find_column(pf_cols, ["Boleta"]),
+                            "Socio": self._find_column(pf_cols, ["IdSocio"]),
+                            "Nombre socio": self._find_column(pf_cols, ["Socio"]),
+                            "Fecha carga": self._find_column(pf_cols, ["Fcarga", "FCarga", "FechaCarga", "Fecha carga"]),
+                            "Semana": self._find_column(pf_cols, ["Apodo"]),
                         }
+                        if albaran_col:
+                            select_cols = [albaran_col] + [c for c in wanted_cols.values() if c]
+                            quoted_cols = ", ".join(f'"{c}"' for c in dict.fromkeys(select_cols))
+                            incluidas = sorted({str(r.get("Partida incluida") or "").strip() for r in rows if str(r.get("Partida incluida") or "").strip()})
+                            incluidas_norm = [_norm_partida(value) for value in incluidas]
+                            for chunk_start in range(0, len(incluidas_norm), 900):
+                                chunk = incluidas_norm[chunk_start:chunk_start + 900]
+                                ph = ",".join(["?"] * len(chunk))
+                                sql = (
+                                    f'SELECT {quoted_cols} FROM "{pesosfres_table}" '
+                                    f"WHERE UPPER(REPLACE(TRIM(CAST(\"{albaran_col}\" AS TEXT)), ' ', '')) IN ({ph})"
+                                )
+                                for pf_row in conn_fruta.execute(sql, chunk).fetchall():
+                                    partida_key = _norm_partida(pf_row[albaran_col])
+                                    if partida_key in trazabilidad_por_partida:
+                                        continue
+                                    trazabilidad_por_partida[partida_key] = {
+                                        "Boleta": str(pf_row[wanted_cols["Boleta"]] or "").strip() if wanted_cols["Boleta"] else "",
+                                        "Socio": str(pf_row[wanted_cols["Socio"]] or "").strip() if wanted_cols["Socio"] else "",
+                                        "Nombre socio": str(pf_row[wanted_cols["Nombre socio"]] or "").strip() if wanted_cols["Nombre socio"] else "",
+                                        "Fecha carga": _fecha_pdf(pf_row[wanted_cols["Fecha carga"]]) if wanted_cols["Fecha carga"] else "-",
+                                        "Semana": str(pf_row[wanted_cols["Semana"]] or "").strip() if wanted_cols["Semana"] else "-",
+                                    }
+                        else:
+                            logger.warning("PesosFres sin columna AlbaranDef en DB_FRUTA para trazabilidad de partidas agrupadas")
             else:
-                logger.warning("PesosFres sin columna AlbaranDef para trazabilidad de partidas agrupadas")
+                logger.warning("No existe DB_FRUTA para trazabilidad de partidas agrupadas: %s", fruta_path)
 
         for row in rows:
             incluida = str(row.get("Partida incluida") or "").strip()

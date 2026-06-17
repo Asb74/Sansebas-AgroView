@@ -1,5 +1,6 @@
 import sqlite3
 
+from config import DB_FRUTA
 from db.planning_repository import PlanningRepository
 
 
@@ -22,19 +23,33 @@ def test_partidas_agrupadas_volcado_usa_partidas_y_trazabilidad_pesosfres(tmp_pa
         conn.execute(
             """
             CREATE TABLE PesosFres (
-                AlbaranDef TEXT, AlbaranD TEXT, Boleta TEXT, IdSocio TEXT,
-                Socio TEXT, FCarga TEXT, Apodo TEXT
+                AlbaranDef TEXT, Boleta TEXT, IdSocio TEXT, Socio TEXT, FCarga TEXT, Apodo TEXT
             )
             """
         )
-        conn.executemany(
-            "INSERT INTO PesosFres VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [
-                ("P1", "NO_USAR", "2052", "1234", "CANO MANZANARES, LUIS", "2026-06-13", "24"),
-                (" a 1 ", "NO_USAR", "2053", "1235", "AGRICULTOR A", "13/06/2026", "24"),
-                ("A2", "NO_USAR", "2054", "1236", "AGRICULTOR B", "2026-06-14", "25"),
-            ],
+        conn.execute(
+            "INSERT INTO PesosFres VALUES (?, ?, ?, ?, ?, ?)",
+            ("A1", "NO_USAR_BDCALIDAD", "NO_USAR", "NO USAR BDCALIDAD", "2026-01-01", "1"),
         )
+
+        fruta_path = tmp_path / DB_FRUTA
+        with sqlite3.connect(fruta_path) as conn_fruta:
+            conn_fruta.execute(
+                """
+                CREATE TABLE PesosFres (
+                    AlbaranDef TEXT, AlbaranD TEXT, Boleta TEXT, IdSocio TEXT,
+                    Socio TEXT, Fcarga TEXT, Apodo TEXT
+                )
+                """
+            )
+            conn_fruta.executemany(
+                "INSERT INTO PesosFres VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    ("P1", "NO_USAR", "2052", "1234", "CANO MANZANARES, LUIS", "2026-06-13", "24"),
+                    (" a 1 ", "NO_USAR", "2053", "1235", "AGRICULTOR A", "13/06/2026", "24"),
+                    ("A2", "NO_USAR", "2054", "1236", "AGRICULTOR B", "2026-06-14", "25"),
+                ],
+            )
 
         rows, summary = repo._get_partidas_agrupadas_volcado(conn, ["P1", "P2"], {"P2": 500})
 
