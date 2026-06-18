@@ -174,7 +174,7 @@ def _cargar_catalogo_pedidos_previstos_base(
         logger.warning("No se pudieron cargar opciones contextuales para catálogos ligeros", exc_info=True)
 
     valores_ordenados = {k: sorted([v for v in vals if v], key=lambda x: _norm_text(x)) for k, vals in valores_base.items()}
-    logger.info(
+    logger.debug(
         "Catalogo pedidos previstos construido ligero: variedades=%s calibres=%s grupos_conf=%s",
         len(valores_ordenados["variedad"]),
         len(valores_ordenados["calibre"]),
@@ -185,7 +185,7 @@ def _cargar_catalogo_pedidos_previstos_base(
 
 def cargar_catalogos_pedidos_previstos(cultivo: str) -> dict:
     cultivo_actual = str(cultivo or "").strip()
-    logger.info("Cargando catálogos pedidos previstos cultivo=%s", cultivo_actual)
+    logger.debug("Cargando catálogos pedidos previstos cultivo=%s", cultivo_actual)
     try:
         repo = PlanningRepository()
         catalogos = repo.cargar_catalogos_pedidos_previstos(cultivo_actual)
@@ -200,7 +200,7 @@ def cargar_catalogos_pedidos_previstos(cultivo: str) -> dict:
         "grupos_confeccion": list(catalogos.get("grupos_confeccion", [])),
         "clientes": list(catalogos.get("clientes", [])),
     }
-    logger.info(
+    logger.debug(
         "Catálogos pedidos previstos cargados cultivo=%s variedades=%s calibres=%s categorias=%s grupos_confeccion=%s clientes=%s",
         cultivo_actual,
         len(result["variedades"]),
@@ -246,7 +246,7 @@ def cargar_reglas_compatibilidad_operativa() -> dict:
     except Exception:
         logger.exception("Fallo al cargar reglas de compatibilidad operativa; usando defaults en memoria")
         reglas = reglas_default
-    logger.info(
+    logger.debug(
         "Reglas compatibilidad cargadas: calibres=%s perfiles=%s clientes=%s",
         len(reglas.get("calibres", [])),
         len(reglas.get("perfiles", [])),
@@ -275,7 +275,7 @@ def _cargar_prioridades_pedidos() -> dict[str, int]:
             return {}
         data = json.loads(PRIORIDADES_PEDIDOS_PATH.read_text(encoding="utf-8"))
         out = {str(k): max(0, min(100, int(_to_float(v)))) for k, v in (data or {}).items()}
-        logger.info("Prioridades cargadas: %s pedidos", len(out))
+        logger.debug("Prioridades cargadas: %s pedidos", len(out))
         return out
     except Exception:
         logger.exception("No se pudieron cargar prioridades manuales")
@@ -1042,7 +1042,7 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
     for pedido in pedidos_meta:
         kg_necesario = _kg_pendiente_linea(pedido)
         if kg_necesario <= 0:
-            logger.info(
+            logger.debug(
                 "Pedido omitido en cálculo operativo por kg=0 id=%s",
                 pedido.get("IdPedidoLora", pedido.get("id_pedido", "")),
             )
@@ -1072,7 +1072,7 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             continue
         sum_kg_candidatos = sum(_to_float(c.get("Kg disponibles", c.get("kg_utiles_estimados", c.get("kg_fisicos", 0)))) for c in candidatos_raw)
         if str(pedido.get("origen_demanda", "")).upper() == "PREVISTO":
-            logger.info(
+            logger.debug(
                 "Buscando candidatos para pedido previsto id=%s variedad=%s grupo=%s calibre=%s categoria=%s kg=%s",
                 pedido_id, variedad, grupo_varietal, calibre, categoria, kg_necesario,
             )
@@ -1082,7 +1082,7 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
                 pedido_id, variedad, grupo_varietal, calibre, categoria, kg_necesario,
             )
         else:
-            logger.info(
+            logger.debug(
                 "SIMULACION CANDIDATOS pedido=%s calibre=%s kg=%s candidatos=%s kg_potencial=%s",
                 pedido_id, calibre, kg_necesario, len(candidatos_raw), sum_kg_candidatos,
             )
@@ -1107,7 +1107,7 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             cand["motivo_compatibilidad"] = compat.get("motivo", "")
             cand["riesgo_compatibilidad"] = compat.get("riesgo", "ALTO")
             if str(pedido.get("origen_demanda", "")).upper() == "PREVISTO":
-                logger.info(
+                logger.debug(
                     "Candidato stock evaluado previsto=%s stock_variedad=%s stock_grupo=%s stock_calibre=%s stock_categoria=%s tipo_calibre=%s kg=%s",
                     pedido.get("IdPedidoLora", pedido.get("id_pedido", "")),
                     cand.get("Variedad stock", cand.get("variedad_stock", cand.get("Variedad", ""))),
@@ -1117,7 +1117,7 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
                     compat.get("tipo", "INCOMPATIBLE"),
                     _to_float(cand.get("Kg disponibles", cand.get("kg_utiles_estimados", cand.get("kg_fisicos", 0)))),
                 )
-            logger.info(
+            logger.debug(
                 "Compatibilidad pedido=%s calibre_pedido=%s calibre_stock=%s tipo=%s penalizacion=%s motivo=%s",
                 pedido.get("IdPedidoLora", pedido.get("id_pedido", "")),
                 pedido.get("Calibre", ""),
@@ -1217,7 +1217,7 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             pendiente -= kg_asign
             asignado += kg_asign
             if kg_asign > 0:
-                logger.info(
+                logger.debug(
                     "ASIGNACION PREVISTO id=%s calibre=%s stock_calibre=%s kg_necesario=%s kg_asignado=%s kg_restante_pool=%s",
                     pedido.get("IdPedidoLora", pedido.get("id_pedido", "")),
                     pedido.get("Calibre", pedido.get("calibre", "")),
@@ -1436,9 +1436,9 @@ def generar_acciones_sugeridas(diagnostico: dict) -> list[str]:
 def construir_inventario_global_simulado(candidatos_globales: list[dict]) -> dict[str, dict]:
     inventario: dict[str, dict] = {}
     rows = deepcopy(candidatos_globales or [])
-    logger.info("Inventario global raw ejemplo=%s", rows[0] if rows else None)
+    logger.debug("Inventario global raw ejemplo=%s", rows[0] if rows else None)
     pools_normalizados = [normalizar_pool_inventario_global(c) for c in rows]
-    logger.info(
+    logger.debug(
         "Inventario global normalizado pools=%s total_kg=%s calibres=%s grupos=%s origenes=%s",
         len(pools_normalizados),
         sum(float(p.get("Kg disponibles", 0) or 0) for p in pools_normalizados),
@@ -1473,7 +1473,7 @@ def construir_inventario_global_simulado(candidatos_globales: list[dict]) -> dic
                 "categoria": cand.get("Categoría", cand.get("categoria_stock", "")),
                 "subpool_calidad": "FISICO",
             }
-        logger.info(
+        logger.debug(
             "Inventario global disponible pool=%s variedad=%s grupo=%s calibre=%s categoria=%s kg=%s",
             pool_id,
             inventario[pool_id].get("variedad", ""),
@@ -1485,7 +1485,7 @@ def construir_inventario_global_simulado(candidatos_globales: list[dict]) -> dic
         inventario[pool_id]["kg_fisicos"] += kg_fisicos
         inventario[pool_id]["kg_utiles_finales"] += kg_fisicos
         inventario[pool_id]["kg_restante_simulado"] += kg_fisicos
-    logger.info(
+    logger.debug(
         "Inventario físico global construido: pools=%s kg_total=%s kg_libre=%s calibres=%s origenes=%s",
         len(inventario),
         sum(_to_float(p.get("kg_fisicos", 0)) for p in inventario.values()),
@@ -1590,9 +1590,9 @@ def construir_necesidades_operativas(pedidos_totales: list[dict]) -> list[dict]:
         if fecha and (not reg["primera_fecha_salida"] or fecha < reg["primera_fecha_salida"]):
             reg["primera_fecha_salida"] = fecha
     necesidades = list(agrupado.values())
-    logger.info("Necesidades operativas construidas: %s", len(necesidades))
+    logger.debug("Necesidades operativas construidas: %s", len(necesidades))
     for key, reg in agrupado.items():
-        logger.info("Need key=%s kg_total=%s kg_reales=%s kg_previstos=%s", key, reg["kg_necesarios_total"], reg["kg_reales"], reg["kg_previstos"])
+        logger.debug("Need key=%s kg_total=%s kg_reales=%s kg_previstos=%s", key, reg["kg_necesarios_total"], reg["kg_reales"], reg["kg_previstos"])
     return necesidades
 
 
@@ -1618,7 +1618,7 @@ def calcular_horizonte_cobertura(
     politica = dict(policy or {})
     incluir_campo_real = bool(politica.get("allow_campo_real", True))
     incluir_campo_estimado = bool(politica.get("allow_campo_estimado", False))
-    logger.info(
+    logger.debug(
         "Horizonte input: pedidos=%s inventario_pools=%s kg_pedidos=%s",
         len(pedidos or []),
         len(inventario_global or {}),
@@ -1662,7 +1662,7 @@ def calcular_horizonte_cobertura(
             "hay_fechas_validas": False,
         }
     simulaciones, _asignaciones, stock_simulado = simular_asignacion_global(pedidos, get_candidatos_cb, scoring=scoring)
-    logger.info(
+    logger.debug(
         "Horizonte simulaciones: pedidos=%s kg_necesario=%s kg_asignado=%s kg_faltante=%s",
         len(simulaciones),
         sum(_to_float(s.get("kg_necesario", 0)) for s in simulaciones),
@@ -1737,7 +1737,7 @@ def calcular_horizonte_cobertura(
         else:
             reg["Acción sugerida"] = "Recolectar / buscar alternativa"
         reg.pop("_fecha_critica", None)
-        logger.info(
+        logger.debug(
             "Horizonte fecha=%s pedidos=%s lineas=%s kg_pedidos=%s kg_cubiertos=%s kg_faltantes=%s estado=%s",
             fecha,
             reg.get("Nº pedidos", 0),
@@ -1775,7 +1775,7 @@ def calcular_horizonte_cobertura(
         recomendaciones.append("No es necesario recolectar para cubrir los pedidos seleccionados.")
     recomendaciones.append(f"Política campo real: {'habilitado' if incluir_campo_real else 'deshabilitado'}")
     recomendaciones.append(f"Política campo estimado: {'habilitado' if incluir_campo_estimado else 'deshabilitado'}")
-    logger.info(
+    logger.debug(
         "Horizonte resumen fechas=%s",
         [(r["Fecha salida"], r["Kg pedidos"], r["Estado día"]) for r in resumen_por_fecha],
     )
@@ -2100,7 +2100,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             if not pedido_previsto_en_rango_temporal(p, filters_payload, hoy=hoy_ref):
                 fecha_desde = (filters_payload or {}).get("fecha_desde")
                 fecha_hasta = (filters_payload or {}).get("fecha_hasta")
-                logger.info(
+                logger.debug(
                     "Pedido previsto excluido por fecha id=%s fecha_salida=%s hoy=%s fecha_desde=%s fecha_hasta=%s",
                     p.get("id_previsto", ""),
                     p.get("fecha_salida", p.get("Fecha salida", p.get("FechaSalida", ""))),
@@ -2110,7 +2110,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
                 )
                 continue
             previstos_activos.append(p)
-    logger.info("Pedidos previstos incluidos en simulación: %s", len(previstos_activos))
+    logger.debug("Pedidos previstos incluidos en simulación: %s", len(previstos_activos))
 
     pedidos_cols = ["Origen demanda", "Fecha salida", "Bloque temporal", "Prioridad manual", "Prioridad total", "Motivo prioridad", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Kg potencial físico", "Kg potencial útil"]
     pedidos_tbl = DataTable(top, pedidos_cols)
@@ -2175,18 +2175,18 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             popup.destroy()
             return
         pedidos_previstos_sim.append(pedido_previsto)
-        logger.info("Pedido previsto integrado id=%s variedad=%s calibre=%s kg=%s", p.get("id_previsto", ""), p.get("variedad", ""), p.get("calibre", ""), p.get("kg_estimados", 0))
+        logger.debug("Pedido previsto integrado id=%s variedad=%s calibre=%s kg=%s", p.get("id_previsto", ""), p.get("variedad", ""), p.get("calibre", ""), p.get("kg_estimados", 0))
     pedidos_informativos = pedidos_reales + pedidos_previstos_sim
-    logger.info("Demanda simulación: reales=%s previstos=%s total=%s", len(pedidos_reales), len(pedidos_previstos_sim), len(pedidos_informativos))
+    logger.debug("Demanda simulación: reales=%s previstos=%s total=%s", len(pedidos_reales), len(pedidos_previstos_sim), len(pedidos_informativos))
     for p in pedidos_informativos:
         p["prioridad_manual"] = prioridades_map.get(_pedido_id_prioridad(p), int(_to_float(p.get("prioridad_manual", 0))))
     pedidos_normalizados = [normalizar_pedido_para_simulacion(p) for p in pedidos_informativos]
     pedidos_operativos = [p for p in pedidos_normalizados if _kg_pendiente_linea(p) > 0]
     necesidades_operativas = construir_necesidades_operativas(pedidos_operativos)
-    logger.info("Pedidos simulación: informativos=%s operativos=%s", len(pedidos_informativos), len(pedidos_operativos))
-    logger.info("Necesidades operativas agregadas para análisis: %s", len(necesidades_operativas))
+    logger.debug("Pedidos simulación: informativos=%s operativos=%s", len(pedidos_informativos), len(pedidos_operativos))
+    logger.debug("Necesidades operativas agregadas para análisis: %s", len(necesidades_operativas))
     for p in pedidos_operativos:
-        logger.info(
+        logger.debug(
             "Pedido operativo para asignación origen=%s id=%s cliente=%s variedad=%s grupo=%s calibre=%s categoria=%s grupo_conf=%s perfil=%s kg=%s",
             p.get("origen_demanda"),
             p.get("IdPedidoLora"),
@@ -2200,7 +2200,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             _kg_pendiente_linea(p),
         )
     if not pedidos_operativos:
-        logger.info("Simulación sin pedidos operativos: análisis de stock/sobrantes")
+        logger.debug("Simulación sin pedidos operativos: análisis de stock/sobrantes")
     if pedidos_detalle_horizonte is not None:
         pedidos_detalle_horizonte = [dict(p) for p in pedidos_detalle_horizonte]
         for p in pedidos_detalle_horizonte:
@@ -2240,7 +2240,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         kg_total = sum(_to_float(p.get("kg_fisicos", 0)) for p in inventario_global_simulado.values())
         kg_libre = sum(_to_float(p.get("kg_restante_simulado", 0)) for p in inventario_global_simulado.values())
         kg_asignado = max(0.0, kg_total - kg_libre)
-        logger.info(
+        logger.debug(
             "Inventario físico tras asignaciones: kg_total=%s kg_asignado=%s kg_libre=%s",
             kg_total,
             kg_asignado,
@@ -2417,7 +2417,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
 
     pedidos_horizonte_base = list(pedidos_detalle_horizonte or pedidos_reales)
     pedidos_horizonte = pedidos_horizonte_base + pedidos_previstos_sim
-    logger.info(
+    logger.debug(
         "Horizonte pedidos entrada: filas=%s fechas=%s kg_total=%s",
         len(pedidos_horizonte),
         sorted(set(str(p.get("Fecha salida", p.get("fecha_salida", ""))) for p in pedidos_horizonte)),
@@ -2599,7 +2599,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             partes.append("No recolectar salvo nuevo pedido")
         return " · ".join(partes)
 
-    logger.info(
+    logger.debug(
         "Sobrantes sin pedidos: stock_total=%s stock_libre=%s pools=%s",
         sum(_to_float(p.get("kg_fisicos", 0)) for p in inventario_global_simulado.values()),
         sum(_to_float(r.get("Kg restante total", 0)) for r in sobrantes_rows),
@@ -2953,7 +2953,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     reglas_tbl.set_rows(reglas_rows)
 
     def _refrescar_simulacion_previstos() -> None:
-        logger.info("Refrescando simulación por cambio en pedidos previstos")
+        logger.debug("Refrescando simulación por cambio en pedidos previstos")
         ctx = getattr(popup, "_sim_context", {})
         abrir_simulacion_asignacion(
             parent,
@@ -2969,7 +2969,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             mode_refresh=True,
             sim_window=popup,
         )
-        logger.info("Refresco simulación completado correctamente")
+        logger.debug("Refresco simulación completado correctamente")
 
     construir_panel_pedidos_previstos(
         previstos_tab,

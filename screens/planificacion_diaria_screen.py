@@ -372,7 +372,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
     def _invalidate_planning_cache(self, motivo: str, keys: list[str] | None = None) -> None:
         logger = logging.getLogger(__name__)
-        logger.info("CACHE INVALIDADA motivo=%s", motivo)
+        logger.debug("CACHE INVALIDADA motivo=%s", motivo)
         if keys is None:
             self._planning_cache = self._new_planning_cache()
             self._filter_options_cache = {}
@@ -401,9 +401,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
     def _cache_get(self, key: str):
         logger = logging.getLogger(__name__)
         if self._planning_cache.get(key) is not None:
-            logger.info("CACHE HIT %s", key)
+            logger.debug("CACHE HIT %s", key)
             return self._planning_cache[key]
-        logger.info("CACHE MISS %s", key)
+        logger.debug("CACHE MISS %s", key)
         return None
 
     def _cache_set(self, key: str, value) -> None:
@@ -612,12 +612,12 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 policy=self._build_sim_policy(),
             )
             logger = logging.getLogger(__name__)
-            logger.info(
+            logger.debug(
                 "Inventario operativo global: pools=%s calibres=%s",
                 len(pools),
                 sorted(set(str(p.get("calibre", "")) for p in pools)),
             )
-            logger.info(
+            logger.debug(
                 "Inventario operativo global origenes=%s",
                 sorted(set(str(p.get("origen", "")) for p in pools)),
             )
@@ -644,14 +644,14 @@ class PlanificacionDiariaScreen(ttk.Frame):
         pedidos_detalle_horizonte = [dict(r) for r in self.pedidos_pendientes_rows_raw]
         if not pedidos_detalle_horizonte:
             pedidos_detalle_horizonte = [dict(r) for r in self.pedidos_pendientes_rows]
-        logger.info(
+        logger.debug(
             "Simulación horizonte raw: filas=%s fechas=%s kg_total=%s",
             len(pedidos_detalle_horizonte),
             sorted(set(str(r.get("Fecha salida", "")) for r in pedidos_detalle_horizonte)),
             sum(float(r.get("Kg pendiente", 0) or 0) for r in pedidos_detalle_horizonte),
         )
         if not pedidos:
-            logger.info("Simulación abierta sin pedidos: modo análisis stock/sobrantes")
+            logger.debug("Simulación abierta sin pedidos: modo análisis stock/sobrantes")
 
         filtros = self._filters_payload()
         cultivos = filtros.get("cultivo", [])
