@@ -532,24 +532,27 @@ class CommercialPdfReportService:
             groups.setdefault(detail["grupo_varietal"], []).append(detail)
             self._accumulate_aprovechamiento_totals(total_general, detail)
 
+        data: list[list[Any]] = [columns]
+        styles: list[tuple[int, str]] = []
+
         for grupo in sorted(groups, key=lambda g: g.upper()):
             details = groups[grupo]
-            story.append(Paragraph(f"GRUPO VARIETAL {grupo}", self._normal))
-            data: list[list[Any]] = [columns]
-            styles: list[tuple[int, str]] = []
+            data.append([f"GRUPO VARIETAL: {grupo}"] + [""] * (len(columns) - 1))
+            styles.append((len(data) - 1, "GRUPO_APROVECHAMIENTO"))
             group_totals = self._empty_aprovechamiento_totals()
             for detail in details:
                 self._accumulate_aprovechamiento_totals(group_totals, detail)
                 data.append(detail["row"])
                 styles.append((len(data) - 1, detail["origen"]))
-            story.append(self._table(data, row_styles=styles, col_widths=[
-                1.4*cm, 1.2*cm, 1.2*cm, 2.3*cm, 1.6*cm, 1.6*cm, 2.0*cm, 1.2*cm, 1.2*cm,
-                *([0.9*cm] * 11), 1.8*cm,
-            ]))
-            story.append(self._aprovechamiento_resumen_table(f"SUBTOTAL GRUPO VARIETAL {grupo}", group_totals))
-            story.append(Spacer(1, 6))
+            data.append(self._aprovechamiento_totals_row(f"SUBTOTAL {grupo}", group_totals, columns))
+            styles.append((len(data) - 1, "SUBTOTAL_APROVECHAMIENTO"))
 
-        story.append(self._aprovechamiento_resumen_table("TOTAL GENERAL", total_general))
+        data.append(self._aprovechamiento_totals_row("TOTAL GENERAL", total_general, columns))
+        styles.append((len(data) - 1, "TOTAL_APROVECHAMIENTO"))
+        story.append(self._table(data, row_styles=styles, col_widths=[
+            1.4*cm, 1.2*cm, 1.2*cm, 2.3*cm, 1.6*cm, 1.6*cm, 2.0*cm, 1.2*cm, 1.2*cm,
+            *([0.9*cm] * 11), 1.8*cm,
+        ]))
         story.append(PageBreak())
 
     def _empty_aprovechamiento_totals(self) -> dict[str, Any]:
@@ -575,6 +578,16 @@ class CommercialPdfReportService:
                 f"CAL{i + 1}" if i + 1 <= 10 else "", self._format_toneladas(totals["calibres"][str(i + 1)]) if i + 1 <= 10 else "",
             ])
         return self._table(resumen, row_styles=[(0, "SUBTOTAL_APROVECHAMIENTO")], col_widths=[5*cm, 4*cm, 5*cm, 4*cm])
+
+    def _aprovechamiento_totals_row(self, label: str, totals: dict[str, Any], columns: list[str]) -> list[str]:
+        row = [""] * len(columns)
+        row[0] = label
+        row[1] = f'{totals["partidas"]} partidas'
+        row[5] = self._format_toneladas(totals["kg_entregado"])
+        for i in range(11):
+            row[columns.index(f"T CAL {i}")] = self._format_toneladas(totals["calibres"][str(i)])
+        row[columns.index("T estimadas")] = self._format_toneladas(totals["kg_estimado"])
+        return row
 
     def _aprovechamiento_partida_detail(self, partida: dict, detalle_map: dict[str, list[dict]]) -> dict[str, Any]:
         boleta = str(self._value(partida, "Boleta") or "").strip()
@@ -814,18 +827,26 @@ class CommercialPdfReportService:
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#9DC3E6"))]
             elif first.startswith("SUBTOTAL GRUPO VARIETAL"):
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#D9D9D9"))]
+            elif first.startswith("GRUPO VARIETAL:"):
+                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#D9EAF7")), ("SPAN", (0,i), (-1,i))]
+            elif first.startswith("SUBTOTAL "):
+                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#EAF3F8"))]
             elif first.startswith(("Subtotal", "Total", "TOTAL")):
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#F1F1F1"))]
         color_map = {
             "VERDE": "#E2F0D9", "AMARILLO": "#FFF2CC", "ROJO": "#F4CCCC", "GRIS": "#E7E6E6",
             "HARVESTSYNC": "#D9EAF7", "REAL_PESOSFRES": "#E2F0D9", "LOTEADO": "#E7E6E6",
             "MANUAL": "#FFF2CC", "ESTIMADO_MANUAL": "#FFF2CC", "SIN_APROVECHAMIENTO": "#F4CCCC",
-            "SUBTOTAL_APROVECHAMIENTO": "#D9D9D9",
+            "GRUPO_APROVECHAMIENTO": "#D9EAF7", "SUBTOTAL_APROVECHAMIENTO": "#EAF3F8", "TOTAL_APROVECHAMIENTO": "#D9D9D9",
         }
         for row_idx, marker in row_styles or []:
             marker_text = str(marker).upper()
             if marker_text in color_map:
                 style.append(("BACKGROUND", (0, row_idx), (-1, row_idx), colors.HexColor(color_map[marker_text])))
+                if marker_text in {"GRUPO_APROVECHAMIENTO", "SUBTOTAL_APROVECHAMIENTO", "TOTAL_APROVECHAMIENTO"}:
+                    style.append(("FONTNAME", (0, row_idx), (-1, row_idx), "Helvetica-Bold"))
+                if marker_text == "GRUPO_APROVECHAMIENTO":
+                    style.append(("SPAN", (0, row_idx), (-1, row_idx)))
             elif marker_text == "DESTACADO":
                 style.append(("FONTNAME", (0, row_idx), (-1, row_idx), "Helvetica-Bold"))
                 style.append(("BACKGROUND", (0, row_idx), (-1, row_idx), colors.HexColor("#EAF3F8")))
