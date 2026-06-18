@@ -84,16 +84,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         if cached is not None:
             return cached
 
-        rows = self._get_current_base_rows_for_filters(key, payload, tab_name)
-        field_names = self._filter_row_field_names(key)
-        options = sorted({
-            value
-            for row in rows
-            for value in [self._row_filter_value(row, field_names)]
-            if value
-        }, key=lambda value: (self._numeric_sort_value(value), value.upper()))
-        if not options:
-            options = self.service.get_filter_options_contextual(key, {k: v for k, v in payload.items() if k != key})
+        options = self.service.get_planning_filter_options(key, {k: v for k, v in payload.items() if k != key})
         self._filter_options_cache[cache_key] = options
         return options
 
@@ -327,10 +318,11 @@ class PlanificacionDiariaScreen(ttk.Frame):
         frame.pack(fill="both", expand=True)
 
     def _filters_payload(self) -> dict:
+        empresa_ids = [self.service.empresa_display_to_id(v) for v in self.filter_widgets["empresa"].get_selected()]
         return {
             "campana": self.filter_widgets["campana"].get_selected(),
             "cultivo": self.filter_widgets["cultivo"].get_selected(),
-            "empresa": self.filter_widgets["empresa"].get_selected(),
+            "empresa": [v for v in empresa_ids if str(v or "").strip()],
             "semana": self.filter_widgets["semana"].get_selected(),
             "var_coop": self.filter_widgets["var_coop"].get_selected(),
             "grupo_varietal": self.filter_widgets["grupo_varietal"].get_selected(),
@@ -982,6 +974,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.snapshot_info_var.set(info.get("label", "Foto de datos: No disponible"))
 
     def _actualizar_foto_local(self) -> None:
+        self.service.invalidate_planning_filter_master_cache()
         ok, errors = self.runtime_db_service.prepare_runtime_databases(force=True)
         if not ok:
             messagebox.showwarning("Planificación diaria", self.runtime_db_service.WARNING_MESSAGE, parent=self)
@@ -1303,6 +1296,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         )
         if not confirm:
             return
+        self.service.invalidate_planning_filter_master_cache()
         self._invalidate_planning_cache("actualizar_planificacion")
         self.stock_campo_rows = []
         self.stock_almacen_rows = []
@@ -1374,7 +1368,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
             if key == "pedidos_modo":
                 display = self._pedidos_mode_label(str(value).strip())
             elif isinstance(value, list):
-                display = ",".join(value) if value else "Todos"
+                display_values = [self.service.empresa_id_to_display(v) for v in value] if key == "empresa" else value
+                display = ",".join(display_values) if display_values else "Todos"
             else:
                 display = str(value).strip() or "Todos"
             parts.append(f"{labels[key]}={display}")
@@ -1398,6 +1393,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         for key in self.FILTER_KEYS:
             raw = payload.get(key, [])
             values = raw if isinstance(raw, list) else ([str(raw)] if str(raw or "").strip() else [])
+            if key == "empresa":
+                values = [self.service.empresa_id_to_display(v) for v in values]
             self.filter_widgets[key].set_selected([str(v).strip() for v in values if str(v or "").strip()])
         self.fecha_desde_var.set(str(payload.get("fecha_desde", "") or "").strip())
         self.fecha_hasta_var.set(str(payload.get("fecha_hasta", "") or "").strip())

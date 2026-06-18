@@ -82,6 +82,18 @@ class PlanningService:
     def get_filter_options_contextual(self, key: str, filters: dict) -> list[str]:
         return self.repo.get_filter_options_contextual(key, filters)
 
+    def get_planning_filter_options(self, key: str, filters: dict) -> list[str]:
+        return self.repo.get_planning_filter_options(key, filters)
+
+    def empresa_display_to_id(self, value) -> str:
+        return self.repo.empresa_display_to_id(value)
+
+    def empresa_id_to_display(self, value) -> str:
+        return self.repo.empresa_id_to_display(value)
+
+    def invalidate_planning_filter_master_cache(self) -> None:
+        self.repo.invalidate_planning_filter_master_cache()
+
     def get_correspondencias_calibres(self, cultivo: str) -> list[dict]:
         return self.repo.get_correspondencias_calibres(cultivo)
 
