@@ -273,6 +273,9 @@ class CommercialPdfReportService:
     def _fmt_t(self, kg: Any) -> str:
         return f"{self._format_toneladas(kg).replace('.', ',')} t"
 
+    def _prevision_fecha(self, row: dict) -> Any:
+        return row.get("Fecha_date") or row.get("Fecha") or row.get("FechaR_date") or row.get("FechaR")
+
     def _add_prevision_recoleccion(self, story: list, rows: list[dict], filters: dict[str, Any] | None = None) -> None:
         story.append(Paragraph("PREVISIÓN DE RECOLECCIÓN", self._section))
         if not rows:
@@ -283,7 +286,7 @@ class CommercialPdfReportService:
         socios = {str(self._value(r, "IdSocio") or r.get("Socio") or "").strip() for r in rows if str(self._value(r, "IdSocio") or r.get("Socio") or "").strip()}
         boletas = {str(r.get("Boleta") or "").strip() for r in rows if str(r.get("Boleta") or "").strip()}
         variedades = {str(r.get("Variedad") or "").strip() for r in rows if str(r.get("Variedad") or "").strip()}
-        dias = sorted({str(r.get("FechaR_date") or r.get("FechaR") or "") for r in rows if str(r.get("FechaR_date") or r.get("FechaR") or "")})
+        dias = sorted({str(self._prevision_fecha(r) or "") for r in rows if str(self._prevision_fecha(r) or "")})
         story.append(self._table([
             ["Kg previstos", "Nº socios", "Nº boletas", "Nº variedades", "Nº días"],
             [self._fmt_t(total_kg), len(socios), len(boletas), len(variedades), len(dias)],
@@ -294,7 +297,7 @@ class CommercialPdfReportService:
 
         by_day: dict[str, list[dict]] = {}
         for r in rows:
-            by_day.setdefault(str(r.get("FechaR_date") or r.get("FechaR")), []).append(r)
+            by_day.setdefault(str(self._prevision_fecha(r)), []).append(r)
         day_summary = [["Día", "Fecha", "Kg previstos", "Nº socios", "Nº boletas"]]
         for day in sorted(by_day):
             day_rows = by_day[day]
@@ -349,7 +352,7 @@ class CommercialPdfReportService:
         return mapping.get(text, text[:2]) if text else ""
 
     def _weekly_day_labels(self, rows: list[dict]) -> list[tuple[str, str]]:
-        parsed_dates = [self._parse_date(r.get("FechaR_date") or r.get("FechaR")) for r in rows]
+        parsed_dates = [self._parse_date(self._prevision_fecha(r)) for r in rows]
         parsed_dates = [d for d in parsed_dates if d]
         start = min(parsed_dates) if parsed_dates else datetime.now().date()
         days = [start + timedelta(days=i) for i in range(7)]
@@ -362,7 +365,7 @@ class CommercialPdfReportService:
         days = self._weekly_day_labels(rows)
         grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
         for row in rows:
-            day = self._parse_date(row.get("FechaR_date") or row.get("FechaR"))
+            day = self._parse_date(self._prevision_fecha(row))
             if not day:
                 continue
             iso = day.isoformat()

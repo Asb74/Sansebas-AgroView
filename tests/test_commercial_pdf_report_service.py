@@ -167,9 +167,9 @@ def test_prevision_recoleccion_incluye_matriz_semanal(monkeypatch, tmp_path):
         tmp_path / "prevision_matriz.pdf",
         filters={"cultivo": ["SANDIA"]},
         prevision_recoleccion_rows=[
-            {"FechaR_date": "2026-06-17", "IdSocio": "1", "Socio": "Socio A", "Boleta": "B1", "Variedad": "V1", "KgAprox": 60000},
-            {"FechaR_date": "2026-06-18", "IdSocio": "1", "Socio": "Socio A", "Boleta": "B2", "Variedad": "V1", "KgAprox": 10000},
-            {"FechaR_date": "2026-06-17", "IdSocio": "2", "Socio": "Socio B", "Boleta": "B3", "Variedad": "V2", "Cultivo": "CITRICOS", "KgAprox": 5000},
+            {"Fecha_date": "2026-06-17", "FechaR_date": "2026-06-10", "IdSocio": "1", "Socio": "Socio A", "Boleta": "B1", "Variedad": "V1", "KgAprox": 60000},
+            {"Fecha_date": "2026-06-18", "FechaR_date": "2026-06-10", "IdSocio": "1", "Socio": "Socio A", "Boleta": "B2", "Variedad": "V1", "KgAprox": 10000},
+            {"Fecha_date": "2026-06-17", "FechaR_date": "2026-06-10", "IdSocio": "2", "Socio": "Socio B", "Boleta": "B3", "Variedad": "V2", "Cultivo": "CITRICOS", "KgAprox": 5000},
         ],
     )
 
@@ -180,3 +180,46 @@ def test_prevision_recoleccion_incluye_matriz_semanal(monkeypatch, tmp_path):
     assert ["Socio A", "SA", "V1", "60.0", "10.0", "-", "-", "-", "-", "-", "70.0"] in table
     assert ["Socio B", "CI", "V2", "5.0", "-", "-", "-", "-", "-", "-", "5.0"] in table
     assert table[-1] == ["TOTAL", "", "", "65.0", "10.0", "-", "-", "-", "-", "-", "75.0"]
+
+
+def test_prevision_recoleccion_filtra_por_fecha_no_fechar(tmp_path):
+    import sqlite3
+    from datetime import datetime
+
+    from config import DB_FRUTA
+    from db.planning_repository import PlanningRepository
+
+    fruta_path = tmp_path / DB_FRUTA
+    with sqlite3.connect(fruta_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE Prevision (
+                Fecha TEXT,
+                FechaR TEXT,
+                KgAprox TEXT,
+                IdSocio TEXT,
+                Socio TEXT,
+                Boleta TEXT,
+                Variedad TEXT
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO Prevision VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("2026-06-18", "2026-06-10", "1000", "1", "Socio válido", "B1", "V1"),
+                ("2026-06-19", "31/12/1899", "2000", "2", "Socio con FechaR vacía", "B2", "V2"),
+                ("2026-06-17", "2026-06-20", "3000", "3", "Socio pasado", "B3", "V3"),
+                ("", "2026-06-20", "4000", "4", "Socio sin fecha", "B4", "V4"),
+                (None, "2026-06-20", "5000", "5", "Socio fecha nula", "B5", "V5"),
+                ("31/12/1899", "2026-06-20", "6000", "6", "Socio fecha cero", "B6", "V6"),
+                ("2026-06-20", "2026-06-20", "0", "7", "Socio sin kg", "B7", "V7"),
+            ],
+        )
+
+    repo = PlanningRepository(base_dir=tmp_path)
+    rows = repo.get_prevision_recoleccion({}, today=datetime(2026, 6, 18))
+
+    assert [row["Boleta"] for row in rows] == ["B1", "B2"]
+    assert [row["Fecha_date"] for row in rows] == ["2026-06-18", "2026-06-19"]
+    assert rows[0]["FechaR_date"] == "2026-06-10"

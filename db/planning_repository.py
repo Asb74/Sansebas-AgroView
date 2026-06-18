@@ -2123,7 +2123,7 @@ class PlanningRepository:
 
     def get_prevision_recoleccion(self, filters: dict | None = None, today: datetime | None = None) -> list[dict[str, Any]]:
         start = time.perf_counter()
-        logger.debug("[PDF] Previsión recolección")
+        logger.debug("[PDF] Previsión recolección usando campo Fecha")
         filters = filters or {}
         today_date = (today or datetime.now()).date()
         fruta_path = self._db_path(DB_FRUTA)
@@ -2145,14 +2145,17 @@ class PlanningRepository:
             else:
                 logger.warning("[PDF] Previsión recolección: no se puede relacionar Cultivo/Grupo varietal; no existe %s", eepl_path)
 
+            if "Fecha" not in cols:
+                logger.warning("[PDF] Previsión recolección: no existe campo Fecha en tabla Prevision")
+                return []
+
             where = [
-                "p.FechaR IS NOT NULL",
-                "TRIM(CAST(p.FechaR AS TEXT)) <> ''",
-                "TRIM(CAST(p.FechaR AS TEXT)) <> '31/12/1899'",
+                "p.Fecha IS NOT NULL",
+                "TRIM(CAST(p.Fecha AS TEXT)) <> ''",
+                "TRIM(CAST(p.Fecha AS TEXT)) <> '31/12/1899'",
                 "CAST(REPLACE(COALESCE(p.KgAprox,0), ',', '.') AS REAL) > 0",
             ]
             params: list[Any] = []
-            until_date = today_date + timedelta(days=6)
             for field, col in (("var_coop", "p.Variedad"),):
                 values = self._normalize_filter_values(filters.get(field))
                 if values:
@@ -2192,26 +2195,31 @@ class PlanningRepository:
 
         rows: list[dict[str, Any]] = []
         for row in raw_rows:
-            dt = self._parse_date(row.get("FechaR"))
-            if not dt or dt.date() < today_date or dt.date() > until_date or dt.strftime("%d/%m/%Y") == "31/12/1899":
+            dt = self._parse_date(row.get("Fecha"))
+            if not dt or dt.date() < today_date or dt.strftime("%d/%m/%Y") == "31/12/1899":
                 continue
             kg = normalizar_numero(str(row.get("KgAprox") or "0").replace(",", "."))
             if kg <= 0:
                 continue
             out = dict(row)
-            out["FechaR_date"] = dt.date().isoformat()
-            out["FechaR_display"] = dt.strftime("%d/%m/%Y")
+            out["Fecha_date"] = dt.date().isoformat()
+            out["Fecha_display"] = dt.strftime("%d/%m/%Y")
+            # FechaR se mantiene disponible únicamente como dato informativo.
+            fechap = self._parse_date(row.get("FechaR"))
+            if fechap:
+                out["FechaR_date"] = fechap.date().isoformat()
+                out["FechaR_display"] = fechap.strftime("%d/%m/%Y")
             out["KgAprox"] = kg
             out["Matricula"] = out.get("Matricual") or out.get("Matricula") or out.get("Matrícula") or ""
             rows.append(out)
         total_kg = round(sum(float(r.get("KgAprox") or 0) for r in rows), 2)
-        logger.debug("[PDF] Registros encontrados: %s", len(rows))
-        logger.debug("[PDF] Días encontrados: %s", len({r.get("FechaR_date") for r in rows}))
+        logger.debug("[PDF] Previsión registros encontrados=%s", len(rows))
+        logger.debug("[PDF] Días encontrados: %s", len({r.get("Fecha_date") for r in rows}))
         logger.debug("[PDF] Kg previstos totales: %s", total_kg)
         logger.debug("[PDF] Previsión semanal registros=%s", len(rows))
         logger.debug("[PDF] Previsión semanal filas=%s", len({(str(r.get("Socio") or ""), str(r.get("Cultivo") or ""), str(r.get("Variedad") or "")) for r in rows}))
         logger.debug("[PDF] Previsión semanal kg_total=%s", total_kg)
-        logger.debug("[PDF] Previsión semanal desde=%s hasta=%s", today_date.isoformat(), until_date.isoformat())
+        logger.debug("[PDF] Previsión desde=%s", today_date.isoformat())
         logger.debug("[PDF] Tiempo de generación: %.3fs", time.perf_counter() - start)
         return rows
 
