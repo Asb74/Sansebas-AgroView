@@ -54,6 +54,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.last_capacity_simulation: dict | None = None
         self.last_capacity_payload: dict | None = None
         self._planning_cache = self._new_planning_cache()
+        self._filter_options_cache: dict[tuple, list[str]] = {}
         self.sim_policy_vars: dict[str, tk.BooleanVar] = {}
         self._build_ui()
         self._load_filters()
@@ -62,16 +63,92 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.load_data(save_filters=False)
 
     def _load_filter_options(self, contextual: bool = True) -> None:
-        payload = self._filters_payload() if contextual else {}
         for key in self.FILTER_KEYS:
-            selected = self.filter_widgets[key].get_selected() if key in self.filter_widgets else []
-            try:
-                options = self.service.get_filter_options_contextual(key, payload) if contextual else self.service.get_filter_options(key)
-                valid = [v for v in selected if v in options]
-                self.filter_widgets[key].set_options(options)
-                self.filter_widgets[key].set_selected(valid)
-            except Exception:
-                logging.getLogger(__name__).exception("No se pudo cargar opciones de filtro %s", key)
+            self._refresh_filter_options_for(key, contextual=contextual)
+
+    def _refresh_filter_options_for(self, key: str, contextual: bool = True) -> None:
+        selected = self.filter_widgets[key].get_selected() if key in self.filter_widgets else []
+        try:
+            options = self._get_filter_options_for_active_tab(key) if contextual else self.service.get_filter_options(key)
+            valid = [v for v in selected if v in options]
+            self.filter_widgets[key].set_options(options)
+            self.filter_widgets[key].set_selected(valid)
+        except Exception:
+            logging.getLogger(__name__).exception("No se pudo cargar opciones de filtro %s", key)
+
+    def _get_filter_options_for_active_tab(self, key: str) -> list[str]:
+        payload = self._filters_payload()
+        tab_name = self.tabs.tab(self.tabs.select(), "text") if hasattr(self, "tabs") else ""
+        cache_key = (tab_name, key, self._get_filters_key({**payload, key: []}))
+        cached = self._filter_options_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        rows = self._get_current_base_rows_for_filters(key, payload, tab_name)
+        field_names = self._filter_row_field_names(key)
+        options = sorted({
+            value
+            for row in rows
+            for value in [self._row_filter_value(row, field_names)]
+            if value
+        }, key=lambda value: (self._numeric_sort_value(value), value.upper()))
+        if not options:
+            options = self.service.get_filter_options_contextual(key, {k: v for k, v in payload.items() if k != key})
+        self._filter_options_cache[cache_key] = options
+        return options
+
+    def _get_current_base_rows_for_filters(self, ignored_filter: str, payload: dict, tab_name: str) -> list[dict]:
+        filters = {k: v for k, v in payload.items() if k != ignored_filter}
+        filters[ignored_filter] = []
+        if tab_name == "Stock campo":
+            rows, _updated, _warning = self.service.load_stock_campo(filters)
+            return rows
+        if tab_name == "Stock almacén":
+            rows, _warning = self.service.load_stock_almacen(filters)
+            return rows
+        if tab_name == "Pedidos pendientes":
+            rows, _kpi = self.service.load_pedidos_pendientes(filters, self.pedidos_modo_var.get())
+            return rows
+        if tab_name == "Balance":
+            return self.service.load_balance_planificacion(filters, policy=self._build_sim_policy())
+        if tab_name == "Capacidad productiva":
+            cap = self.capacity_service.build_capacity_simulation(filters, self.pedidos_modo_var.get())
+            return list(cap.get("family_rows", [])) + list(cap.get("line_rows", [])) + list(cap.get("incidencias", []))
+        if tab_name == "Pedidos previstos" and self.pedidos_previstos_panel:
+            refresh = self.pedidos_previstos_panel.get("refresh_rows")
+            if callable(refresh):
+                refresh()
+            table = self.pedidos_previstos_panel.get("table")
+            if table is not None and hasattr(table, "rows"):
+                return list(getattr(table, "rows") or [])
+        return []
+
+    @staticmethod
+    def _filter_row_field_names(key: str) -> tuple[str, ...]:
+        return {
+            "campana": ("Campaña", "Campana", "campana"),
+            "cultivo": ("Cultivo", "cultivo"),
+            "empresa": ("Empresa", "EMPRESA", "empresa"),
+            "semana": ("Semana", "semana"),
+            "var_coop": ("Variedad Coop", "Variedad", "VarCoop", "var_coop"),
+            "grupo_varietal": ("Grupo varietal", "Grupo Varietal", "grupo_varietal"),
+            "marca": ("Marca", "marca"),
+        }.get(key, (key,))
+
+    @staticmethod
+    def _row_filter_value(row: dict, field_names: tuple[str, ...]) -> str:
+        for field in field_names:
+            value = str(row.get(field, "") or "").strip()
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _numeric_sort_value(value: str) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return float("inf")
 
     def _build_ui(self) -> None:
         self.grid_rowconfigure(2, weight=1)
@@ -88,7 +165,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             elif key == "fecha_hasta":
                 self._build_date_field(filters_frame, 1, i, self.fecha_hasta_var)
             else:
-                widget = MultiSelectFilter(filters_frame, title=label, width=16)
+                widget = MultiSelectFilter(filters_frame, title=label, on_open_options=lambda k=key: self._refresh_filter_options_for(k), width=16)
                 widget.grid(row=1, column=i, padx=4, sticky="ew")
                 self.filter_widgets[key] = widget
             filters_frame.grid_columnconfigure(i, weight=1)
@@ -298,9 +375,11 @@ class PlanificacionDiariaScreen(ttk.Frame):
         logger.info("CACHE INVALIDADA motivo=%s", motivo)
         if keys is None:
             self._planning_cache = self._new_planning_cache()
+            self._filter_options_cache = {}
             self.last_capacity_simulation = None
             self.last_capacity_payload = None
             return
+        self._filter_options_cache = {}
         for key in keys:
             if key in self._planning_cache:
                 self._planning_cache[key] = None
