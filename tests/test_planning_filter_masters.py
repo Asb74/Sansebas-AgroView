@@ -18,6 +18,11 @@ def _repo_with_dbeepl(tmp_path: Path) -> PlanningRepository:
             'INSERT INTO "Empresa" VALUES (?, ?, ?)',
             [(1, "San Sebastian S.C.A", "EXT 1"), (2, "", "Empresa extensa"), (3, None, None)],
         )
+        conn.execute('CREATE TABLE "MVariedad" ("CULTIVO" TEXT, "Variedad" TEXT, "GRUPO" TEXT, "SUBGRUPO" TEXT)')
+        conn.executemany(
+            'INSERT INTO "MVariedad" VALUES (?, ?, ?, ?)',
+            [("CITRICOS", "NAVEL", "NARANJA", "TEMPRANA"), ("SANDIA", "RAYADA", "SANDIA", "SIN PEPITA")],
+        )
     return PlanningRepository(base_dir=tmp_path)
 
 
@@ -30,6 +35,12 @@ def test_planning_master_filters_load_from_dbeepl_campaign_crop_and_company(tmp_
     assert masters["cultivos_por_campana"]["2026"] == ["CITRICOS", "SANDIA"]
     assert masters["cultivos_por_campana"]["__ALL__"] == ["CITRICOS", "SANDIA"]
     assert masters["empresas"] == ["San Sebastian S.C.A", "Empresa extensa", "3"]
+    assert masters["grupos_por_cultivo"]["__ALL__"] == ["NARANJA", "SANDIA"]
+    assert masters["grupos_por_cultivo"]["CITRICOS"] == ["NARANJA"]
+    assert masters["variedades"] == [
+        {"cultivo": "CITRICOS", "grupo": "NARANJA", "variedad": "NAVEL"},
+        {"cultivo": "SANDIA", "grupo": "SANDIA", "variedad": "RAYADA"},
+    ]
     assert repo.empresa_display_to_id("San Sebastian S.C.A") == "1"
     assert repo.empresa_id_to_display("1") == "San Sebastian S.C.A"
 
