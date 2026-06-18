@@ -1,12 +1,13 @@
-﻿import tkinter as tk
+import tkinter as tk
 from tkinter import ttk
 
 
 class MultiSelectFilter(ttk.Frame):
-    def __init__(self, master: tk.Misc, title: str, on_apply=None, width: int = 28) -> None:
+    def __init__(self, master: tk.Misc, title: str, on_apply=None, on_open_options=None, width: int = 28) -> None:
         super().__init__(master)
         self.title = title
         self.on_apply = on_apply
+        self.on_open_options = on_open_options
         self.available_options: list[str] = []
         self._selected: set[str] = set()
         self._summary_var = tk.StringVar(value="Todos")
@@ -48,6 +49,8 @@ class MultiSelectFilter(ttk.Frame):
         self._summary_var.set(f"{count} seleccionados")
 
     def _open_popup(self) -> None:
+        if self.on_open_options is not None:
+            self.on_open_options()
         if self._popup is not None and self._popup.winfo_exists():
             self._popup.lift()
             return
