@@ -143,18 +143,20 @@ def test_aprovechamiento_detalle_partida_muestra_toneladas(monkeypatch, tmp_path
     assert table[0][9] == "T CAL 0"
     assert table[0][19] == "T CAL 10"
     assert table[0][20] == "T estimadas"
-    assert table[1][5] == "437,9 t"
-    assert table[1][9] == "8,6 t"
-    assert table[1][19] == "9,2 t"
-    assert table[1][20] == "17,9 t"
-
-    resumen_tables = [t for t in captured if t and t[0] and str(t[0][0]).startswith("SUBTOTAL GRUPO VARIETAL")]
-    assert resumen_tables
-    resumen = resumen_tables[0]
-    assert resumen[1][:3] == ["Nº partidas", "Kg entregados", "Kg estimados"]
-    assert resumen[2][:3] == [1, "437,9 t", "17,9 t"]
-    assert [row[:2] for row in resumen[4:]][0] == ["CAL0", "8,6 t"]
-    assert [row[:2] for row in resumen[9:]][0] == ["CAL10", "9,2 t"]
+    assert table[1][0] == "GRUPO VARIETAL: SIN GRUPO VARIETAL"
+    assert table[2][5] == "437,9 t"
+    assert table[2][9] == "8,6 t"
+    assert table[2][19] == "9,2 t"
+    assert table[2][20] == "17,9 t"
+    assert table[3][0] == "SUBTOTAL SIN GRUPO VARIETAL"
+    assert table[3][1] == "1 partidas"
+    assert table[3][5] == "437,9 t"
+    assert table[3][9] == "8,6 t"
+    assert table[3][19] == "9,2 t"
+    assert table[3][20] == "17,9 t"
+    assert table[4][0] == "TOTAL GENERAL"
+    assert table[4][1] == "1 partidas"
+    assert not any(t and t[0] and str(t[0][0]).startswith("SUBTOTAL GRUPO VARIETAL") for t in captured)
 
 @pytest.mark.skipif(not REPORTLAB_AVAILABLE, reason="ReportLab no instalado")
 def test_prevision_recoleccion_incluye_matriz_semanal(monkeypatch, tmp_path):
