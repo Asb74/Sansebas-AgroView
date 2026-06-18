@@ -30,6 +30,7 @@ def setup_logging() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
             logging.FileHandler(SESSION_LOG_FILE, encoding="utf-8"),
+            logging.FileHandler(LOG_FILE, encoding="utf-8"),
             logging.StreamHandler(),
         ],
         force=True,
