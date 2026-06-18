@@ -662,7 +662,7 @@ class CommercialPdfReportService:
             diff = pv - pe
             lectura = "Volcado superior" if diff > 5 else "Volcado inferior" if diff < -5 else "Similar"
             data.append([cal, f"{pe:.1f}%", f"{pv:.1f}%", f"{diff:+.1f}", lectura])
-        logger.info("INFORME PDF comparativa calibres=%s", max(0, len(data) - 1))
+        logger.debug("INFORME PDF comparativa calibres=%s", max(0, len(data) - 1))
         if len(data) == 1:
             story.append(Paragraph("Sin calibres suficientes para comparar estimado y volcado.", self._normal))
         else:

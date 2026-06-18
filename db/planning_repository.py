@@ -303,7 +303,7 @@ class PlanningRepository:
                     return {str(a), str(b)}
                 lo, hi = sorted((a, b))
                 result = {str(i) for i in range(lo, hi + 1)}
-                logger.info("Calibre compuesto expandido original=%s set=%s", calibre_texto, sorted(result))
+                logger.debug("Calibre compuesto expandido original=%s set=%s", calibre_texto, sorted(result))
                 return result
             return {str(n) for n in nums_int}
         m_range = re.fullmatch(r"(\d+)\s*[-.]\s*(\d+)", clean)
@@ -311,7 +311,7 @@ class PlanningRepository:
             a, b = int(m_range.group(1)), int(m_range.group(2))
             lo, hi = sorted((a, b))
             result = {str(i) for i in range(lo, hi + 1)}
-            logger.info("Calibre compuesto expandido original=%s set=%s", calibre_texto, sorted(result))
+            logger.debug("Calibre compuesto expandido original=%s set=%s", calibre_texto, sorted(result))
             return result
         return set(nums)
 
@@ -527,20 +527,20 @@ class PlanningRepository:
             mismo_grupo = str(ind_grupo).strip().upper() == str(grupo).strip().upper()
             grupo_ok = mismo_grupo or policy_cfg["permitir_grupo_varietal_alternativo"]
             if not grupo_ok:
-                logger.info(
+                logger.debug(
                     "MATCH DESCARTA motivo=%s pedido_calibre=%s stock_calibre=%s pedido_cat=%s stock_cat=%s",
                     "grupo distinto", calibre, ind_calibre, categoria, ind_categoria
                 )
                 continue
             if (not policy_cfg["permitir_variedad_alternativa"]) and str(ind_variedad).strip().upper() != str(variedad).strip().upper():
-                logger.info(
+                logger.debug(
                     "MATCH DESCARTA motivo=%s pedido_calibre=%s stock_calibre=%s pedido_cat=%s stock_cat=%s",
                     "variedad distinta", calibre, ind_calibre, categoria, ind_categoria
                 )
                 continue
             categoria_ok, flex_cat = self._categoria_compatible(categoria, ind_categoria, policy_cfg)
             if not categoria_ok:
-                logger.info(
+                logger.debug(
                     "MATCH DESCARTA motivo=%s pedido_calibre=%s stock_calibre=%s pedido_cat=%s stock_cat=%s",
                     "categoria distinta", calibre, ind_calibre, categoria, ind_categoria
                 )
@@ -548,7 +548,7 @@ class PlanningRepository:
 
             cmp_result = self.comparar_calibres_para_cobertura(calibre, ind_calibre, calibre_map=calibre_map)
             if cmp_result["tipo"] == "SIN_COBERTURA":
-                logger.info(
+                logger.debug(
                     "MATCH DESCARTA motivo=%s pedido_calibre=%s stock_calibre=%s pedido_cat=%s stock_cat=%s",
                     "calibre sin cobertura", calibre, ind_calibre, categoria, ind_categoria
                 )
@@ -569,7 +569,7 @@ class PlanningRepository:
                 continue
             kg_util = ind_kg * (factor_calibre if policy_cfg.get("usar_factor_calibre_agrupado", True) else 1.0)
 
-            logger.info(
+            logger.debug(
                 "MATCH CALIBRE pedido=%s stock=%s pedido_set=%s stock_set=%s coincidentes=%s tipo=%s factor=%s kg_stock=%s kg_util=%s",
                 calibre,
                 ind_calibre,
@@ -838,7 +838,7 @@ class PlanningRepository:
                 cred = credentials.Certificate(str(cred_path))
                 firebase_admin.initialize_app(cred)
             self._harvestsync_client = firestore.client()
-            logger.info("HARVESTSYNC init ok")
+            logger.debug("HARVESTSYNC init ok")
         except Exception as exc:
             self._harvestsync_unavailable = True
             logger.warning("HARVESTSYNC no disponible: %s", exc)
@@ -936,7 +936,7 @@ class PlanningRepository:
                 values = [str(v).strip() for v in campo.values() if str(v).strip()]
             else:
                 values = [str(v).strip() for v in campo if str(v).strip()]
-            logger.info(
+            logger.debug(
                 "HARVESTSYNC plantilla %s cultivo=%s campos=%s",
                 "calibre" if collection == "PlantillasCalibre" else "aprovechamiento",
                 cultivo_norm,
@@ -978,9 +978,9 @@ class PlanningRepository:
             logger.warning("HARVESTSYNC error consultando muestras boleta=%s: %s", boleta, exc)
             self._harvestsync_cache[cache_key] = []
             return []
-        logger.info("HARVESTSYNC muestras boleta=%s cultivo=%s desde=%s hasta=%s n=%s", boleta, cultivo, desde, hasta, len(muestras))
+        logger.debug("HARVESTSYNC muestras boleta=%s cultivo=%s desde=%s hasta=%s n=%s", boleta, cultivo, desde, hasta, len(muestras))
         if not muestras:
-            logger.info("HARVESTSYNC sin muestras boleta=%s cultivo=%s", boleta, cultivo)
+            logger.debug("HARVESTSYNC sin muestras boleta=%s cultivo=%s", boleta, cultivo)
             self._harvestsync_cache[cache_key] = []
             return []
         campos_aprov = self._get_harvestsync_template("PlantillasAprovechamiento", cultivo)
@@ -1005,7 +1005,7 @@ class PlanningRepository:
             pct_grupo = fruta_comercial * max(valor, 0.0) / total_cal
             for calibre, pct_puro in self._repartir_kg_loteado_por_calibres(pct_grupo, calibres).items():
                 rows.append({"Origen": "CAMPO_ESTIMADO_HARVESTSYNC", "Calibre": calibre, "Categoría": "NORMAL", "% aprovechamiento": round(pct_puro, 4), "Destrío %": round(float(destrio or 0), 4), "Industria %": round(float(industria or 0), 4), "Origen aprovechamiento": "HARVESTSYNC", "Aviso": f"Aprovechamiento HarvestSync boleta {boleta}".strip(), "Explicación": "Estimación media HarvestSync últimos 3 días"})
-        logger.info("HARVESTSYNC aplicado boleta=%s fruta_comercial=%s calibres=%s", boleta, round(fruta_comercial, 4), len(rows))
+        logger.debug("HARVESTSYNC aplicado boleta=%s fruta_comercial=%s calibres=%s", boleta, round(fruta_comercial, 4), len(rows))
         self._harvestsync_cache[cache_key] = rows
         return [dict(r) for r in rows]
 
@@ -1017,7 +1017,7 @@ class PlanningRepository:
             if boleta and boleta not in seen:
                 seen.add(boleta)
                 boletas_unicas.append(boleta)
-        logger.info("APROVECHAMIENTO boletas únicas=%s", len(boletas_unicas))
+        logger.debug("APROVECHAMIENTO boletas únicas=%s", len(boletas_unicas))
 
         albaranes_por_boleta = self._get_pesosfres_albaranes_por_boleta(boletas_unicas, filters)
         kg_campo_por_boleta: dict[str, float] = defaultdict(float)
@@ -1032,14 +1032,14 @@ class PlanningRepository:
             pf_rows = self._get_pesosfres_aprovechamiento_por_boleta(boleta, filters)
             if pf_rows:
                 aprovechamiento_cache[boleta] = pf_rows
-                logger.info("APROVECHAMIENTO Fuente final boleta=%s fuente=REAL_PESOSFRES", boleta)
+                logger.debug("APROVECHAMIENTO Fuente final boleta=%s fuente=REAL_PESOSFRES", boleta)
                 continue
             loteado_filters = dict(filters or {})
             loteado_filters["_kg_campo_boleta"] = kg_campo_por_boleta.get(boleta, 0.0)
             loteado_rows = self._get_loteado_aprovechamiento_por_boleta(boleta, albaranes_por_boleta.get(boleta, []), loteado_filters)
             if loteado_rows:
                 aprovechamiento_cache[boleta] = loteado_rows
-                logger.info("APROVECHAMIENTO Fuente final boleta=%s fuente=LOTEADO", boleta)
+                logger.debug("APROVECHAMIENTO Fuente final boleta=%s fuente=LOTEADO", boleta)
                 continue
             harvestsync_rows: list[dict[str, Any]] = []
             for partida_hs in stock_por_boleta.get(boleta, [{"Boleta": boleta}]):
@@ -1048,15 +1048,15 @@ class PlanningRepository:
                     break
             if harvestsync_rows:
                 aprovechamiento_cache[boleta] = harvestsync_rows
-                logger.info("APROVECHAMIENTO Fuente final boleta=%s fuente=HARVESTSYNC", boleta)
+                logger.debug("APROVECHAMIENTO Fuente final boleta=%s fuente=HARVESTSYNC", boleta)
                 continue
             estimadas = self._rows_estimadas_para_stock_campo(stock_por_boleta.get(boleta, [{"Boleta": boleta}]), boletas_con_real=set())
             if estimadas:
                 aprovechamiento_cache[boleta] = estimadas
-                logger.info("APROVECHAMIENTO Fuente final boleta=%s fuente=ESTIMADO_MANUAL", boleta)
+                logger.debug("APROVECHAMIENTO Fuente final boleta=%s fuente=ESTIMADO_MANUAL", boleta)
             else:
                 aprovechamiento_cache[boleta] = []
-                logger.info("APROVECHAMIENTO Fuente final boleta=%s fuente=SIN_APROVECHAMIENTO", boleta)
+                logger.debug("APROVECHAMIENTO Fuente final boleta=%s fuente=SIN_APROVECHAMIENTO", boleta)
 
         out: list[dict[str, Any]] = []
         sin_datos = 0
@@ -1065,7 +1065,7 @@ class PlanningRepository:
             boleta = str(partida.get("Boleta", "") or "").strip()
             kg_campo = float(partida.get("Kg campo", 0) or 0)
             if boleta in used:
-                logger.info("APROVECHAMIENTO cache hit boleta=%s", boleta)
+                logger.debug("APROVECHAMIENTO cache hit boleta=%s", boleta)
             used.add(boleta)
             template_rows = aprovechamiento_cache.get(boleta, [])
             if not template_rows:
@@ -1113,7 +1113,7 @@ class PlanningRepository:
                     for row in partida_rows:
                         row["Kg disponibles"] = round(float(row.get("Kg disponibles", 0) or 0) * factor_kg, 2)
                     kg_estimado_total = round(sum(float(r.get("Kg disponibles", 0) or 0) for r in partida_rows), 2)
-            logger.info("APROVECHAMIENTO aplicado boleta=%s kg_partida=%s pct_total=%s kg_estimado_total=%s", boleta, kg_campo, round(min(pct_total, 100.0), 4), kg_estimado_total)
+            logger.debug("APROVECHAMIENTO aplicado boleta=%s kg_partida=%s pct_total=%s kg_estimado_total=%s", boleta, kg_campo, round(min(pct_total, 100.0), 4), kg_estimado_total)
             out.extend(partida_rows)
         return out, sin_datos
 
@@ -1171,7 +1171,7 @@ class PlanningRepository:
                         out[boleta].append(albaran)
         for boleta in boletas:
             total_filtrado = len(out.get(boleta, []))
-            logger.info("APROVECHAMIENTO albaranes boleta=%s total_filtrado=%s", boleta, total_filtrado)
+            logger.debug("APROVECHAMIENTO albaranes boleta=%s total_filtrado=%s", boleta, total_filtrado)
             if total_filtrado > 50:
                 logger.warning("Boleta %s tiene demasiados albaranes filtrados: %s", boleta, total_filtrado)
         return dict(out)
@@ -1239,7 +1239,7 @@ class PlanningRepository:
                 if kg > 0:
                     sum_cal[label] += kg
         if total_valido <= 0 or validas == 0:
-            logger.info("APROVECHAMIENTO PesosFres boleta=%s entregas_validas=%s entregas_ignoradas=%s total_kg_valido=0 distribucion_pct={}", boleta, validas, ignoradas)
+            logger.debug("APROVECHAMIENTO PesosFres boleta=%s entregas_validas=%s entregas_ignoradas=%s total_kg_valido=0 distribucion_pct={}", boleta, validas, ignoradas)
             return []
         out = []
         distribucion_pct: dict[str, float] = {}
@@ -1250,13 +1250,13 @@ class PlanningRepository:
             pct_redondeado = round(pct, 4)
             distribucion_pct[calibre] = pct_redondeado
             out.append({"Origen": "CAMPO_REAL_PESOSFRES", "Calibre": calibre, "Categoría": categoria or "NORMAL", "% aprovechamiento": pct_redondeado, "Origen aprovechamiento": "REAL_PESOSFRES", "Aviso": f"Aprovechamiento real PesosFres boleta {boleta}".strip(), "Explicación": "Distribución porcentual media por calibre calculada desde entregas válidas de PesosFres; los kilos se aplican después a cada partida"})
-        logger.info("APROVECHAMIENTO PesosFres boleta=%s entregas_validas=%s entregas_ignoradas=%s total_kg_valido=%s distribucion_pct=%s", boleta, validas, ignoradas, round(total_valido, 2), distribucion_pct)
+        logger.debug("APROVECHAMIENTO PesosFres boleta=%s entregas_validas=%s entregas_ignoradas=%s total_kg_valido=%s distribucion_pct=%s", boleta, validas, ignoradas, round(total_valido, 2), distribucion_pct)
         return out
 
     def _get_loteado_aprovechamiento_por_boleta(self, boleta: str, albaranes_boleta: list[str], filters: dict) -> list[dict[str, Any]]:
         start = time.perf_counter()
         if not boleta or not albaranes_boleta or not self.db_loteado.exists():
-            logger.info("APROVECHAMIENTO Loteado boleta=%s albaranes=%s filas_lote=0 tiempo=%.2fs", boleta, len(albaranes_boleta or []), time.perf_counter() - start)
+            logger.debug("APROVECHAMIENTO Loteado boleta=%s albaranes=%s filas_lote=0 tiempo=%.2fs", boleta, len(albaranes_boleta or []), time.perf_counter() - start)
             return []
         lote_rows: list[dict[str, Any]] = []
         with sqlite3.connect(self.db_loteado) as conn:
@@ -1315,7 +1315,7 @@ class PlanningRepository:
                 grouped[(calibre, categoria)] += kg_cal
                 total += kg_cal
         elapsed = time.perf_counter() - start
-        logger.info("APROVECHAMIENTO Loteado boleta=%s albaranes=%s filas_lote=%s tiempo=%.2fs", boleta, len(albaranes_boleta), len(lote_rows), elapsed)
+        logger.debug("APROVECHAMIENTO Loteado boleta=%s albaranes=%s filas_lote=%s tiempo=%.2fs", boleta, len(albaranes_boleta), len(lote_rows), elapsed)
         if total <= 0:
             return []
         out = []
@@ -1327,7 +1327,7 @@ class PlanningRepository:
             pct = round(kg_cal / total * 100, 4)
             distribucion_pct[f"{calibre}|{categoria}"] = pct
             out.append({"Origen": "CAMPO_REAL_LOTEADO", "Calibre": calibre, "Categoría": categoria, "% aprovechamiento": pct, "Origen aprovechamiento": "LOTEADO", "Aviso": f"Aprovechamiento calculado desde loteado boleta {boleta}".strip(), "Explicación": "Distribución porcentual por calibre calculada desde netos loteados; los kilos se aplican después a cada partida"})
-        logger.info("APROVECHAMIENTO Loteado boleta=%s total_kg_loteado=%s distribucion_pct=%s", boleta, round(total, 2), distribucion_pct)
+        logger.debug("APROVECHAMIENTO Loteado boleta=%s total_kg_loteado=%s distribucion_pct=%s", boleta, round(total, 2), distribucion_pct)
         return out
 
     def _get_pesosfres_campo_disponibilidad_real(self, stock_campo_rows: list[dict[str, Any]], filters: dict) -> tuple[list[dict[str, Any]], int, set[str]]:
@@ -1337,7 +1337,7 @@ class PlanningRepository:
         if not stock_campo_rows:
             return [], 0, set()
 
-        logger.info("CAMPO PesosFres: stock_campo filas=%s", len(stock_campo_rows))
+        logger.debug("CAMPO PesosFres: stock_campo filas=%s", len(stock_campo_rows))
         candidates: list[dict[str, Any]] = []
         sin_datos = 0
         rechazadas: set[str] = set()
@@ -1399,10 +1399,10 @@ class PlanningRepository:
                         match = bool(dt_row and dt_src and abs((dt_row - dt_src).days) <= 2)
                     else:
                         match = False
-                logger.info("CAMPO PesosFres: boleta=%s kg_campo=%s match=%s", boleta, kg_campo, match)
+                logger.debug("CAMPO PesosFres: boleta=%s kg_campo=%s match=%s", boleta, kg_campo, match)
                 if not match_row or not match:
                     sin_datos += 1
-                    logger.info("Stock campo sin aprovechamiento real: boleta %s", boleta or "(sin boleta)")
+                    logger.debug("Stock campo sin aprovechamiento real: boleta %s", boleta or "(sin boleta)")
                     continue
 
                 kg_total_real = self._build_neto_correcto(
@@ -1416,7 +1416,7 @@ class PlanningRepository:
                         if kg_cal <= 0:
                             continue
                         distribucion[cal_label] = round(kg_cal / kg_total_real, 8)
-                logger.info("CAMPO PesosFres: boleta=%s kg_total_real=%s calibres=%s", boleta, kg_total_real, distribucion)
+                logger.debug("CAMPO PesosFres: boleta=%s kg_total_real=%s calibres=%s", boleta, kg_total_real, distribucion)
                 if not distribucion:
                     sin_datos += 1
                     continue
@@ -1425,11 +1425,11 @@ class PlanningRepository:
                     rechazadas.add(boleta)
                     logger.warning("PesosFres no fiable: aprovechamiento concentrado en un único calibre. boleta=%s", boleta)
                     continue
-                logger.info("PesosFres válido por boleta=%s calibres=%s", boleta, len(distribucion))
+                logger.debug("PesosFres válido por boleta=%s calibres=%s", boleta, len(distribucion))
                 categoria = str(match_row.get(categoria_col, "") if categoria_col else "").strip()
                 for calibre, pct in distribucion.items():
                     kg_estimado = round(kg_campo * pct, 2)
-                    logger.info("CAMPO disponibilidad creada boleta=%s calibre=%s kg=%s pct=%s", boleta, calibre, kg_estimado, pct)
+                    logger.debug("CAMPO disponibilidad creada boleta=%s calibre=%s kg=%s pct=%s", boleta, calibre, kg_estimado, pct)
                     candidates.append({
                         "Origen": "CAMPO_REAL_PESOSFRES",
                         "Tipo stock": "CAMPO",
@@ -1470,7 +1470,7 @@ class PlanningRepository:
         def log_loteado_exit(filas: int | None = None) -> None:
             elapsed = time.perf_counter() - start
             filas_log = len(loteado_rows) if filas is None else filas
-            logger.info("SALIENDO LOTEADO tiempo=%.2fs filas=%s", elapsed, filas_log)
+            logger.debug("SALIENDO LOTEADO tiempo=%.2fs filas=%s", elapsed, filas_log)
             if elapsed > 3:
                 logger.warning("LOTEADO lento: tiempo=%.2f segundos", elapsed)
 
@@ -1481,7 +1481,7 @@ class PlanningRepository:
                 except Exception as exc:
                     logger.debug("No se pudo crear índice temporal loteado: %s sql=%s", exc, statement)
 
-        logger.info("ENTRANDO LOTEADO pendientes=%s", len(boletas_pendientes))
+        logger.debug("ENTRANDO LOTEADO pendientes=%s", len(boletas_pendientes))
         if not loteado_path.exists() or not fruta_path.exists():
             logger.warning("Loteado no disponible para aprovechamiento campo: loteado=%s fruta=%s", loteado_path.exists(), fruta_path.exists())
             log_loteado_exit()
@@ -1524,7 +1524,7 @@ class PlanningRepository:
                         boleta = str(row["Boleta"] or "").strip()
                         if albaran and boleta in pendientes and albaran not in albaran_to_boleta:
                             albaran_to_boleta[albaran] = boleta
-            logger.info("PesosFres albaranes encontrados=%s", len(albaran_to_boleta))
+            logger.debug("PesosFres albaranes encontrados=%s", len(albaran_to_boleta))
             if not albaran_to_boleta:
                 log_loteado_exit(0)
                 return [], len(pendientes)
@@ -1572,7 +1572,7 @@ class PlanningRepository:
                 campanas = [v for v in campanas if v.upper() != "TODOS"]
                 cultivos = [v for v in cultivos if v.upper() != "TODOS"]
                 empresas = [v for v in empresas if v.upper() != "TODOS"]
-                logger.info("LOTEADO filtros normalizados campana=%s cultivo=%s empresa=%s", campanas, cultivos, empresas)
+                logger.debug("LOTEADO filtros normalizados campana=%s cultivo=%s empresa=%s", campanas, cultivos, empresas)
                 where_base = [f'CAST(lote."{neto_col}" AS REAL) > 0', f'TRIM(CAST(lote."{calibre_col}" AS TEXT)) <> ""']
                 params_base: list[Any] = []
                 if terminado_col:
@@ -1605,7 +1605,7 @@ class PlanningRepository:
                         if boleta:
                             item["Boleta"] = boleta
                             loteado_rows.append(item)
-            logger.info("Loteado filas recuperadas=%s", len(loteado_rows))
+            logger.debug("Loteado filas recuperadas=%s", len(loteado_rows))
         except Exception as exc:
             logger.warning("No se pudo calcular aprovechamiento por Loteado: %s", exc)
             log_loteado_exit()
@@ -1624,7 +1624,7 @@ class PlanningRepository:
                 continue
             seen_loteado_rows.add(dedupe_key)
             deduped_rows.append(r)
-        logger.info("Loteado filas deduplicadas=%s", len(deduped_rows))
+        logger.debug("Loteado filas deduplicadas=%s", len(deduped_rows))
         if deduplicados_descartados:
             logger.debug("LOTEADO deduplicados descartados=%s", deduplicados_descartados)
         rows = deduped_rows
@@ -1656,7 +1656,7 @@ class PlanningRepository:
                 logger.debug("LOTEADO reparto boleta=%s calibre=%s kg=%s", boleta, calibre, kg_cal)
                 grouped[(boleta, calibre, categoria)] = grouped.get((boleta, calibre, categoria), 0.0) + kg_cal
                 total_by_boleta[boleta] = total_by_boleta.get(boleta, 0.0) + kg_cal
-        logger.info(
+        logger.debug(
             "LOTEADO resumen final palets_distintos=%s lotes_distintos=%s filas_sql=%s",
             len(set().union(*palets_by_boleta.values()) if palets_by_boleta else set()),
             len(set().union(*lotes_by_boleta.values()) if lotes_by_boleta else set()),
@@ -1666,11 +1666,11 @@ class PlanningRepository:
         for boleta, total in total_by_boleta.items():
             partida = stock_by_boleta[boleta]
             kg_campo = float(partida.get("Kg campo", 0) or 0)
-            logger.info("Loteado boleta=%s kg_repartidos=%s kg_partida=%s", boleta, total, kg_campo)
+            logger.debug("Loteado boleta=%s kg_repartidos=%s kg_partida=%s", boleta, total, kg_campo)
             if total > kg_campo * 1.05:
                 logger.error("LOTEADO inconsistente boleta=%s kg_partida=%s kg_repartidos=%s", boleta, kg_campo, total)
                 continue
-            logger.info(
+            logger.debug(
                 "LOTEADO resumen boleta=%s palets_distintos=%s lotes_distintos=%s filas_sql=%s neto_total_sql=%s kg_repartidos=%s",
                 boleta,
                 len(palets_by_boleta.get(boleta, set())),
@@ -1715,7 +1715,7 @@ class PlanningRepository:
                 diagnosis["loteado_columns"] = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
         if not diagnosis["has_lote"]:
             diagnosis["warning"] = "No existe la tabla Lote en bdloteado.sqlite. Puedes actualizarla desde Configuración > Actualización tablas legacy."
-        logger.info("Diagnóstico de bdloteado.sqlite (%s): %s", path, diagnosis)
+        logger.debug("Diagnóstico de bdloteado.sqlite (%s): %s", path, diagnosis)
         return diagnosis
 
     def _get_loteado_filter_rows(self, filters: dict) -> list[dict]:
@@ -1810,7 +1810,7 @@ class PlanningRepository:
                 estado = "Sin aprovechamiento"
                 n_cal = 0
                 kg_est = 0.0
-            logger.info("APROVECHAMIENTO partida key=%s estado=%s calibres=%s kg_estimados=%s", partida_key, estado, n_cal, kg_est)
+            logger.debug("APROVECHAMIENTO partida key=%s estado=%s calibres=%s kg_estimados=%s", partida_key, estado, n_cal, kg_est)
             resumen[partida_key] = {"Estado aprovechamiento": estado, "Nº calibres aprovechamiento": n_cal, "Kg estimados calculados": kg_est}
             detalle[boleta] = by_boleta.get(boleta, [])
             detalle["PARTIDA|" + "|".join(map(str, partida_key))] = rows
@@ -1830,7 +1830,7 @@ class PlanningRepository:
     def get_aprovechamiento_volcado(self, filters: dict, today: datetime | None = None) -> dict[str, Any]:
         start, end = self._volcado_periodo(today)
         periodo_txt = f"{start:%d/%m/%Y}" if start.date() == end.date() else f"{start:%d/%m/%Y} - {end:%d/%m/%Y}"
-        logger.info("INFORME PDF volcado periodo=%s", periodo_txt)
+        logger.debug("INFORME PDF volcado periodo=%s", periodo_txt)
         calidad_path = self._db_path(DB_CALIDAD)
         loteado_path = self._db_path(DB_LOTEADO)
         result: dict[str, Any] = {"periodo": (start, end), "periodo_texto": periodo_txt, "rows": [], "quality": [], "summary": {}, "grouped_partidas": [], "grouped_summary": {}}
@@ -1866,16 +1866,16 @@ class PlanningRepository:
                     params.extend(vals)
             query += f' GROUP BY TRIM(CAST(dc."{id_col}" AS TEXT))'
             cultivo_vals_log = self._normalize_filter_values(filters.get("cultivo"))
-            logger.info("[Volcado] filtro cultivo=%s", filters.get("cultivo"))
-            logger.info("[Volcado] filtro cultivo2=%s", cultivo_vals_log)
+            logger.debug("[Volcado] filtro cultivo=%s", filters.get("cultivo"))
+            logger.debug("[Volcado] filtro cultivo2=%s", cultivo_vals_log)
             datos_rows = [dict(r) for r in conn.execute(query, params).fetchall()]
-            logger.info("[Volcado] registros encontrados=%s", len(datos_rows))
+            logger.debug("[Volcado] registros encontrados=%s", len(datos_rows))
             ids = [str(r["IdPartida"]) for r in datos_rows]
             kg_por_partida = {str(r["IdPartida"]): (float(r.get("KgPartida") or 0) or float(r.get("Neto") or 0)) for r in datos_rows}
             grouped_rows, grouped_summary = self._get_partidas_agrupadas_volcado(conn, ids, kg_por_partida)
             result["grouped_partidas"] = grouped_rows
             result["grouped_summary"] = grouped_summary
-        logger.info("INFORME PDF volcado partidas=%s", len(ids))
+        logger.debug("INFORME PDF volcado partidas=%s", len(ids))
         if not ids:
             return result
 
@@ -1908,7 +1908,7 @@ class PlanningRepository:
                     WHERE TRIM(CAST(l.IdLote AS TEXT)) IN ({ph})
                 """
                 lines.extend(dict(r) for r in conn.execute(query, chunk).fetchall())
-        logger.info("INFORME PDF volcado lineas_lote=%s", len(lines))
+        logger.debug("INFORME PDF volcado lineas_lote=%s", len(lines))
 
         conf_ref: dict[str, tuple[float, float]] = defaultdict(lambda: (0.0, 0.0))
         group_ref: dict[str, tuple[float, float]] = defaultdict(lambda: (0.0, 0.0))
@@ -1950,7 +1950,7 @@ class PlanningRepository:
         result["quality"] = [{"Tipo dato": k, "Palets/líneas": v["lineas"], "Kg": round(v["kg"], 2) if k != "Sin estimación" or v["kg"] else "-", "%": round((v["kg"] / total_calc * 100) if total_calc and k != "Sin estimación" else (v["lineas"] / total_lines * 100 if total_lines else 0), 2)} for k, v in quality.items()]
         cobertura = (calc_lines / total_lines * 100) if total_lines else 0
         result["summary"] = {"partidas": len(ids), "lineas": total_lines, "lineas_reales": quality["Peso real"]["lineas"], "lineas_estimadas": quality["Estimado por confección"]["lineas"] + quality["Estimado por grupo confección"]["lineas"], "sin_estimacion": quality["Sin estimación"]["lineas"], "kg_real": round(quality["Peso real"]["kg"], 2), "kg_estimado": round(quality["Estimado por confección"]["kg"] + quality["Estimado por grupo confección"]["kg"], 2), "cobertura_palets": round(cobertura, 2), "semaforo": "Verde" if cobertura >= 95 else "Amarillo" if cobertura >= 85 else "Rojo"}
-        logger.info("INFORME PDF volcado kg_real=%s kg_estimado=%s sin_estimacion=%s cobertura=%s", result["summary"]["kg_real"], result["summary"]["kg_estimado"], result["summary"]["sin_estimacion"], result["summary"]["cobertura_palets"])
+        logger.debug("INFORME PDF volcado kg_real=%s kg_estimado=%s sin_estimacion=%s cobertura=%s", result["summary"]["kg_real"], result["summary"]["kg_estimado"], result["summary"]["sin_estimacion"], result["summary"]["cobertura_palets"])
         return result
 
     def _get_partidas_agrupadas_volcado(
@@ -2105,13 +2105,13 @@ class PlanningRepository:
         }
         encontradas_pf = sum(1 for r in rows if r.get("Boleta") != "NO ENCONTRADA")
         no_encontradas = max(0, len(rows) - encontradas_pf)
-        logger.info(
+        logger.debug(
             "INFORME PDF trazabilidad partidas incluidas=%s encontradas_pf=%s no_encontradas=%s",
             len(rows),
             encontradas_pf,
             no_encontradas,
         )
-        logger.info(
+        logger.debug(
             "INFORME PDF partidas agrupadas principales=%s incluidas=%s adicionales=%s kg_total=%s",
             summary["principales"],
             summary["incluidas"],
@@ -2123,7 +2123,7 @@ class PlanningRepository:
 
     def get_prevision_recoleccion(self, filters: dict | None = None, today: datetime | None = None) -> list[dict[str, Any]]:
         start = time.perf_counter()
-        logger.info("[PDF] Previsión recolección")
+        logger.debug("[PDF] Previsión recolección")
         filters = filters or {}
         today_date = (today or datetime.now()).date()
         fruta_path = self._db_path(DB_FRUTA)
@@ -2205,14 +2205,14 @@ class PlanningRepository:
             out["Matricula"] = out.get("Matricual") or out.get("Matricula") or out.get("Matrícula") or ""
             rows.append(out)
         total_kg = round(sum(float(r.get("KgAprox") or 0) for r in rows), 2)
-        logger.info("[PDF] Registros encontrados: %s", len(rows))
-        logger.info("[PDF] Días encontrados: %s", len({r.get("FechaR_date") for r in rows}))
-        logger.info("[PDF] Kg previstos totales: %s", total_kg)
-        logger.info("[PDF] Previsión semanal registros=%s", len(rows))
-        logger.info("[PDF] Previsión semanal filas=%s", len({(str(r.get("Socio") or ""), str(r.get("Cultivo") or ""), str(r.get("Variedad") or "")) for r in rows}))
-        logger.info("[PDF] Previsión semanal kg_total=%s", total_kg)
-        logger.info("[PDF] Previsión semanal desde=%s hasta=%s", today_date.isoformat(), until_date.isoformat())
-        logger.info("[PDF] Tiempo de generación: %.3fs", time.perf_counter() - start)
+        logger.debug("[PDF] Registros encontrados: %s", len(rows))
+        logger.debug("[PDF] Días encontrados: %s", len({r.get("FechaR_date") for r in rows}))
+        logger.debug("[PDF] Kg previstos totales: %s", total_kg)
+        logger.debug("[PDF] Previsión semanal registros=%s", len(rows))
+        logger.debug("[PDF] Previsión semanal filas=%s", len({(str(r.get("Socio") or ""), str(r.get("Cultivo") or ""), str(r.get("Variedad") or "")) for r in rows}))
+        logger.debug("[PDF] Previsión semanal kg_total=%s", total_kg)
+        logger.debug("[PDF] Previsión semanal desde=%s hasta=%s", today_date.isoformat(), until_date.isoformat())
+        logger.debug("[PDF] Tiempo de generación: %.3fs", time.perf_counter() - start)
         return rows
 
     def get_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
@@ -2315,7 +2315,7 @@ class PlanningRepository:
 
     def get_stock_almacen(self, filters: dict) -> tuple[list[dict], str | None]:
         path = self.db_loteado
-        logger.info("BD loteado usada: %s", path)
+        logger.debug("BD loteado usada: %s", path)
         if not path.exists():
             logger.warning("No existe la base de loteado: %s", path)
             return [], None
@@ -2329,7 +2329,7 @@ class PlanningRepository:
             if "MVariedad" not in eepl_tables:
                 logger.warning("No existe tabla MVariedad en DBEEPPL.sqlite")
             tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-            logger.info("Tablas encontradas: %s", tables)
+            logger.debug("Tablas encontradas: %s", tables)
             ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
             lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
             if not ldo_table or not lote_table:
@@ -2474,12 +2474,12 @@ class PlanningRepository:
         return f"CASE WHEN length({raw}) >= 10 AND substr({raw},5,1)='-' THEN {ymd_iso} WHEN length({raw}) >= 10 AND substr({raw},3,1)='/' THEN {ymd_dmy} ELSE {raw} END"
 
     def get_pedidos_pendientes(self, filters: dict, modo_pedidos: str = "10_dias") -> tuple[list[dict], dict[str, float]]:
-        logger.info("Cargando pedidos pendientes. Modo=%s Filters=%s", modo_pedidos, filters)
+        logger.debug("Cargando pedidos pendientes. Modo=%s Filters=%s", modo_pedidos, filters)
         t0_total = time.perf_counter()
-        logger.info("get_pedidos_pendientes: inicio")
+        logger.debug("get_pedidos_pendientes: inicio")
         pedidos_path = self._db_path(DB_PEDIDOS)
-        logger.info("Ruta DBPedidos.sqlite usada: %s", pedidos_path)
-        logger.info("DBPedidos.sqlite existe: %s", pedidos_path.exists())
+        logger.debug("Ruta DBPedidos.sqlite usada: %s", pedidos_path)
+        logger.debug("DBPedidos.sqlite existe: %s", pedidos_path.exists())
         kpi_vacio = {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Merma kg total": 0.0, "% merma total": 0.0, "Nº pedidos": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0}
         if not pedidos_path.exists():
             logger.warning("No existe DBPedidos.sqlite en la ruta esperada")
@@ -2720,7 +2720,7 @@ class PlanningRepository:
                          p."IdPedidoLora" ASC,
                          p."Linea" ASC
             """
-            logger.info("get_pedidos_pendientes: después de pedidos_filtrados (query construida)")
+            logger.debug("get_pedidos_pendientes: después de pedidos_filtrados (query construida)")
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
             mconfecciones = self.cargar_mconfecciones(conn)
             rows = [
@@ -2728,7 +2728,7 @@ class PlanningRepository:
                 for r in rows
             ]
             rows = [r for r in rows if normalizar_numero(r.get("Kg pendiente", 0)) > 0]
-            logger.info(
+            logger.debug(
                 "Pedidos pendientes enriquecidos con MConfecciones: %s filas, con grupo: %s",
                 len(rows),
                 sum(
@@ -2738,9 +2738,9 @@ class PlanningRepository:
                     and str(r.get("Grupo confección", "")).strip() != "DESCONOCIDO"
                 ),
             )
-            logger.info("get_pedidos_pendientes: después de query final (%s filas)", len(rows))
-            logger.info("get_pedidos_pendientes: tiempo total %.3fs", time.perf_counter() - t0_total)
-            logger.info("Pedidos pendientes finales: %s", len(rows))
+            logger.debug("get_pedidos_pendientes: después de query final (%s filas)", len(rows))
+            logger.debug("get_pedidos_pendientes: tiempo total %.3fs", time.perf_counter() - t0_total)
+            logger.debug("Pedidos pendientes finales: %s", len(rows))
             if not rows:
                 logger.warning("No se encontraron pedidos pendientes con los filtros aplicados.")
                 return [], kpi_vacio
@@ -2801,18 +2801,18 @@ class PlanningRepository:
                 commercial_map[ckey] = commercial_map.get(ckey, 0.0) + kg
                 tipo_stock = "comercial"
             if logger.isEnabledFor(logging.DEBUG):
-                logger.info(
+                logger.debug(
                     "Balance stock clasificado: pedido=%s id_conf=%s conf=%s tipo=%s kg=%s calibre=%s variedad=%s",
                     row.get("Pedido"), id_confeccion, confe, tipo_stock, kg, row.get("Calibre"), row.get("Variedad")
                 )
 
-        logger.info(
+        logger.debug(
             "BALANCE DEBUG industrial_stock_map total claves=%s kg_total=%s",
             len(industrial_stock_map),
             sum(industrial_stock_map.values()),
         )
         for k, v in list(industrial_stock_map.items())[:20]:
-            logger.info("BALANCE DEBUG INDUSTRIAL key=%s kg=%s", k, v)
+            logger.debug("BALANCE DEBUG INDUSTRIAL key=%s kg=%s", k, v)
 
         campo_tiene_desglose = False
         for row in stock_campo_rows:
@@ -2854,7 +2854,7 @@ class PlanningRepository:
 
         keys = set(commercial_map.keys()) | set(pedidos_map.keys())
         calibre_map = self.get_mcalibres_map()
-        logger.info(
+        logger.debug(
             "BALANCE TEST calibres CAL 1/2 vs 0/1/2/3 = %s",
             self.comparar_calibres("CAL 1/2", "0/1/2/3", calibre_map=calibre_map),
         )
@@ -2910,7 +2910,7 @@ class PlanningRepository:
             flex: list[str] = []
             compat: dict[str, Any] = {}
             if necesita_cobertura:
-                logger.info(
+                logger.debug(
                     "MATCH pedido cultivo=%s campana=%s grupo=%s variedad=%s calibre=%s categoria=%s faltante=%s",
                     cultivo, campana, grupo, variedad, calibre, categoria, abs(diff)
                 )
@@ -3269,7 +3269,7 @@ class PlanningRepository:
         grupo_varietal = str(pedido_normalizado.get("Grupo varietal", pedido_normalizado.get("grupo_varietal", "")) or "").strip()
         calibre = str(pedido_normalizado.get("Calibre", pedido_normalizado.get("calibre", "")) or "").strip()
         categoria = str(pedido_normalizado.get("Categoría", pedido_normalizado.get("Categoria", pedido_normalizado.get("categoria", ""))) or "").strip()
-        logger.info(
+        logger.debug(
             "Candidatos pedido filtro cultivo=%s campana=%s variedad=%s grupo=%s calibre=%s categoria=%s",
             cultivo,
             campana,
@@ -3548,7 +3548,7 @@ class PlanningRepository:
                     values = sorted(set(values))
             else:
                 values = sorted(set(values))
-            logger.info("Opciones filtro %s con filtros %s: %s", key, filters, values)
+            logger.debug("Opciones filtro %s con filtros %s: %s", key, filters, values)
             return values
         except Exception:
             logger.exception("Error obteniendo opciones contextuales de filtro %s con filtros %s", key, filters)
@@ -3625,7 +3625,7 @@ class PlanningRepository:
             filtered_pairs.append((camp_norm, cult_norm, {m for m in meta if not m.startswith("val:")}, raw_camp, raw_cult))
 
         for camp_norm, cult_norm, origins, raw_camp, raw_cult in sorted(filtered_pairs):
-            logger.info(
+            logger.debug(
                 "Filtro inteligente campaña/cultivo origenes=%s campana=%s cultivo=%s",
                 sorted(origins),
                 raw_camp,
