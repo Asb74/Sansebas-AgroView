@@ -3646,6 +3646,175 @@ class PlanningRepository:
             values = sorted({raw_cult for _, _, _, _, raw_cult in filtered_pairs}, key=lambda x: x.upper())
         return values
 
+
+    def invalidate_planning_filter_master_cache(self) -> None:
+        self._planning_filter_master_cache = None
+
+    def load_master_filter_options(self) -> dict[str, Any]:
+        cached = getattr(self, "_planning_filter_master_cache", None)
+        if cached is not None:
+            return cached
+        data: dict[str, Any] = {
+            "campanas": [],
+            "cultivos_por_campana": defaultdict(list),
+            "empresas": [],
+            "empresa_display_to_id": {},
+            "empresa_id_to_display": {},
+            "grupos_por_cultivo": defaultdict(list),
+            "variedades": [],
+        }
+        eepl_path = self._db_path(DB_EEPPL)
+        if not eepl_path.exists():
+            self._planning_filter_master_cache = data
+            return data
+
+        def clean(value: Any) -> str:
+            return str(value or "").strip()
+
+        def add_unique(container, value: Any) -> None:
+            txt = clean(value)
+            if txt and txt not in container:
+                container.append(txt)
+
+        with sqlite3.connect(eepl_path) as conn:
+            conn.row_factory = sqlite3.Row
+            tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+            camp_table = self._find_table(conn, ["CAMPAÑA", "CAMPA\u00d1A", "Campaña", "campaña", "CAMPANA"])
+            if camp_table:
+                cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{camp_table}")').fetchall()]
+                camp_col = self._find_column(cols, ["CAMPAÑA", "CAMPA\u00d1A", "Campaña", "CAMPANA", "Campana"])
+                cultivo_col = self._find_column(cols, ["CULTIVO", "Cultivo", "cultivo"])
+                if camp_col and cultivo_col:
+                    for r in conn.execute(f'SELECT DISTINCT "{camp_col}" AS campana, "{cultivo_col}" AS cultivo FROM "{camp_table}"').fetchall():
+                        campana = clean(r["campana"])
+                        cultivo = clean(r["cultivo"])
+                        add_unique(data["campanas"], campana)
+                        if campana and cultivo:
+                            add_unique(data["cultivos_por_campana"][campana.upper()], cultivo)
+                            add_unique(data["cultivos_por_campana"]["__ALL__"], cultivo)
+            if "Empresa" in tables:
+                cols = [r[1] for r in conn.execute('PRAGMA table_info("Empresa")').fetchall()]
+                id_col = self._find_column(cols, ["IdEmpresa", "IDEMPRESA", "Empresa"])
+                display_col = self._find_column(cols, ["Nombre", "EXTENSO", "Descrip", "DESCRIP"])
+                if id_col:
+                    select_display = f'"{display_col}"' if display_col else f'"{id_col}"'
+                    for r in conn.execute(f'SELECT "{id_col}" AS id, {select_display} AS display FROM "Empresa"').fetchall():
+                        emp_id = clean(r["id"])
+                        display = clean(r["display"]) or emp_id
+                        if emp_id:
+                            add_unique(data["empresas"], display)
+                            data["empresa_display_to_id"][display] = emp_id
+                            data["empresa_display_to_id"][display.upper()] = emp_id
+                            data["empresa_id_to_display"][emp_id] = display
+            if "MVariedad" in tables:
+                cols = [r[1] for r in conn.execute('PRAGMA table_info("MVariedad")').fetchall()]
+                if {"CULTIVO", "Variedad"}.issubset(set(cols)):
+                    group_col = self._find_column(cols, ["GRUPO", "Grupo"])
+                    sub_col = self._find_column(cols, ["SUBGRUPO", "Subgrupo"])
+                    group_expr = f'TRIM(COALESCE("{group_col}", '') || ' ' || COALESCE("{sub_col}", ''))' if group_col and sub_col else (f'TRIM(COALESCE("{group_col}", ''))' if group_col else "''")
+                    for r in conn.execute(f'SELECT DISTINCT "CULTIVO" AS cultivo, "Variedad" AS variedad, {group_expr} AS grupo FROM "MVariedad"').fetchall():
+                        cultivo = clean(r["cultivo"])
+                        variedad = clean(r["variedad"])
+                        grupo = clean(r["grupo"])
+                        if grupo:
+                            add_unique(data["grupos_por_cultivo"][cultivo.upper()], grupo)
+                            add_unique(data["grupos_por_cultivo"]["__ALL__"], grupo)
+                        if variedad:
+                            data["variedades"].append({"cultivo": cultivo, "grupo": grupo, "variedad": variedad})
+        for key in ("campanas", "empresas"):
+            data[key] = sorted(data[key], key=lambda x: (self._numeric_sort_key(x), x.upper()))
+        for mapping_key in ("cultivos_por_campana", "grupos_por_cultivo"):
+            for k, vals in list(data[mapping_key].items()):
+                data[mapping_key][k] = sorted(set(vals), key=lambda x: x.upper())
+        data["variedades"] = sorted(data["variedades"], key=lambda r: str(r.get("variedad", "")).upper())
+        logger.info("[Filtros] maestros cargados campañas=%s cultivos=%s empresas=%s variedades=%s", len(data["campanas"]), len(data["cultivos_por_campana"].get("__ALL__", [])), len(data["empresas"]), len(data["variedades"]))
+        self._planning_filter_master_cache = data
+        return data
+
+    @staticmethod
+    def _numeric_sort_key(value: Any) -> float:
+        try:
+            return float(str(value).strip())
+        except Exception:
+            return float("inf")
+
+    def empresa_display_to_id(self, value: Any) -> str:
+        txt = str(value or "").strip()
+        if not txt:
+            return ""
+        masters = self.load_master_filter_options()
+        return masters.get("empresa_display_to_id", {}).get(txt, masters.get("empresa_display_to_id", {}).get(txt.upper(), txt))
+
+    def empresa_id_to_display(self, value: Any) -> str:
+        txt = str(value or "").strip()
+        if not txt:
+            return ""
+        masters = self.load_master_filter_options()
+        return masters.get("empresa_id_to_display", {}).get(txt, txt)
+
+    def get_planning_filter_options(self, key: str, filters: dict) -> list[str]:
+        effective = {k: v for k, v in (filters or {}).items() if k != key}
+        masters = self.load_master_filter_options()
+        campanas = self._normalize_filter_values(effective.get("campana"))
+        cultivos = self._normalize_filter_values_upper(effective.get("cultivo"))
+        grupos = self._normalize_filter_values_upper(effective.get("grupo_varietal"))
+        if key == "campana":
+            return list(masters.get("campanas", []))
+        if key == "cultivo":
+            selected = campanas or []
+            if not selected:
+                return list(masters.get("cultivos_por_campana", {}).get("__ALL__", []))
+            vals = []
+            for campana in selected:
+                vals.extend(masters.get("cultivos_por_campana", {}).get(str(campana).upper(), []))
+            return sorted(set(vals), key=lambda x: x.upper())
+        if key == "empresa":
+            return list(masters.get("empresas", []))
+        if key == "grupo_varietal":
+            if not cultivos:
+                return list(masters.get("grupos_por_cultivo", {}).get("__ALL__", []))
+            vals = []
+            for cultivo in cultivos:
+                vals.extend(masters.get("grupos_por_cultivo", {}).get(cultivo, []))
+            return sorted(set(vals), key=lambda x: x.upper())
+        if key == "var_coop":
+            vals = []
+            for row in masters.get("variedades", []):
+                if cultivos and str(row.get("cultivo", "")).upper() not in cultivos:
+                    continue
+                if grupos and str(row.get("grupo", "")).upper() not in grupos:
+                    continue
+                vals.append(str(row.get("variedad", "")).strip())
+            return sorted({v for v in vals if v}, key=lambda x: x.upper())
+        if key == "marca":
+            return self._get_marca_options_from_available_data(effective)
+        return self.get_filter_options_contextual(key, effective)
+
+    def _get_marca_options_from_available_data(self, filters: dict) -> list[str]:
+        marcas: set[str] = set()
+        def add_rows(rows: list[dict]) -> None:
+            for row in rows or []:
+                marca = str(row.get("Marca", row.get("marca", "")) or "").strip()
+                if marca:
+                    marcas.add(marca)
+        try:
+            add_rows(self.get_stock_almacen(filters)[0])
+        except Exception:
+            logger.exception("Error obteniendo marcas desde stock almacén")
+        try:
+            add_rows(self.get_pedidos_pendientes(filters, modo_pedidos=str(filters.get("pedidos_modo") or "10_dias"))[0])
+        except Exception:
+            logger.exception("Error obteniendo marcas desde pedidos pendientes")
+        try:
+            add_rows(cargar_pedidos_previstos_filtrados(filters, respetar_incluir=True))
+        except Exception:
+            logger.exception("Error obteniendo marcas desde pedidos previstos")
+        try:
+            add_rows(self.get_stock_campo(filters)[0])
+        except Exception:
+            logger.exception("Error obteniendo marcas desde stock campo")
+        return sorted(marcas, key=lambda x: x.upper())
+
     def cargar_catalogos_pedidos_previstos(self, cultivo: str) -> dict[str, Any]:
         cultivo_norm = str(cultivo or "").strip()
         out: dict[str, Any] = {"variedades": [], "variedad_meta": {}, "calibres": [], "categorias": [], "grupos_confeccion": [], "clientes": []}
