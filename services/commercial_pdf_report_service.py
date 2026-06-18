@@ -118,9 +118,9 @@ class CommercialPdfReportService:
 
     def _format_toneladas(self, value: Any) -> str:
         try:
-            return f"{float(value or 0) / 1000:.1f}"
+            return f"{float(value or 0) / 1000:.1f}".replace(".", ",") + " t"
         except Exception:
-            return "0.0"
+            return "0,0 t"
 
     def _sum(self, rows: Iterable[dict], field: str) -> float:
         total = 0.0
@@ -514,14 +514,11 @@ class CommercialPdfReportService:
             "IdPartida", "Boleta", "IdSocio", "Nombre socio", "Fecha carga", "T entregadas",
             "Origen", "Destrío %", "Industria %",
         ] + cal_cols + ["T estimadas"]
-        data: list[list[Any]] = [columns]
-        styles: list[tuple[int, str]] = []
-        totals_cal = {str(i): 0.0 for i in range(11)}
-        total_kg_entregado = 0.0
-        total_kg_estimado = 0.0
+        groups: dict[str, list[dict[str, Any]]] = {}
+        total_general = self._empty_aprovechamiento_totals()
         seen: set[tuple[str, str, str, str]] = set()
 
-        for partida in sorted(stock_rows, key=lambda r: (str(self._value(r, "Fecha carga")), str(self._value(r, "Boleta")), str(self._value(r, "IdPartida")))):
+        for partida in sorted(stock_rows, key=lambda r: (self._grupo_varietal_partida(r).upper(), str(self._value(r, "Fecha carga")), str(self._value(r, "Boleta")), str(self._value(r, "IdPartida")))):
             unique_key = (
                 str(self._value(partida, "IdPartida") or ""),
                 str(self._value(partida, "Boleta") or ""),
@@ -531,50 +528,92 @@ class CommercialPdfReportService:
             if unique_key in seen:
                 continue
             seen.add(unique_key)
-            boleta = str(self._value(partida, "Boleta") or "").strip()
-            rows = list(detalle_map.get(self._detalle_partida_key(partida)) or detalle_map.get(boleta) or [])
-            origen = self._aprovechamiento_origen(rows)
-            kg_by_cal = {str(i): 0.0 for i in range(11)}
-            destrio_vals: list[float] = []
-            industria_vals: list[float] = []
-            for row in rows:
-                cal = self._pure_calibre(row.get("Calibre"))
-                if cal in kg_by_cal:
-                    kg_by_cal[cal] += self._sum([row], "Kg disponibles")
-                if origen == "HARVESTSYNC":
-                    for src, dest in (("Destrío %", destrio_vals), ("Destrio %", destrio_vals), ("Industria %", industria_vals)):
-                        try:
-                            value = float(str(row.get(src, "")).replace(",", "."))
-                            dest.append(value)
-                        except Exception:
-                            pass
-            kg_entregado = self._sum([partida], "Kg campo")
-            kg_estimado = sum(kg_by_cal.values()) if rows else 0.0
-            total_kg_entregado += kg_entregado
-            total_kg_estimado += kg_estimado
-            for cal, kg in kg_by_cal.items():
-                totals_cal[cal] += kg
-            destrio = self._num(sum(destrio_vals) / len(destrio_vals), 2) if origen == "HARVESTSYNC" and destrio_vals else "-"
-            industria = self._num(sum(industria_vals) / len(industria_vals), 2) if origen == "HARVESTSYNC" and industria_vals else "-"
-            data.append([
-                self._format_cell(self._value(partida, "IdPartida"), "IdPartida"),
-                self._format_cell(self._value(partida, "Boleta"), "Boleta"),
-                self._format_cell(self._value(partida, "IdSocio"), "IdSocio"),
-                self._format_cell(self._value(partida, "Nombre socio") or self._value(partida, "Socio"), "Nombre socio"),
-                self._format_cell(self._value(partida, "Fecha carga"), "Fecha carga"),
-                self._format_toneladas(kg_entregado),
-                origen,
-                destrio,
-                industria,
-            ] + [self._format_toneladas(kg_by_cal[str(i)]) for i in range(11)] + [self._format_toneladas(kg_estimado)])
-            styles.append((len(data) - 1, origen))
+            detail = self._aprovechamiento_partida_detail(partida, detalle_map)
+            groups.setdefault(detail["grupo_varietal"], []).append(detail)
+            self._accumulate_aprovechamiento_totals(total_general, detail)
 
-        data.append(["TOTALES", "", "", "", "", self._format_toneladas(total_kg_entregado), "", "", ""] + [self._format_toneladas(totals_cal[str(i)]) for i in range(11)] + [self._format_toneladas(total_kg_estimado)])
-        story.append(self._table(data, row_styles=styles, col_widths=[
-            1.4*cm, 1.2*cm, 1.2*cm, 2.3*cm, 1.6*cm, 1.6*cm, 2.0*cm, 1.2*cm, 1.2*cm,
-            *([0.9*cm] * 11), 1.8*cm,
-        ]))
+        for grupo in sorted(groups, key=lambda g: g.upper()):
+            details = groups[grupo]
+            story.append(Paragraph(f"GRUPO VARIETAL {grupo}", self._normal))
+            data: list[list[Any]] = [columns]
+            styles: list[tuple[int, str]] = []
+            group_totals = self._empty_aprovechamiento_totals()
+            for detail in details:
+                self._accumulate_aprovechamiento_totals(group_totals, detail)
+                data.append(detail["row"])
+                styles.append((len(data) - 1, detail["origen"]))
+            story.append(self._table(data, row_styles=styles, col_widths=[
+                1.4*cm, 1.2*cm, 1.2*cm, 2.3*cm, 1.6*cm, 1.6*cm, 2.0*cm, 1.2*cm, 1.2*cm,
+                *([0.9*cm] * 11), 1.8*cm,
+            ]))
+            story.append(self._aprovechamiento_resumen_table(f"SUBTOTAL GRUPO VARIETAL {grupo}", group_totals))
+            story.append(Spacer(1, 6))
+
+        story.append(self._aprovechamiento_resumen_table("TOTAL GENERAL", total_general))
         story.append(PageBreak())
+
+    def _empty_aprovechamiento_totals(self) -> dict[str, Any]:
+        return {"partidas": 0, "kg_entregado": 0.0, "kg_estimado": 0.0, "calibres": {str(i): 0.0 for i in range(11)}}
+
+    def _accumulate_aprovechamiento_totals(self, totals: dict[str, Any], detail: dict[str, Any]) -> None:
+        totals["partidas"] += 1
+        totals["kg_entregado"] += detail["kg_entregado"]
+        totals["kg_estimado"] += detail["kg_estimado"]
+        for cal, kg in detail["kg_by_cal"].items():
+            totals["calibres"][cal] += kg
+
+    def _aprovechamiento_resumen_table(self, title: str, totals: dict[str, Any]) -> Table:
+        resumen = [
+            [title, "", "", ""],
+            ["Nº partidas", "Kg entregados", "Kg estimados", ""],
+            [totals["partidas"], self._format_toneladas(totals["kg_entregado"]), self._format_toneladas(totals["kg_estimado"]), ""],
+            ["Calibre", "Toneladas", "Calibre", "Toneladas"],
+        ]
+        for i in range(0, 11, 2):
+            resumen.append([
+                f"CAL{i}", self._format_toneladas(totals["calibres"][str(i)]),
+                f"CAL{i + 1}" if i + 1 <= 10 else "", self._format_toneladas(totals["calibres"][str(i + 1)]) if i + 1 <= 10 else "",
+            ])
+        return self._table(resumen, row_styles=[(0, "SUBTOTAL_APROVECHAMIENTO")], col_widths=[5*cm, 4*cm, 5*cm, 4*cm])
+
+    def _aprovechamiento_partida_detail(self, partida: dict, detalle_map: dict[str, list[dict]]) -> dict[str, Any]:
+        boleta = str(self._value(partida, "Boleta") or "").strip()
+        rows = list(detalle_map.get(self._detalle_partida_key(partida)) or detalle_map.get(boleta) or [])
+        origen = self._aprovechamiento_origen(rows)
+        kg_by_cal = {str(i): 0.0 for i in range(11)}
+        destrio_vals: list[float] = []
+        industria_vals: list[float] = []
+        for row in rows:
+            cal = self._pure_calibre(row.get("Calibre"))
+            if cal in kg_by_cal:
+                kg_by_cal[cal] += self._sum([row], "Kg disponibles")
+            if origen == "HARVESTSYNC":
+                for src, dest in (("Destrío %", destrio_vals), ("Destrio %", destrio_vals), ("Industria %", industria_vals)):
+                    try:
+                        value = float(str(row.get(src, "")).replace(",", "."))
+                        dest.append(value)
+                    except Exception:
+                        pass
+        kg_entregado = self._sum([partida], "Kg campo")
+        kg_estimado = sum(kg_by_cal.values()) if rows else 0.0
+        destrio = self._num(sum(destrio_vals) / len(destrio_vals), 2) if origen == "HARVESTSYNC" and destrio_vals else "-"
+        industria = self._num(sum(industria_vals) / len(industria_vals), 2) if origen == "HARVESTSYNC" and industria_vals else "-"
+        row = [
+            self._format_cell(self._value(partida, "IdPartida"), "IdPartida"),
+            self._format_cell(self._value(partida, "Boleta"), "Boleta"),
+            self._format_cell(self._value(partida, "IdSocio"), "IdSocio"),
+            self._format_cell(self._value(partida, "Nombre socio") or self._value(partida, "Socio"), "Nombre socio"),
+            self._format_cell(self._value(partida, "Fecha carga"), "Fecha carga"),
+            self._format_toneladas(kg_entregado),
+            origen,
+            destrio,
+            industria,
+        ] + [self._format_toneladas(kg_by_cal[str(i)]) for i in range(11)] + [self._format_toneladas(kg_estimado)]
+        return {"grupo_varietal": self._grupo_varietal_partida(partida), "origen": origen, "kg_by_cal": kg_by_cal, "kg_entregado": kg_entregado, "kg_estimado": kg_estimado, "row": row}
+
+    def _grupo_varietal_partida(self, row: dict) -> str:
+        grupo = self._value(row, "Grupo varietal") or self._value(row, "GrupoVarietal") or self._value(row, "grupo_varietal")
+        return str(grupo or "SIN GRUPO VARIETAL").strip() or "SIN GRUPO VARIETAL"
 
     def _aprovechamiento_origen(self, rows: list[dict]) -> str:
         if not rows:
@@ -773,12 +812,15 @@ class CommercialPdfReportService:
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#D9EAF7"))]
             elif first.startswith("TOTAL ALMACÉN"):
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#9DC3E6"))]
+            elif first.startswith("SUBTOTAL GRUPO VARIETAL"):
+                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#D9D9D9"))]
             elif first.startswith(("Subtotal", "Total", "TOTAL")):
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#F1F1F1"))]
         color_map = {
             "VERDE": "#E2F0D9", "AMARILLO": "#FFF2CC", "ROJO": "#F4CCCC", "GRIS": "#E7E6E6",
             "HARVESTSYNC": "#D9EAF7", "REAL_PESOSFRES": "#E2F0D9", "LOTEADO": "#E7E6E6",
-            "SIN_APROVECHAMIENTO": "#F4CCCC",
+            "MANUAL": "#FFF2CC", "ESTIMADO_MANUAL": "#FFF2CC", "SIN_APROVECHAMIENTO": "#F4CCCC",
+            "SUBTOTAL_APROVECHAMIENTO": "#D9D9D9",
         }
         for row_idx, marker in row_styles or []:
             marker_text = str(marker).upper()
