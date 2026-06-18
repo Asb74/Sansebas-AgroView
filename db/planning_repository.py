@@ -3735,20 +3735,15 @@ class PlanningRepository:
                 else:
                     logger.warning("[FiltrosMaestros] tabla Empresa sin columna IdEmpresa en DBEEPPL.sqlite")
             if "MVariedad" in tables:
-                cols = [r[1] for r in conn.execute('PRAGMA table_info("MVariedad")').fetchall()]
-                if {"CULTIVO", "Variedad"}.issubset(set(cols)):
-                    group_col = self._find_column(cols, ["GRUPO", "Grupo"])
-                    sub_col = self._find_column(cols, ["SUBGRUPO", "Subgrupo"])
-                    group_expr = f'TRIM(COALESCE("{group_col}", '') || ' ' || COALESCE("{sub_col}", ''))' if group_col and sub_col else (f'TRIM(COALESCE("{group_col}", ''))' if group_col else "''")
-                    for r in conn.execute(f'SELECT DISTINCT "CULTIVO" AS cultivo, "Variedad" AS variedad, {group_expr} AS grupo FROM "MVariedad"').fetchall():
-                        cultivo = clean(r["cultivo"])
-                        variedad = clean(r["variedad"])
-                        grupo = clean(r["grupo"])
-                        if grupo:
-                            add_unique(data["grupos_por_cultivo"][cultivo.upper()], grupo)
-                            add_unique(data["grupos_por_cultivo"]["__ALL__"], grupo)
-                        if variedad:
-                            data["variedades"].append({"cultivo": cultivo, "grupo": grupo, "variedad": variedad})
+                for r in conn.execute("SELECT DISTINCT CULTIVO, Variedad, GRUPO FROM MVariedad").fetchall():
+                    cultivo = clean(r["CULTIVO"])
+                    variedad = clean(r["Variedad"])
+                    grupo = clean(r["GRUPO"])
+                    if grupo:
+                        add_unique(data["grupos_por_cultivo"][cultivo.upper()], grupo)
+                        add_unique(data["grupos_por_cultivo"]["__ALL__"], grupo)
+                    if variedad:
+                        data["variedades"].append({"cultivo": cultivo, "grupo": grupo, "variedad": variedad})
         data["campanas"] = sorted(data["campanas"], key=lambda x: (self._numeric_sort_key(x), x.upper()), reverse=True)
         data["empresas"] = sorted(data["empresas"], key=lambda x: (self._numeric_sort_key(data["empresa_display_to_id"].get(x, x)), x.upper()))
         for mapping_key in ("cultivos_por_campana", "grupos_por_cultivo"):
@@ -3758,6 +3753,8 @@ class PlanningRepository:
         logger.info("[FiltrosMaestros] campañas cargadas=%s", len(data["campanas"]))
         logger.info("[FiltrosMaestros] cultivos cargados=%s", len(data["cultivos_por_campana"].get("__ALL__", [])))
         logger.info("[FiltrosMaestros] empresas cargadas=%s", len(data["empresas"]))
+        logger.info("[FiltrosMaestros] variedades cargadas=%s", len(data["variedades"]))
+        logger.info("[FiltrosMaestros] grupos cargados=%s", len(data["grupos_por_cultivo"].get("__ALL__", [])))
         logger.info("[Filtros] maestros cargados campañas=%s cultivos=%s empresas=%s variedades=%s", len(data["campanas"]), len(data["cultivos_por_campana"].get("__ALL__", [])), len(data["empresas"]), len(data["variedades"]))
         self._planning_filter_master_cache = data
         return data
