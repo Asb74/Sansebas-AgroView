@@ -3657,6 +3657,7 @@ class PlanningRepository:
         data: dict[str, Any] = {
             "campanas": [],
             "cultivos_por_campana": defaultdict(list),
+            "campana_cultivo_pairs": [],
             "empresas": [],
             "empresa_display_to_id": {},
             "empresa_id_to_display": {},
@@ -3664,7 +3665,9 @@ class PlanningRepository:
             "variedades": [],
         }
         eepl_path = self._db_path(DB_EEPPL)
+        logger.info("[FiltrosMaestros] DBEEPPL path=%s", eepl_path)
         if not eepl_path.exists():
+            logger.warning("[FiltrosMaestros] DBEEPPL.sqlite no existe en la ruta runtime: %s", eepl_path)
             self._planning_filter_master_cache = data
             return data
 
@@ -3680,32 +3683,57 @@ class PlanningRepository:
             conn.row_factory = sqlite3.Row
             tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
             camp_table = self._find_table(conn, ["CAMPAÑA", "CAMPA\u00d1A", "Campaña", "campaña", "CAMPANA"])
-            if camp_table:
+            if not camp_table:
+                logger.warning("[FiltrosMaestros] tabla CAMPAÑA no existe en DBEEPPL.sqlite")
+            else:
                 cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{camp_table}")').fetchall()]
                 camp_col = self._find_column(cols, ["CAMPAÑA", "CAMPA\u00d1A", "Campaña", "CAMPANA", "Campana"])
                 cultivo_col = self._find_column(cols, ["CULTIVO", "Cultivo", "cultivo"])
                 if camp_col and cultivo_col:
-                    for r in conn.execute(f'SELECT DISTINCT "{camp_col}" AS campana, "{cultivo_col}" AS cultivo FROM "{camp_table}"').fetchall():
+                    rows = conn.execute(
+                        f'SELECT DISTINCT "{camp_col}" AS campana, "{cultivo_col}" AS cultivo '
+                        f'FROM "{camp_table}" WHERE "{camp_col}" IS NOT NULL AND "{cultivo_col}" IS NOT NULL '
+                        f'ORDER BY "{camp_col}" DESC, "{cultivo_col}" ASC'
+                    ).fetchall()
+                    if not rows:
+                        logger.warning("[FiltrosMaestros] consulta CAMPAÑA devolvió 0 filas en DBEEPPL.sqlite")
+                    for r in rows:
                         campana = clean(r["campana"])
                         cultivo = clean(r["cultivo"])
-                        add_unique(data["campanas"], campana)
                         if campana and cultivo:
+                            add_unique(data["campanas"], campana)
                             add_unique(data["cultivos_por_campana"][campana.upper()], cultivo)
                             add_unique(data["cultivos_por_campana"]["__ALL__"], cultivo)
-            if "Empresa" in tables:
+                            data["campana_cultivo_pairs"].append({"campana": campana, "cultivo": cultivo})
+                else:
+                    logger.warning("[FiltrosMaestros] tabla CAMPAÑA sin columnas CAMPAÑA/CULTIVO en DBEEPPL.sqlite")
+            if "Empresa" not in tables:
+                logger.warning("[FiltrosMaestros] tabla Empresa no existe en DBEEPPL.sqlite")
+            else:
                 cols = [r[1] for r in conn.execute('PRAGMA table_info("Empresa")').fetchall()]
                 id_col = self._find_column(cols, ["IdEmpresa", "IDEMPRESA", "Empresa"])
-                display_col = self._find_column(cols, ["Nombre", "EXTENSO", "Descrip", "DESCRIP"])
+                nombre_col = self._find_column(cols, ["Nombre"])
+                extenso_col = self._find_column(cols, ["EXTENSO"])
                 if id_col:
-                    select_display = f'"{display_col}"' if display_col else f'"{id_col}"'
-                    for r in conn.execute(f'SELECT "{id_col}" AS id, {select_display} AS display FROM "Empresa"').fetchall():
+                    nombre_expr = f'"{nombre_col}"' if nombre_col else "NULL"
+                    extenso_expr = f'"{extenso_col}"' if extenso_col else "NULL"
+                    rows = conn.execute(
+                        f'SELECT "{id_col}" AS id, {nombre_expr} AS nombre, {extenso_expr} AS extenso '
+                        f'FROM "Empresa" WHERE "{id_col}" IS NOT NULL ORDER BY "{id_col}"'
+                    ).fetchall()
+                    if not rows:
+                        logger.warning("[FiltrosMaestros] consulta Empresa devolvió 0 filas en DBEEPPL.sqlite")
+                    for r in rows:
                         emp_id = clean(r["id"])
-                        display = clean(r["display"]) or emp_id
+                        display = clean(r["nombre"]) or clean(r["extenso"]) or emp_id
                         if emp_id:
                             add_unique(data["empresas"], display)
                             data["empresa_display_to_id"][display] = emp_id
                             data["empresa_display_to_id"][display.upper()] = emp_id
+                            data["empresa_display_to_id"][emp_id] = emp_id
                             data["empresa_id_to_display"][emp_id] = display
+                else:
+                    logger.warning("[FiltrosMaestros] tabla Empresa sin columna IdEmpresa en DBEEPPL.sqlite")
             if "MVariedad" in tables:
                 cols = [r[1] for r in conn.execute('PRAGMA table_info("MVariedad")').fetchall()]
                 if {"CULTIVO", "Variedad"}.issubset(set(cols)):
@@ -3721,12 +3749,15 @@ class PlanningRepository:
                             add_unique(data["grupos_por_cultivo"]["__ALL__"], grupo)
                         if variedad:
                             data["variedades"].append({"cultivo": cultivo, "grupo": grupo, "variedad": variedad})
-        for key in ("campanas", "empresas"):
-            data[key] = sorted(data[key], key=lambda x: (self._numeric_sort_key(x), x.upper()))
+        data["campanas"] = sorted(data["campanas"], key=lambda x: (self._numeric_sort_key(x), x.upper()), reverse=True)
+        data["empresas"] = sorted(data["empresas"], key=lambda x: (self._numeric_sort_key(data["empresa_display_to_id"].get(x, x)), x.upper()))
         for mapping_key in ("cultivos_por_campana", "grupos_por_cultivo"):
             for k, vals in list(data[mapping_key].items()):
                 data[mapping_key][k] = sorted(set(vals), key=lambda x: x.upper())
         data["variedades"] = sorted(data["variedades"], key=lambda r: str(r.get("variedad", "")).upper())
+        logger.info("[FiltrosMaestros] campañas cargadas=%s", len(data["campanas"]))
+        logger.info("[FiltrosMaestros] cultivos cargados=%s", len(data["cultivos_por_campana"].get("__ALL__", [])))
+        logger.info("[FiltrosMaestros] empresas cargadas=%s", len(data["empresas"]))
         logger.info("[Filtros] maestros cargados campañas=%s cultivos=%s empresas=%s variedades=%s", len(data["campanas"]), len(data["cultivos_por_campana"].get("__ALL__", [])), len(data["empresas"]), len(data["variedades"]))
         self._planning_filter_master_cache = data
         return data
@@ -3759,7 +3790,10 @@ class PlanningRepository:
         cultivos = self._normalize_filter_values_upper(effective.get("cultivo"))
         grupos = self._normalize_filter_values_upper(effective.get("grupo_varietal"))
         if key == "campana":
-            return list(masters.get("campanas", []))
+            if not cultivos:
+                return list(masters.get("campanas", []))
+            vals = [p.get("campana", "") for p in masters.get("campana_cultivo_pairs", []) if str(p.get("cultivo", "")).upper() in cultivos]
+            return sorted({v for v in vals if v}, key=lambda x: (self._numeric_sort_key(x), x.upper()), reverse=True)
         if key == "cultivo":
             selected = campanas or []
             if not selected:

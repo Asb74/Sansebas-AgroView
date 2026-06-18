@@ -70,6 +70,10 @@ class PlanificacionDiariaScreen(ttk.Frame):
         selected = self.filter_widgets[key].get_selected() if key in self.filter_widgets else []
         try:
             options = self._get_filter_options_for_active_tab(key) if contextual else self.service.get_filter_options(key)
+            if key in {"campana", "cultivo", "empresa"}:
+                logging.getLogger(__name__).info("[FiltrosMaestros] opciones %s=%s", {"campana": "Campaña", "cultivo": "Cultivo", "empresa": "Empresa"}[key], len(options))
+                if not options:
+                    logging.getLogger(__name__).warning("[FiltrosMaestros] opciones %s=0; el desplegable se mostrará sin valores", {"campana": "Campaña", "cultivo": "Cultivo", "empresa": "Empresa"}[key])
             valid = [v for v in selected if v in options]
             self.filter_widgets[key].set_options(options)
             self.filter_widgets[key].set_selected(valid)
