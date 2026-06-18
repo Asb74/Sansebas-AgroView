@@ -108,3 +108,57 @@ def test_aprovechamiento_volcado_filtra_datoscalibre_por_cultivo2(tmp_path):
     assert result_cultivo2["grouped_summary"]["principales"] == 1
     assert result_cultivo["summary"] == {}
     assert result_cultivo["grouped_summary"]["principales"] == 0
+
+
+def test_aprovechamiento_volcado_calcula_destrio_y_merma_por_partida(tmp_path):
+    from datetime import datetime
+    from config import DB_CALIDAD, DB_EEPPL, DB_FRUTA, DB_LOTEADO, DB_PEDIDOS
+
+    repo = PlanningRepository(base_dir=tmp_path)
+    with sqlite3.connect(tmp_path / DB_CALIDAD) as conn:
+        conn.execute(
+            """
+            CREATE TABLE DatosCalibre (
+                IdPartida TEXT, Fecha TEXT, Campaña TEXT, Cultivo2 TEXT, EMPRESA TEXT,
+                KgPartida REAL, Neto REAL, DLinea REAL, DMesa REAL, Podrido REAL,
+                Inutil REAL, Piquera REAL, VerdeR REAL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO DatosCalibre VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("P1", "2026-06-17", "2026", "NARANJA", "EMP", 0, 1000, 10, 20, 5, 3, 2, 10),
+        )
+        conn.execute("CREATE TABLE Partidas (IdPartidaP TEXT, IdPartida0 TEXT, kgP REAL, kg0 REAL)")
+        conn.execute("INSERT INTO Partidas VALUES ('P1', 'P1', 1000, 1000)")
+
+    with sqlite3.connect(tmp_path / DB_FRUTA) as conn:
+        conn.execute("CREATE TABLE PesosFres (AlbaranDef TEXT, Boleta TEXT, IdSocio TEXT, Socio TEXT, Fcarga TEXT, Apodo TEXT)")
+        conn.execute("INSERT INTO PesosFres VALUES ('P1', 'B1', 'S1', 'Socio Uno', '2026-06-17', '24')")
+
+    with sqlite3.connect(tmp_path / DB_LOTEADO) as conn:
+        conn.execute("CREATE TABLE Loteado (IdPalet TEXT, CULTIVO TEXT)")
+        conn.execute("CREATE TABLE Lote (IdLote TEXT, IdPalet TEXT, Calibre TEXT, Lote TEXT, Neto REAL, Cajas REAL, IdConfeccion TEXT, Confeccion TEXT, Variedad TEXT)")
+        conn.execute("INSERT INTO Loteado VALUES ('PAL1', 'NARANJA')")
+        conn.execute("INSERT INTO Lote VALUES ('P1', 'PAL1', '5', 'I', 800, 0, 'C1', 'Conf', 'Navel')")
+
+    with sqlite3.connect(tmp_path / DB_PEDIDOS) as conn:
+        conn.execute("CREATE TABLE MConfecciones (CODIGO TEXT, GRUPO TEXT)")
+    with sqlite3.connect(tmp_path / DB_EEPPL) as conn:
+        conn.execute("CREATE TABLE MVariedad (Variedad TEXT, CULTIVO TEXT, GRUPO TEXT, SUBGRUPO TEXT)")
+
+    result = repo.get_aprovechamiento_volcado({"cultivo": "NARANJA"}, today=datetime(2026, 6, 18))
+
+    assert result["partida_summary"] == [{
+        "Partida principal": "P1",
+        "Boleta": "B1",
+        "Socio": "S1",
+        "Nombre socio": "Socio Uno",
+        "Neto partidas": 1000.0,
+        "Neto comercial": 800.0,
+        "Destrío": 50.0,
+        "Merma": 150.0,
+        "% comercial": 80.0,
+        "% destrío": 5.0,
+        "% merma": 15.0,
+    }]

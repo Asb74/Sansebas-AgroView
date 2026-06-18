@@ -229,3 +229,31 @@ def test_prevision_recoleccion_filtra_por_fecha_no_fechar(tmp_path):
     assert [row["Boleta"] for row in rows] == ["B1", "B2"]
     assert [row["Fecha_date"] for row in rows] == ["2026-06-18", "2026-06-19"]
     assert rows[0]["FechaR_date"] == "2026-06-10"
+
+
+@pytest.mark.skipif(not REPORTLAB_AVAILABLE, reason="ReportLab no instalado")
+def test_prevision_recoleccion_detalle_solo_dia_operativo(monkeypatch, tmp_path):
+    from datetime import datetime
+
+    captured = []
+    service = CommercialPdfReportService()
+    original = service._table
+
+    def spy(data, *args, **kwargs):
+        captured.append(data)
+        return original(data, *args, **kwargs)
+
+    monkeypatch.setattr(service, "_table", spy)
+    monkeypatch.setattr(service, "_prevision_operational_detail_date", lambda: datetime(2026, 6, 19).date())
+    service.generate(
+        tmp_path / "prevision_operativa.pdf",
+        prevision_recoleccion_rows=[
+            {"Fecha_date": "2026-06-18", "IdSocio": "1", "Socio": "Socio Hoy", "Boleta": "B18", "Variedad": "V1", "KgAprox": 1000},
+            {"Fecha_date": "2026-06-19", "IdSocio": "2", "Socio": "Socio Mañana", "Boleta": "B19", "Variedad": "V2", "KgAprox": 2000},
+        ],
+    )
+
+    detail_tables = [t for t in captured if t and t[0] and t[0][0] == "IdSocio" and "Kg aprox (t)" in t[0]]
+    assert len(detail_tables) == 1
+    assert any(row[2] == "B19" for row in detail_tables[0][1:])
+    assert not any(len(row) > 2 and row[2] == "B18" for row in detail_tables[0][1:])

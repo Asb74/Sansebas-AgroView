@@ -1856,7 +1856,13 @@ class PlanningRepository:
             neto_col = self._find_column(cols, ["Neto", "KgNeto", "KilosNetos"])
             kg_expr = f'COALESCE(MAX(dc."{kg_col}"), 0)' if kg_col else "0"
             neto_expr = f'COALESCE(MAX(dc."{neto_col}"), 0)' if neto_col else "0"
-            query = f'SELECT TRIM(CAST(dc."{id_col}" AS TEXT)) AS IdPartida, {kg_expr} AS KgPartida, {neto_expr} AS Neto FROM "{table}" dc WHERE TRIM(CAST(dc."{id_col}" AS TEXT)) <> "" AND date({fecha_expr}) BETWEEN date(?) AND date(?)'
+            destrio_terms = []
+            for destrio_name in ("DLinea", "DMesa", "Podrido", "Inutil", "Piquera", "VerdeR"):
+                destrio_col = self._find_column(cols, [destrio_name])
+                if destrio_col:
+                    destrio_terms.append(f'COALESCE(MAX(dc."{destrio_col}"), 0)')
+            destrio_expr = " + ".join(destrio_terms) if destrio_terms else "0"
+            query = f'SELECT TRIM(CAST(dc."{id_col}" AS TEXT)) AS IdPartida, {kg_expr} AS KgPartida, {neto_expr} AS Neto, {destrio_expr} AS Destrio FROM "{table}" dc WHERE TRIM(CAST(dc."{id_col}" AS TEXT)) <> "" AND date({fecha_expr}) BETWEEN date(?) AND date(?)'
             params: list[Any] = [start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")]
             for field, col in (("campana", camp_col), ("cultivo", cult_col), ("empresa", emp_col)):
                 vals = self._normalize_filter_values(filters.get(field)) if col else []
@@ -1871,7 +1877,8 @@ class PlanningRepository:
             datos_rows = [dict(r) for r in conn.execute(query, params).fetchall()]
             logger.debug("[Volcado] registros encontrados=%s", len(datos_rows))
             ids = [str(r["IdPartida"]) for r in datos_rows]
-            kg_por_partida = {str(r["IdPartida"]): (float(r.get("KgPartida") or 0) or float(r.get("Neto") or 0)) for r in datos_rows}
+            kg_por_partida = {str(r["IdPartida"]): (float(r.get("Neto") or 0) or float(r.get("KgPartida") or 0)) for r in datos_rows}
+            destrio_por_partida = {str(r["IdPartida"]): float(r.get("Destrio") or 0) for r in datos_rows}
             grouped_rows, grouped_summary = self._get_partidas_agrupadas_volcado(conn, ids, kg_por_partida)
             result["grouped_partidas"] = grouped_rows
             result["grouped_summary"] = grouped_summary
@@ -1922,6 +1929,7 @@ class PlanningRepository:
 
         quality = defaultdict(lambda: {"lineas": 0, "kg": 0.0})
         grouped = defaultdict(lambda: {"kg_real": 0.0, "kg_estimado": 0.0})
+        comercial_por_partida: dict[str, float] = defaultdict(float)
         for r in lines:
             neto = float(r.get("Neto") or 0); cajas = float(r.get("Cajas") or 0)
             origen = "Sin estimación"; kg = 0.0; real = False
@@ -1938,12 +1946,35 @@ class PlanningRepository:
             quality[origen]["lineas"] += 1; quality[origen]["kg"] += kg
             if kg <= 0:
                 continue
+            comercial_por_partida[str(r.get("IdLote") or "").strip()] += kg
             calibs = self._expandir_calibre_loteado(r.get("Calibre"), calibre_map=calibre_map) or [str(r.get("Calibre") or "Sin calibre")]
             for cal, kg_cal in self._repartir_kg_loteado_por_calibres(kg, calibs).items():
                 key = (r.get("Cultivo") or "", r.get("GrupoVarietal") or "", r.get("Variedad") or "", cal, r.get("Categoria") or "")
                 grouped[key]["kg_real" if real else "kg_estimado"] += kg_cal
 
         total_calc = sum(v["kg_real"] + v["kg_estimado"] for v in grouped.values())
+        partida_trace = {str(r.get("Partida principal") or "").strip(): r for r in result.get("grouped_partidas", []) if str(r.get("Partida principal") or "").strip() == str(r.get("Partida incluida") or "").strip() or str(r.get("Tipo") or "").startswith("Principal")}
+        partida_summary = []
+        for partida in ids:
+            neto_partidas = float(kg_por_partida.get(partida) or 0)
+            neto_comercial = float(comercial_por_partida.get(partida) or 0)
+            destrio = float(destrio_por_partida.get(partida) or 0)
+            merma = neto_partidas - neto_comercial - destrio
+            trace = partida_trace.get(partida, {})
+            partida_summary.append({
+                "Partida principal": partida,
+                "Boleta": trace.get("Boleta", ""),
+                "Socio": trace.get("Socio", ""),
+                "Nombre socio": trace.get("Nombre socio", ""),
+                "Neto partidas": round(neto_partidas, 2),
+                "Neto comercial": round(neto_comercial, 2),
+                "Destrío": round(destrio, 2),
+                "Merma": round(merma, 2),
+                "% comercial": round((neto_comercial / neto_partidas * 100) if neto_partidas else 0, 2),
+                "% destrío": round((destrio / neto_partidas * 100) if neto_partidas else 0, 2),
+                "% merma": round((merma / neto_partidas * 100) if neto_partidas else 0, 2),
+            })
+        result["partida_summary"] = partida_summary
         result["rows"] = [{"Cultivo": k[0], "Grupo varietal": k[1], "Variedad": k[2], "Calibre": k[3], "Categoría": k[4], "Kg reales": round(v["kg_real"], 2), "Kg estimados": round(v["kg_estimado"], 2), "Kg total": round(v["kg_real"] + v["kg_estimado"], 2), "% sobre calculado": round(((v["kg_real"] + v["kg_estimado"]) / total_calc * 100) if total_calc else 0, 2)} for k, v in sorted(grouped.items())]
         total_lines = len(lines)
         calc_lines = sum(v["lineas"] for k, v in quality.items() if k != "Sin estimación")
