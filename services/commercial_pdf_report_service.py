@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 import logging
@@ -276,6 +276,13 @@ class CommercialPdfReportService:
     def _prevision_fecha(self, row: dict) -> Any:
         return row.get("Fecha_date") or row.get("Fecha") or row.get("FechaR_date") or row.get("FechaR")
 
+    def _prevision_operational_detail_date(self, now: datetime | None = None) -> date:
+        current = now or datetime.now()
+        detail_date = current.date()
+        if current.time() >= time(16, 0):
+            detail_date += timedelta(days=1)
+        return detail_date
+
     def _add_prevision_recoleccion(self, story: list, rows: list[dict], filters: dict[str, Any] | None = None) -> None:
         story.append(Paragraph("PREVISIÓN DE RECOLECCIÓN", self._section))
         if not rows:
@@ -307,10 +314,13 @@ class CommercialPdfReportService:
         story.append(Spacer(1, 8))
 
         detail_cols = ["IdSocio", "Socio", "Boleta", "Variedad", "Manijero", "Matrícula", "Destino", "Cajas", "Kg aprox (t)", "Hora"]
-        for day in sorted(by_day):
-            day_rows = sorted(by_day[day], key=lambda r: (str(r.get("Variedad") or ""), str(r.get("Socio") or ""), str(r.get("Boleta") or "")))
-            date_text = self._parse_date(day).strftime("%d/%m/%Y") if self._parse_date(day) else day
-            story.append(Paragraph(f"{self._weekday_es(day, upper=True)} {date_text}", self._normal))
+        operational_date = self._prevision_operational_detail_date()
+        operational_iso = operational_date.isoformat()
+        story.append(Paragraph(f"Detalle operativo mostrado: {operational_date.strftime('%d/%m/%Y')}", self._normal))
+        if operational_iso in by_day:
+            day_rows = sorted(by_day[operational_iso], key=lambda r: (str(r.get("Variedad") or ""), str(r.get("Socio") or ""), str(r.get("Boleta") or "")))
+            date_text = operational_date.strftime("%d/%m/%Y")
+            story.append(Paragraph(f"{self._weekday_es(operational_iso, upper=True)} {date_text}", self._normal))
             data = [detail_cols]
             for r in day_rows:
                 data.append([r.get("IdSocio", ""), r.get("Socio", ""), r.get("Boleta", ""), r.get("Variedad", ""), r.get("Manijero", ""), r.get("Matricula", r.get("Matricual", "")), r.get("Destino", ""), self._format_cell(r.get("Cajas", ""), "Cajas"), self._fmt_t(r.get("KgAprox")), r.get("Hora", "")])
@@ -323,7 +333,9 @@ class CommercialPdfReportService:
                     data.append([f"{label}: {name}"] + [""] * 7 + [self._fmt_t(kg), ""])
             data.append(["TOTAL DÍA"] + [""] * 7 + [self._fmt_t(self._sum(day_rows, "KgAprox")), ""])
             story.append(self._table(data))
-            story.append(Spacer(1, 6))
+        else:
+            story.append(Paragraph("Sin previsión para el día operativo seleccionado.", self._normal))
+        story.append(Spacer(1, 6))
 
         final: dict[str, list[dict]] = {}
         for r in rows:
@@ -665,6 +677,20 @@ class CommercialPdfReportService:
         sem = summary.get("semaforo", "Rojo")
         resumen = [["Nº partidas volcadas", "Líneas peso real", "Líneas estimadas", "Sin estimación", "Kg reales", "Kg estimados", "Cobertura líneas"], [summary.get("partidas", 0), summary.get("lineas_reales", 0), summary.get("lineas_estimadas", 0), summary.get("sin_estimacion", 0), self._num(summary.get("kg_real", 0)), self._num(summary.get("kg_estimado", 0)), f"{summary.get('cobertura_palets', 0):.1f}% ({sem})"]]
         story.append(self._table(resumen, row_styles=[(1, str(sem).upper())]))
+        partida_summary = list(volcado.get("partida_summary") or [])
+        if partida_summary:
+            story.append(Paragraph("RESUMEN DESTRÍO Y MERMA POR PARTIDA VOLCADA", self._normal))
+            pcols = ["Partida principal", "Boleta", "Socio", "Nombre socio", "Neto partidas", "Neto comercial", "Destrío", "Merma", "% comercial", "% destrío", "% merma"]
+            pct_cols = {"% comercial", "% destrío", "% merma"}
+            kg_cols = {"Neto partidas", "Neto comercial", "Destrío", "Merma"}
+            pdata = [pcols]
+            for r in partida_summary[:80]:
+                pdata.append([
+                    f"{float(r.get(c) or 0):.1f}%" if c in pct_cols else self._fmt_t(r.get(c, 0)) if c in kg_cols else r.get(c, "")
+                    for c in pcols
+                ])
+            story.append(self._table(pdata, col_widths=[2.5*cm, 1.6*cm, 1.6*cm, 4.2*cm, 2.1*cm, 2.1*cm, 1.8*cm, 1.8*cm, 1.8*cm, 1.8*cm, 1.8*cm]))
+            story.append(Spacer(1, 6))
         cols = ["Cultivo", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Kg reales", "Kg estimados", "Kg total", "% sobre calculado"]
         story.append(self._table([cols] + [[self._format_cell(r.get(c, ""), c) for c in cols] for r in rows[:80]]))
         story.append(Spacer(1, 6))
