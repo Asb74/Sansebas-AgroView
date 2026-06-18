@@ -1847,7 +1847,7 @@ class PlanningRepository:
             id_col = self._find_column(cols, ["IdPartida"])
             fecha_col = self._find_column(cols, ["Fecha"])
             camp_col = self._find_campana_column(cols)
-            cult_col = self._find_column(cols, ["CULTIVO", "Cultivo"])
+            cult_col = self._find_column(cols, ["Cultivo2", "CULTIVO2"])
             emp_col = self._find_column(cols, ["EMPRESA", "Empresa"])
             if not id_col or not fecha_col:
                 return result
@@ -1865,7 +1865,11 @@ class PlanningRepository:
                     query += f' AND UPPER(TRIM(dc."{col}")) IN ({ph})'
                     params.extend(vals)
             query += f' GROUP BY TRIM(CAST(dc."{id_col}" AS TEXT))'
+            cultivo_vals_log = self._normalize_filter_values(filters.get("cultivo"))
+            logger.info("[Volcado] filtro cultivo=%s", filters.get("cultivo"))
+            logger.info("[Volcado] filtro cultivo2=%s", cultivo_vals_log)
             datos_rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+            logger.info("[Volcado] registros encontrados=%s", len(datos_rows))
             ids = [str(r["IdPartida"]) for r in datos_rows]
             kg_por_partida = {str(r["IdPartida"]): (float(r.get("KgPartida") or 0) or float(r.get("Neto") or 0)) for r in datos_rows}
             grouped_rows, grouped_summary = self._get_partidas_agrupadas_volcado(conn, ids, kg_por_partida)

@@ -60,3 +60,51 @@ def test_partidas_agrupadas_volcado_usa_partidas_y_trazabilidad_pesosfres(tmp_pa
         {"Partida principal": "P2", "Partida incluida": "P2", "Kg asociado": 500.0, "Tipo": "Principal sin agrupación", "Boleta": "NO ENCONTRADA", "Socio": "NO ENCONTRADO", "Nombre socio": "NO ENCONTRADO", "Fecha carga": "-", "Semana": "-"},
     ]
     assert summary == {"principales": 2, "incluidas": 4, "adicionales": 2, "kg_total": 3000.0}
+
+
+def test_aprovechamiento_volcado_filtra_datoscalibre_por_cultivo2(tmp_path):
+    from datetime import datetime
+    from config import DB_CALIDAD, DB_EEPPL, DB_LOTEADO, DB_PEDIDOS
+
+    repo = PlanningRepository(base_dir=tmp_path)
+    with sqlite3.connect(tmp_path / DB_CALIDAD) as conn:
+        conn.execute(
+            """
+            CREATE TABLE DatosCalibre (
+                IdPartida TEXT, Fecha TEXT, Campaña TEXT, Cultivo TEXT, Cultivo2 TEXT,
+                EMPRESA TEXT, KgPartida REAL, Neto REAL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO DatosCalibre VALUES
+            ('P1', '2026-06-17', '2026', 'CITRICOS', 'NARANJA', 'EMP', 1000, 0)
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE Partidas (
+                IdPartidaP TEXT, IdPartida0 TEXT, kgP REAL, kg0 REAL
+            )
+            """
+        )
+        conn.execute("INSERT INTO Partidas VALUES ('P1', 'P1', 1000, 1000)")
+
+    with sqlite3.connect(tmp_path / DB_LOTEADO) as conn:
+        conn.execute("CREATE TABLE Loteado (IdPalet TEXT, CULTIVO TEXT)")
+        conn.execute("CREATE TABLE Lote (IdLote TEXT, IdPalet TEXT, Calibre TEXT, Lote TEXT, Neto REAL, Cajas REAL, IdConfeccion TEXT, Confeccion TEXT, Variedad TEXT)")
+
+    with sqlite3.connect(tmp_path / DB_PEDIDOS) as conn:
+        conn.execute("CREATE TABLE MConfecciones (CODIGO TEXT, GRUPO TEXT)")
+
+    with sqlite3.connect(tmp_path / DB_EEPPL) as conn:
+        conn.execute("CREATE TABLE MVariedad (Variedad TEXT, CULTIVO TEXT, GRUPO TEXT, SUBGRUPO TEXT)")
+
+    result_cultivo2 = repo.get_aprovechamiento_volcado({"cultivo": "NARANJA"}, today=datetime(2026, 6, 18))
+    result_cultivo = repo.get_aprovechamiento_volcado({"cultivo": "CITRICOS"}, today=datetime(2026, 6, 18))
+
+    assert result_cultivo2["summary"]["partidas"] == 1
+    assert result_cultivo2["grouped_summary"]["principales"] == 1
+    assert result_cultivo["summary"] == {}
+    assert result_cultivo["grouped_summary"]["principales"] == 0
