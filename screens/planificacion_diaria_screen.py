@@ -4,6 +4,8 @@ import os
 import platform
 import subprocess
 import tempfile
+import threading
+from time import perf_counter
 from datetime import datetime
 from pathlib import Path
 import tkinter as tk
@@ -252,15 +254,18 @@ class PlanificacionDiariaScreen(ttk.Frame):
             self.sim_policy_vars[k] = tk.BooleanVar(value=dv)
             ttk.Checkbutton(sim_frame, text=lbl, variable=self.sim_policy_vars[k]).grid(row=i//3, column=i%3, sticky="w", padx=4, pady=2)
         ttk.Label(sim_frame, text="Modo simulación: no descuenta stock ni crea reservas").grid(row=4, column=0, columnspan=2, sticky="w", pady=(6,0))
-        ttk.Button(sim_frame, text="Recalcular simulación", command=self._recalcular_simulacion).grid(row=4, column=2, sticky="e")
         ttk.Button(sim_frame, text="Configurar calidad", command=self._open_config_calidad).grid(row=4, column=1, sticky="e", padx=(0, 8))
+        ttk.Button(sim_frame, text="Recalcular simulación", command=self._recalcular_simulacion).grid(row=4, column=2, sticky="e")
+        self.simulacion_status_var = tk.StringVar(value="")
+        self.simular_asignacion_button = ttk.Button(sim_frame, text="Simular asignación", command=self._open_simulacion_asignacion)
+        self.simular_asignacion_button.grid(row=5, column=1, sticky="e", padx=(0, 8), pady=(6, 0))
+        ttk.Label(sim_frame, textvariable=self.simulacion_status_var, foreground="#666666").grid(row=5, column=0, sticky="w", pady=(6, 0))
 
         balance_header = ttk.Frame(self.balance_tab)
         balance_header.pack(fill="x", pady=(0, 6))
         ttk.Label(balance_header, textvariable=self.kpi_balance, style="KPI.TLabel").pack(side="left", anchor="w")
         acciones_frame = ttk.Frame(balance_header)
         acciones_frame.pack(side="right")
-        ttk.Button(acciones_frame, text="Simular asignación", command=self._open_simulacion_asignacion).pack(side="left", padx=4)
         ttk.Button(acciones_frame, text="Ver cobertura (pedidos)", command=self._open_selected_balance_coverage).pack(side="left", padx=4)
         self.balance_table = DataTable(
             self.balance_tab,
@@ -594,63 +599,16 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
 
     def _open_simulacion_asignacion(self) -> None:
-        pedidos = [
-            r
-            for r in self.balance_rows_all
-            if str(r.get("Tipo línea", "")).strip() == "Pedido"
-        ]
-
-        def _candidatos_de_pedido(pedido: dict) -> list[dict]:
-            return self.service.get_candidatos_compatibles_para_pedido(self._filters_payload(), pedido, policy_cfg=self._build_sim_policy())
-
-        def _inventario_global() -> list[dict]:
-            pools = self.service.get_inventario_operativo_global(
-                self._filters_payload(),
-                policy=self._build_sim_policy(),
-            )
-            logger = logging.getLogger(__name__)
-            logger.debug(
-                "Inventario operativo global: pools=%s calibres=%s",
-                len(pools),
-                sorted(set(str(p.get("calibre", "")) for p in pools)),
-            )
-            logger.debug(
-                "Inventario operativo global origenes=%s",
-                sorted(set(str(p.get("origen", "")) for p in pools)),
-            )
-            return pools
-
-        inventario_global = _inventario_global()
-        if not pedidos and not inventario_global:
-            messagebox.showinfo(
-                "Simulación de asignación",
-                "No hay pedidos pendientes ni stock analizable para simular.",
-                parent=self,
-            )
+        if getattr(self, "_simulacion_en_curso", False):
             return
-
-        if not self.pedidos_pendientes_rows_raw:
-            try:
-                modo_pedidos = self.pedidos_modo_var.get()
-                pedidos_rows, _kpi = self.service.load_pedidos_pendientes(self._filters_payload(), modo_pedidos)
-                self.pedidos_pendientes_rows_raw = [dict(r) for r in pedidos_rows]
-            except Exception:
-                logging.getLogger(__name__).exception("No se pudo cargar pedidos raw para horizonte")
-
         logger = logging.getLogger(__name__)
-        pedidos_detalle_horizonte = [dict(r) for r in self.pedidos_pendientes_rows_raw]
-        if not pedidos_detalle_horizonte:
-            pedidos_detalle_horizonte = [dict(r) for r in self.pedidos_pendientes_rows]
-        logger.debug(
-            "Simulación horizonte raw: filas=%s fechas=%s kg_total=%s",
-            len(pedidos_detalle_horizonte),
-            sorted(set(str(r.get("Fecha salida", "")) for r in pedidos_detalle_horizonte)),
-            sum(float(r.get("Kg pendiente", 0) or 0) for r in pedidos_detalle_horizonte),
-        )
-        if not pedidos:
-            logger.debug("Simulación abierta sin pedidos: modo análisis stock/sobrantes")
-
+        t_total = perf_counter()
         filtros = self._filters_payload()
+        self._ensure_cache_key(filtros)
+        policy = self._build_sim_policy()
+        modo_pedidos = self.pedidos_modo_var.get()
+        pedidos = [r for r in self.balance_rows_all if str(r.get("Tipo línea", "")).strip() == "Pedido"]
+
         cultivos = filtros.get("cultivo", [])
         cultivos_validos = [str(c or "").strip() for c in cultivos if str(c or "").strip() and str(c or "").strip().upper() != "TODOS"]
         if len(cultivos_validos) == 0:
@@ -660,7 +618,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 self.filter_widgets["cultivo"].set_selected([cultivo_auto])
                 filtros = self._filters_payload()
                 cultivos_validos = [cultivo_auto]
-                logging.getLogger(__name__).info("Simulación cultivo autoseleccionado=%s por opción única", cultivo_auto)
+                logger.info("Simulación cultivo autoseleccionado=%s por opción única", cultivo_auto)
             elif len(opciones_cultivo) > 1:
                 messagebox.showwarning("Simulación de asignación", "Seleccione un único cultivo para simular.", parent=self)
                 return
@@ -673,33 +631,119 @@ class PlanificacionDiariaScreen(ttk.Frame):
         if len(campanas_validas) != 1:
             messagebox.showwarning("Simulación de asignación", "Seleccione una única campaña para simular.", parent=self)
             return
-        avisos: list[str] = []
-        if not pedidos:
-            avisos.append("No hay pedidos para esta campaña/cultivo.")
-        if not self.stock_campo_rows:
-            avisos.append("No hay stock de campo para esta campaña/cultivo.")
-        if self.stock_almacen_rows:
-            avisos.append("Hay stock de almacén disponible.")
-        if (not pedidos and not self.stock_campo_rows) and self.stock_almacen_rows:
-            avisos.append("Simulación sin datos operativos completos; se permite selección desde maestro.")
-        if avisos:
-            messagebox.showinfo("Simulación de asignación", "\n".join(avisos), parent=self)
 
         empresas = filtros.get("empresa", [])
         empresas_validas = [str(e or "").strip() for e in empresas if str(e or "").strip() and str(e or "").strip().upper() != "TODOS"]
         empresa_actual = empresas_validas[0] if len(empresas_validas) == 1 else ""
 
-        abrir_simulacion_asignacion(
-            self,
-            pedidos,
-            _candidatos_de_pedido,
-            get_inventario_global_cb=lambda: inventario_global,
-            pedidos_detalle_horizonte=pedidos_detalle_horizonte,
-            cultivo_actual=cultivos_validos[0],
-            campana_actual=campanas_validas[0],
-            empresa_actual=empresa_actual,
-            filters_payload=filtros,
-        )
+        self._simulacion_en_curso = True
+        self.simular_asignacion_button.configure(state="disabled")
+        self.simulacion_status_var.set("Calculando simulación…")
+
+        def worker() -> None:
+            marks: dict[str, float] = {}
+            error: Exception | None = None
+            result: dict | None = None
+            try:
+                service = PlanningService()
+                t0 = perf_counter()
+                pedidos_detalle = [dict(r) for r in (self.pedidos_pendientes_rows_raw or self.pedidos_pendientes_rows)]
+                if not pedidos_detalle:
+                    pedidos_rows, _kpi = service.load_pedidos_pendientes(filtros, modo_pedidos)
+                    pedidos_detalle = [dict(r) for r in pedidos_rows]
+                marks["pedidos"] = perf_counter() - t0
+
+                t0 = perf_counter()
+                stock_comercial = list(self.stock_almacen_rows or [])
+                marks["stock_comercial"] = perf_counter() - t0
+
+                t0 = perf_counter()
+                inventario_global = service.get_inventario_operativo_global(filtros, policy=policy)
+                marks["stock_industrial"] = perf_counter() - t0
+
+                t0 = perf_counter()
+                stock_campo = list(self.stock_campo_rows or [])
+                marks["entrada"] = perf_counter() - t0
+
+                if not pedidos and not inventario_global:
+                    result = {"empty": True}
+                    return
+
+                t0 = perf_counter()
+                candidatos_por_pedido: dict[tuple[str, str], list[dict]] = {}
+                for pedido in pedidos:
+                    key = (str(pedido.get("IdPedidoLora", pedido.get("id_pedido", ""))), str(pedido.get("Línea", pedido.get("linea", ""))))
+                    candidatos_por_pedido[key] = service.get_candidatos_compatibles_para_pedido(filtros, pedido, policy_cfg=policy)
+                marks["pools"] = perf_counter() - t0
+
+                result = {
+                    "empty": False,
+                    "pedidos": pedidos,
+                    "pedidos_detalle_horizonte": pedidos_detalle,
+                    "inventario_global": inventario_global,
+                    "candidatos_por_pedido": candidatos_por_pedido,
+                    "cultivo_actual": cultivos_validos[0],
+                    "campana_actual": campanas_validas[0],
+                    "empresa_actual": empresa_actual,
+                    "filters_payload": filtros,
+                    "stock_campo_len": len(stock_campo),
+                    "stock_comercial_len": len(stock_comercial),
+                }
+            except Exception as exc:
+                error = exc
+            finally:
+                marks["total"] = perf_counter() - t_total
+                logger.info(
+                    "[PERF SimularAsignacion] pedidos=%.2fs stock=%.2fs pools=%.2fs asignacion=%.2fs render=%.2fs total=%.2fs",
+                    marks.get("pedidos", 0.0),
+                    marks.get("stock_comercial", 0.0) + marks.get("stock_industrial", 0.0) + marks.get("entrada", 0.0),
+                    marks.get("pools", 0.0),
+                    0.0,
+                    0.0,
+                    marks.get("total", 0.0),
+                )
+                self.after(0, lambda: finish(result, error))
+
+        def finish(result: dict | None, error: Exception | None) -> None:
+            self._simulacion_en_curso = False
+            self.simular_asignacion_button.configure(state="normal")
+            self.simulacion_status_var.set("")
+            if error is not None:
+                logger.error("No se pudo preparar la simulación de asignación", exc_info=(type(error), error, error.__traceback__))
+                messagebox.showerror("Simulación de asignación", f"No se pudo preparar la simulación:\n{error}", parent=self)
+                return
+            if not result or result.get("empty"):
+                messagebox.showinfo("Simulación de asignación", "No hay pedidos pendientes ni stock analizable para simular.", parent=self)
+                return
+            avisos: list[str] = []
+            if not result["pedidos"]:
+                avisos.append("No hay pedidos para esta campaña/cultivo.")
+            if result.get("stock_campo_len", 0) == 0:
+                avisos.append("No hay stock de campo para esta campaña/cultivo.")
+            if result.get("stock_comercial_len", 0) > 0:
+                avisos.append("Hay stock de almacén disponible.")
+            if avisos:
+                messagebox.showinfo("Simulación de asignación", "\n".join(avisos), parent=self)
+
+            def _pedido_key(pedido: dict) -> tuple[str, str]:
+                return (str(pedido.get("IdPedidoLora", pedido.get("id_pedido", ""))), str(pedido.get("Línea", pedido.get("linea", ""))))
+
+            def _candidatos_de_pedido(pedido: dict) -> list[dict]:
+                return [dict(r) for r in result["candidatos_por_pedido"].get(_pedido_key(pedido), [])]
+
+            abrir_simulacion_asignacion(
+                self,
+                result["pedidos"],
+                _candidatos_de_pedido,
+                get_inventario_global_cb=lambda: [dict(r) for r in result["inventario_global"]],
+                pedidos_detalle_horizonte=result["pedidos_detalle_horizonte"],
+                cultivo_actual=result["cultivo_actual"],
+                campana_actual=result["campana_actual"],
+                empresa_actual=result["empresa_actual"],
+                filters_payload=result["filters_payload"],
+            )
+
+        threading.Thread(target=worker, name="SimularAsignacionWorker", daemon=True).start()
 
     def _open_selected_balance_coverage(self) -> None:
         sel = self.balance_table.tree.selection()

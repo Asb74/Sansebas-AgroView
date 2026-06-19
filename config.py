@@ -19,20 +19,21 @@ BASE_DIR = Path(__file__).resolve().parent
 APP_DATA_DIR = Path(r"C:\Sansebas AgroView\data")
 APP_DB_PATH = APP_DATA_DIR / "app_config.sqlite"
 LOG_DIR = BASE_DIR / "logs"
-LOG_FILE = LOG_DIR / "app.log"
 SESSION_LOG_FILE = LOG_DIR / f"app_{datetime.now():%Y%m%d_%H%M%S}.log"
 
 
 def setup_logging() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+        handler.close()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
             logging.FileHandler(SESSION_LOG_FILE, encoding="utf-8"),
-            logging.FileHandler(LOG_FILE, encoding="utf-8"),
             logging.StreamHandler(),
         ],
-        force=True,
     )
     logging.getLogger(__name__).info("Logging de sesión iniciado en %s", SESSION_LOG_FILE)

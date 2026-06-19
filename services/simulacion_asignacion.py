@@ -5,6 +5,7 @@ from datetime import date, datetime
 import json
 import logging
 from pathlib import Path
+from time import perf_counter
 import tkinter as tk
 from tkinter import ttk, messagebox
 import unicodedata
@@ -2206,7 +2207,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         for p in pedidos_detalle_horizonte:
             p["prioridad_manual"] = prioridades_map.get(_pedido_id_prioridad(p), int(_to_float(p.get("prioridad_manual", 0))))
 
+    t_asignacion = perf_counter()
     simulaciones, asignaciones_simuladas, _stock_simulado = simular_asignacion_global(pedidos_operativos, get_candidatos_cb, scoring=scoring)
+    asignacion_secs = perf_counter() - t_asignacion
     inventario_global_simulado = dict(_stock_simulado)
     calibres_tecnicos = sorted({
         str(p.get("calibre", "")).strip()
@@ -2401,10 +2404,13 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         resumen.configure(text=f"Cobertura global · Pedidos: {total_pedidos} · Totales: {totales} · Parciales: {parciales} · Insuficientes: {insuficientes} · Kg asignados simulados: {formatear_kg(kg_asig_total)} · Kg faltantes simulados: {formatear_kg(kg_falt_total)} · Kg sobrantes útiles: {formatear_kg(sob_total)}")
         detalle.configure(text=f"Necesidad recolección · Nº necesidades: {need_tot['n']} · Kg útiles faltantes: {formatear_kg(need_tot['kg_falt'])} · Kg campo estimados total: {formatear_kg(need_tot['kg_campo'])} · Sobrantes · Kg útiles sobrantes: {formatear_kg(sob_total)} · Orígenes con sobrante: {len(sob_origenes)}")
 
+    t_render = perf_counter()
     pedidos_tbl.set_rows(resumen_rows)
     pedidos_op_tbl.set_rows([{k: r.get(k, "") for k in pedidos_op_cols} for r in resumen_rows])
     needs_tbl.set_rows(necesidades_rows)
     sobrantes_tbl.set_rows(sobrantes_rows)
+    render_secs = perf_counter() - t_render
+    logger.info("[PERF SimularAsignacionRender] asignacion=%.2fs render_inicial=%.2fs pedidos=%s sobrantes=%s necesidades=%s", asignacion_secs, render_secs, len(resumen_rows), len(sobrantes_rows), len(necesidades_rows))
     needs_tbl.tree.tag_configure("prio_hoy", background="#f8d7da")
     needs_tbl.tree.tag_configure("prio_23", background="#fff3cd")
     needs_tbl.tree.tag_configure("prio_future", background="#dff0d8")
