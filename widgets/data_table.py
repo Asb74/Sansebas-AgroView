@@ -32,9 +32,11 @@ class DataTable(ttk.Frame):
         self.tree.tag_configure("tag_orange", foreground="#e65100")
 
     def set_rows(self, rows: list[dict]) -> None:
-        for item in self.tree.get_children():
-            self.tree.delete(item)
+        children = self.tree.get_children()
+        if children:
+            self.tree.delete(*children)
 
+        prepared_rows = []
         for row in rows:
             values = [row.get(col, "") for col in self.columns]
             tags = row.get("__tags__", ())
@@ -42,4 +44,7 @@ class DataTable(ttk.Frame):
                 tags = (tags,)
             elif not isinstance(tags, (tuple, list)):
                 tags = ()
-            self.tree.insert("", "end", values=values, tags=tuple(tags))
+            prepared_rows.append((values, tuple(tags)))
+
+        for values, tags in prepared_rows:
+            self.tree.insert("", "end", values=values, tags=tags)
