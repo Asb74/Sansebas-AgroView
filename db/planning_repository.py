@@ -2519,7 +2519,7 @@ class PlanningRepository:
         pedidos_path = self._db_path(DB_PEDIDOS)
         logger.debug("Ruta DBPedidos.sqlite usada: %s", pedidos_path)
         logger.debug("DBPedidos.sqlite existe: %s", pedidos_path.exists())
-        kpi_vacio = {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Merma kg total": 0.0, "% merma total": 0.0, "Nº pedidos": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0}
+        kpi_vacio = {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Kg terminado/completo total": 0.0, "Merma kg total": 0.0, "% merma total": 0.0, "Nº pedidos": 0, "Nº pedidos pendientes": 0, "Nº pedidos terminados": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0, "Nº líneas sin confección estimadas": 0}
         if not pedidos_path.exists():
             logger.warning("No existe DBPedidos.sqlite en la ruta esperada")
             return [], kpi_vacio
@@ -2763,10 +2763,11 @@ class PlanningRepository:
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
             mconfecciones = self.cargar_mconfecciones(conn)
             rows = [
-                self.enriquecer_pedido_con_confeccion(r, mconfecciones)
+                self._normalizar_pedido_pendiente_operativo(
+                    self.enriquecer_pedido_con_confeccion(r, mconfecciones)
+                )
                 for r in rows
             ]
-            rows = [r for r in rows if normalizar_numero(r.get("Kg pendiente", 0)) > 0]
             logger.debug(
                 "Pedidos pendientes enriquecidos con MConfecciones: %s filas, con grupo: %s",
                 len(rows),
@@ -2789,16 +2790,66 @@ class PlanningRepository:
             "Kg pedido teórico total": sum(float(r.get("Kg pedido teórico", 0) or 0) for r in rows),
             "Kg hecho real total": sum(float(r.get("Kg hecho real", 0) or 0) for r in rows),
             "Kg pendiente total": sum(float(r.get("Kg pendiente", 0) or 0) for r in rows),
+            "Kg terminado/completo total": sum(float(r.get("Kg pedido teórico", 0) or 0) for r in rows if str(r.get("Estado", "")).strip().lower() in ("terminado", "completo")),
             "Merma kg total": sum(float(r.get("Merma kg", 0) or 0) for r in rows),
             "Nº pedidos": len(pedidos_unicos),
+            "Nº pedidos pendientes": len({str(r.get("IdPedidoLora") or "").strip() for r in rows if str(r.get("IdPedidoLora") or "").strip() and str(r.get("Estado", "")).strip().lower() != "terminado"}),
+            "Nº pedidos terminados": len({str(r.get("IdPedidoLora") or "").strip() for r in rows if str(r.get("IdPedidoLora") or "").strip() and str(r.get("Estado", "")).strip().lower() == "terminado"}),
             "Nº líneas": len(rows),
             "Nº líneas sin datos": sum(1 for r in rows if str(r.get("Estado", "")).strip().lower() == "sin datos"),
             "Nº líneas parciales": sum(1 for r in rows if str(r.get("Estado", "")).strip().lower() == "parcial"),
+            "Nº líneas sin confección estimadas": sum(1 for r in rows if str(r.get("Origen cálculo", "")).strip().upper() == "ESTIMADO_SIN_CONFECCION"),
         }
         pedido_total = float(kpi.get("Kg pedido teórico total", 0) or 0)
         kpi["% merma total"] = round((float(kpi.get("Merma kg total", 0) or 0) / pedido_total) * 100, 2) if pedido_total > 0 else 0.0
         return rows, kpi
 
+
+    def _normalizar_pedido_pendiente_operativo(self, row: dict) -> dict:
+        """Mantiene pedidos completos visibles y estima kilos cuando no hay confección operativa."""
+        palets = normalizar_numero(row.get("Palets pedido", 0))
+        kg_teorico = normalizar_numero(row.get("Kg pedido teórico", 0))
+        kg_hecho = normalizar_numero(row.get("Kg hecho real", 0))
+        kg_estimado = 0.0
+        row.setdefault("Origen cálculo", "REAL_CONFECCION")
+        row.setdefault("Observación", row.get("Aviso", "") or "")
+        sin_confeccion = (
+            not str(row.get("IdConfeccion", "") or "").strip()
+            or not str(row.get("Confección", "") or "").strip()
+            or str(row.get("Grupo confección", "") or "").strip().upper() == "DESCONOCIDO"
+        )
+        if kg_teorico <= 0 or sin_confeccion:
+            row["Origen cálculo"] = "ESTIMADO_SIN_CONFECCION"
+            if palets > 0:
+                kg_estimado = palets * 800.0
+                kg_teorico = kg_estimado
+                row["Kg pedido teórico"] = kg_teorico
+                row["Kg estimado"] = kg_estimado
+                row["Observación"] = "Sin confección creada: estimado 800 kg/palet"
+                row["Aviso"] = row["Observación"]
+            else:
+                row["Kg estimado"] = 0.0
+                row["Observación"] = "Sin confección creada y sin palets para estimar"
+                row["Aviso"] = row["Observación"]
+        else:
+            row["Kg estimado"] = 0.0
+
+        palets_hechos = normalizar_numero(row.get("Palets hechos", 0))
+        cajas_pedido = normalizar_numero(row.get("Cajas pedido", 0))
+        cajas_hechas = normalizar_numero(row.get("Cajas hechas", 0))
+        terminado = (kg_teorico > 0 and kg_hecho >= kg_teorico) or (palets > 0 and palets_hechos >= palets) or (cajas_pedido > 0 and cajas_hechas >= cajas_pedido)
+        if terminado:
+            row["Estado"] = "Terminado"
+            row["Kg pendiente"] = 0.0
+            row["Palets pendientes"] = 0.0
+            row["Cajas pendientes"] = 0.0
+        elif kg_hecho > 0:
+            row["Estado"] = "Parcial"
+            row["Kg pendiente"] = max(0.0, kg_teorico - kg_hecho)
+        elif kg_teorico > 0:
+            row["Estado"] = "Pendiente"
+            row["Kg pendiente"] = kg_teorico
+        return row
 
 
     def get_balance_planificacion(self, filters: dict, policy: dict | None = None) -> list[dict]:

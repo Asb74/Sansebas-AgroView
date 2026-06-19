@@ -140,8 +140,6 @@ class CommercialPdfReportService:
     def _filter_pending_rows(self, rows: list[dict], selected_cultivos: set[str] | None = None) -> list[dict]:
         filtered: list[dict] = []
         for row in rows:
-            if self._sum([row], "Kg pendiente") <= 0:
-                continue
             if selected_cultivos and str(self._value(row, "Cultivo") or "").strip().upper() not in selected_cultivos:
                 continue
             filtered.append(row)
@@ -450,10 +448,48 @@ class CommercialPdfReportService:
             story.append(Paragraph(msg, self._normal)); story.append(PageBreak()); return
         pedido_kg = "Kg estimados" if previsto else "Kg pedido teórico"
         palets = "Palets estimados" if previsto else "Palets pendientes"
+        if not previsto:
+            self._add_pedidos_resumen_operativo(story, rows)
         self._add_confeccion_mix(story, rows, kg_field, palets)
         self._add_timeline(story, rows, pedido_kg, kg_field, palets, previsto)
+        if not previsto:
+            self._add_pedidos_detail(story, rows)
         self._add_pedidos_matrix(story, rows, pedido_kg, kg_field, palets)
         story.append(PageBreak())
+
+    def _add_pedidos_resumen_operativo(self, story: list, rows: list[dict]) -> None:
+        pedidos = {str(self._value(r, "Pedido") or "").strip() for r in rows if str(self._value(r, "Pedido") or "").strip()}
+        terminados = [r for r in rows if str(self._value(r, "Estado") or "").strip().upper() in {"TERMINADO", "COMPLETO"}]
+        pedidos_terminados = {str(self._value(r, "Pedido") or "").strip() for r in terminados if str(self._value(r, "Pedido") or "").strip()}
+        estimadas = [r for r in rows if str(self._value(r, "Origen cálculo") or "").strip().upper() == "ESTIMADO_SIN_CONFECCION"]
+        data = [
+            ["Kg pedido teórico total", "Kg hecho real total", "Kg pendiente total", "Kg terminado/completo total"],
+            [self._num(self._sum(rows, "Kg pedido teórico")), self._num(self._sum(rows, "Kg hecho real")), self._num(self._sum(rows, "Kg pendiente")), self._num(self._sum(terminados, "Kg pedido teórico"))],
+            ["Nº pedidos total", "Nº pedidos pendientes", "Nº pedidos terminados", "Nº líneas sin confección estimadas"],
+            [len(pedidos), len(pedidos - pedidos_terminados), len(pedidos_terminados), len(estimadas)],
+        ]
+        story.append(Paragraph("Resumen pedidos pendientes", self._normal))
+        story.append(self._table(data, repeat=0, header=False, col_widths=[6*cm, 6*cm, 6*cm, 7*cm]))
+        story.append(Spacer(1, 6))
+
+    def _add_pedidos_detail(self, story: list, rows: list[dict]) -> None:
+        columns = [
+            "Pedido", "Cliente", "Fecha salida", "Cultivo", "Variedad Coop", "Grupo varietal",
+            "Calibre", "Categoría", "Marca", "Confección", "Grupo confección", "Palets pedido",
+            "Kg pedido teórico", "Kg estimado", "Kg hecho real", "Kg pendiente", "Estado", "Observación",
+        ]
+        data = [columns]
+        styles = []
+        for r in sorted(rows, key=lambda x: (str(self._value(x, "Fecha salida")), str(self._value(x, "Cliente")), str(self._value(x, "Pedido"))))[:120]:
+            data.append([self._format_cell(self._value(r, c), c) for c in columns])
+            estado = str(self._value(r, "Estado") or "").upper()
+            if estado in {"TERMINADO", "COMPLETO"}:
+                styles.append((len(data) - 1, "VERDE"))
+            elif str(self._value(r, "Origen cálculo") or "").upper() == "ESTIMADO_SIN_CONFECCION":
+                styles.append((len(data) - 1, "AMARILLO"))
+        story.append(Paragraph("Detalle pedidos pendientes (incluye terminados/completos)", self._normal))
+        story.append(self._table(data, row_styles=styles))
+        story.append(Spacer(1, 6))
 
     def _add_confeccion_mix(self, story: list, rows: list[dict], kg_field: str, palets_field: str) -> None:
         grouped = self._group_rows(rows, ["Grupo confección"], {"Palets": palets_field, "Kg pendiente": kg_field})

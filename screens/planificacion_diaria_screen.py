@@ -199,7 +199,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.kpi_almacen = tk.StringVar(value="Kg stock almacén: 0 | Nº grupos: 0 | Nº variedades: 0 | Nº calibres: 0")
         self.last_update = tk.StringVar(value="")
         self.snapshot_info_var = tk.StringVar(value="Foto de datos: No disponible")
-        self.kpi_pedidos = tk.StringVar(value="Kg pedido teórico total: 0 | Kg hecho real total: 0 | Kg pendiente total: 0 | Merma kg total: 0 | % merma total: 0 | Nº pedidos: 0 | Nº líneas: 0 | Nº líneas sin datos: 0 | Nº líneas parciales: 0")
+        self.kpi_pedidos = tk.StringVar(value="Kg pedido teórico total: 0 | Kg hecho real total: 0 | Kg pendiente total: 0 | Kg terminado/completo total: 0 | Nº pedidos: 0 | Nº pedidos pendientes: 0 | Nº pedidos terminados: 0 | Nº líneas sin confección estimadas: 0")
         self.kpi_balance = tk.StringVar(value="Kg stock comercial: 0 | Kg pedidos pendientes: 0 | Diferencia comercial: 0 | Kg stock industrial almacén: 0 | Kg entrada estimada: 0 | Kg base total estimada: 0 | Kg cobertura exacta: 0 | Kg cobertura agrupada: 0 | Kg cobertura potencial total: 0 | Nº faltantes comerciales: 0 | Nº faltantes con cobertura agrupada: 0 | Nº faltantes con cobertura: 0 | Nº faltantes sin cobertura: 0 | Nº sobrantes comerciales: 0")
 
         ttk.Label(self.campo_tab, textvariable=self.kpi_campo, style="KPI.TLabel").pack(anchor="w", pady=(0, 2))
@@ -233,7 +233,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Label(self.pedidos_tab, textvariable=self.kpi_pedidos, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
         self.pedidos_table = DataTable(
             self.pedidos_tab,
-            ["Semana", "Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Cultivo", "Campaña", "Variedad Coop", "Grupo varietal", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Grupo confección", "Perfil confección", "Palets pedido", "Palets hechos", "Palets pendientes", "Cajas/palet", "Cajas pedido", "Cajas hechas", "Cajas pendientes", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Merma kg", "% hecho", "% merma", "Estado", "Aviso"],
+            ["Semana", "Fecha salida", "Cliente", "IdPedidoLora", "Línea", "Cultivo", "Campaña", "Variedad Coop", "Grupo varietal", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección", "Grupo confección", "Perfil confección", "Palets pedido", "Palets hechos", "Palets pendientes", "Cajas/palet", "Cajas pedido", "Cajas hechas", "Cajas pendientes", "Kg pedido teórico", "Kg hecho real", "Kg pendiente", "Kg estimado", "Origen cálculo", "Merma kg", "% hecho", "% merma", "Estado", "Observación", "Aviso"],
         )
         self.pedidos_table.pack(fill="both", expand=True)
 
@@ -548,8 +548,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.kpi_pedidos.set(
             f"Kg pedido teórico total: {float(pedidos_kpi.get('Kg pedido teórico total', 0) or 0):,.2f} | "
             f"Kg hecho real total: {float(pedidos_kpi.get('Kg hecho real total', 0) or 0):,.2f} | Kg pendiente total: {float(pedidos_kpi.get('Kg pendiente total', 0) or 0):,.2f} | "
-            f"Merma kg total: {float(pedidos_kpi.get('Merma kg total', 0) or 0):,.2f} | % merma total: {float(pedidos_kpi.get('% merma total', 0) or 0):,.2f}% | "
-            f"Nº pedidos: {int(pedidos_kpi.get('Nº pedidos', 0) or 0)} | Nº líneas: {int(pedidos_kpi.get('Nº líneas', 0) or 0)} | Nº líneas sin datos: {int(pedidos_kpi.get('Nº líneas sin datos', 0) or 0)} | Nº líneas parciales: {int(pedidos_kpi.get('Nº líneas parciales', 0) or 0)}"
+            f"Kg terminado/completo total: {float(pedidos_kpi.get('Kg terminado/completo total', 0) or 0):,.2f} | "
+            f"Nº pedidos: {int(pedidos_kpi.get('Nº pedidos', 0) or 0)} | Nº pedidos pendientes: {int(pedidos_kpi.get('Nº pedidos pendientes', 0) or 0)} | "
+            f"Nº pedidos terminados: {int(pedidos_kpi.get('Nº pedidos terminados', 0) or 0)} | Nº líneas sin confección estimadas: {int(pedidos_kpi.get('Nº líneas sin confección estimadas', 0) or 0)}"
         )
         self.kpi_balance.set(self._format_balance_summary(self.balance_rows_all))
 
@@ -1438,12 +1439,16 @@ class PlanificacionDiariaScreen(ttk.Frame):
             "Kg pedido teórico total": kg_pedido,
             "Kg hecho real total": sum(float(r.get("Kg hecho real", 0) or 0) for r in filtered),
             "Kg pendiente total": sum(float(r.get("Kg pendiente", 0) or 0) for r in filtered),
+            "Kg terminado/completo total": sum(float(r.get("Kg pedido teórico", 0) or 0) for r in filtered if str(r.get("Estado", "")).strip() in ("Terminado", "Completo")),
             "Merma kg total": merma,
             "% merma total": (merma / max(kg_pedido, 1e-9)) * 100,
             "Nº pedidos": len({str(r.get("IdPedidoLora", "")).strip() for r in filtered if str(r.get("IdPedidoLora", "")).strip()}),
+            "Nº pedidos pendientes": len({str(r.get("IdPedidoLora", "")).strip() for r in filtered if str(r.get("IdPedidoLora", "")).strip() and str(r.get("Estado", "")).strip() not in ("Terminado", "Completo")}),
+            "Nº pedidos terminados": len({str(r.get("IdPedidoLora", "")).strip() for r in filtered if str(r.get("IdPedidoLora", "")).strip() and str(r.get("Estado", "")).strip() in ("Terminado", "Completo")}),
             "Nº líneas": len(filtered),
             "Nº líneas sin datos": sum(1 for r in filtered if str(r.get("Estado", "")).strip() == "Sin datos"),
             "Nº líneas parciales": sum(1 for r in filtered if str(r.get("Estado", "")).strip() == "Parcial"),
+            "Nº líneas sin confección estimadas": sum(1 for r in filtered if str(r.get("Origen cálculo", "")).strip().upper() == "ESTIMADO_SIN_CONFECCION"),
         }
 
     def _clear_saved_filters(self) -> None:
