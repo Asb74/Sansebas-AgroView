@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import threading
 from time import perf_counter
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -597,6 +597,47 @@ class PlanificacionDiariaScreen(ttk.Frame):
     def _on_balance_double_click(self, _event=None) -> None:
         self._open_selected_balance_coverage()
 
+    @staticmethod
+    def _parse_order_date(value) -> date | None:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        text = str(value or "").strip()
+        if not text:
+            return None
+        for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
+            try:
+                return datetime.strptime(text[:19] if "%H" in fmt else text[:10], fmt).date()
+            except ValueError:
+                continue
+        return None
+
+    @staticmethod
+    def _row_float(row: dict, *keys: str) -> float:
+        for key in keys:
+            if key in row:
+                try:
+                    return float(row.get(key, 0) or 0)
+                except (TypeError, ValueError):
+                    return 0.0
+        return 0.0
+
+    def _build_pedidos_horizonte_simulacion(self, rows: list[dict]) -> list[dict]:
+        today = date.today()
+        horizonte: list[dict] = []
+        for row in rows:
+            fecha = self._parse_order_date(row.get("Fecha salida", row.get("FechaSalida", row.get("fecha_salida", ""))))
+            if fecha is not None and fecha < today:
+                continue
+            horizonte.append(dict(row))
+        return horizonte
+
+    def _pedido_consume_stock_simulacion(self, pedido: dict) -> bool:
+        kg_pendiente = self._row_float(pedido, "Kg pendiente", "Kg pedidos pendientes", "kg_pendiente", "kg_estimados")
+        estado = str(pedido.get("Estado", pedido.get("estado", "")) or "").strip().lower()
+        return kg_pendiente > 0 or estado not in {"terminado", "completo", "finalizado"}
+
 
     def _open_simulacion_asignacion(self) -> None:
         if getattr(self, "_simulacion_en_curso", False):
@@ -607,7 +648,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self._ensure_cache_key(filtros)
         policy = self._build_sim_policy()
         modo_pedidos = self.pedidos_modo_var.get()
-        pedidos = [r for r in self.balance_rows_all if str(r.get("Tipo línea", "")).strip() == "Pedido"]
+        pedidos_balance_rows_all = [r for r in self.balance_rows_all if str(r.get("Tipo línea", "")).strip() == "Pedido"]
 
         cultivos = filtros.get("cultivo", [])
         cultivos_validos = [str(c or "").strip() for c in cultivos if str(c or "").strip() and str(c or "").strip().upper() != "TODOS"]
@@ -651,6 +692,25 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 if not pedidos_detalle:
                     pedidos_rows, _kpi = service.load_pedidos_pendientes(filtros, modo_pedidos)
                     pedidos_detalle = [dict(r) for r in pedidos_rows]
+                pedidos_horizonte = self._build_pedidos_horizonte_simulacion(pedidos_detalle)
+                pedidos_calculo = [p for p in pedidos_horizonte if self._pedido_consume_stock_simulacion(p)]
+                fechas_horizonte = [
+                    f for f in (
+                        self._parse_order_date(p.get("Fecha salida", p.get("FechaSalida", p.get("fecha_salida", ""))))
+                        for p in pedidos_horizonte
+                    )
+                    if f is not None
+                ]
+                kg_pendiente_horizonte = sum(self._row_float(p, "Kg pendiente", "Kg pedidos pendientes", "kg_pendiente", "kg_estimados") for p in pedidos_horizonte)
+                logger.info("[SIM] modo_pedidos=%s", modo_pedidos)
+                logger.info("[SIM] pedidos_balance_rows_all=%s", len(pedidos_balance_rows_all))
+                logger.info("[SIM] pedidos_horizonte=%s", len(pedidos_horizonte))
+                logger.info(
+                    "[SIM] fechas_horizonte=%s..%s",
+                    min(fechas_horizonte).isoformat() if fechas_horizonte else "",
+                    max(fechas_horizonte).isoformat() if fechas_horizonte else "",
+                )
+                logger.info("[SIM] kg_pendiente_horizonte=%.2f", kg_pendiente_horizonte)
                 marks["pedidos"] = perf_counter() - t0
 
                 t0 = perf_counter()
@@ -665,21 +725,22 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 stock_campo = list(self.stock_campo_rows or [])
                 marks["entrada"] = perf_counter() - t0
 
-                if not pedidos and not inventario_global:
+                if not pedidos_calculo and not inventario_global:
                     result = {"empty": True}
                     return
 
                 t0 = perf_counter()
                 candidatos_por_pedido: dict[tuple[str, str], list[dict]] = {}
-                for pedido in pedidos:
+                for pedido in pedidos_calculo:
                     key = (str(pedido.get("IdPedidoLora", pedido.get("id_pedido", ""))), str(pedido.get("Línea", pedido.get("linea", ""))))
                     candidatos_por_pedido[key] = service.get_candidatos_compatibles_para_pedido(filtros, pedido, policy_cfg=policy)
+                logger.info("[SIM] candidatos_calculados_para=%s pedidos", len(pedidos_calculo))
                 marks["pools"] = perf_counter() - t0
 
                 result = {
                     "empty": False,
-                    "pedidos": pedidos,
-                    "pedidos_detalle_horizonte": pedidos_detalle,
+                    "pedidos": pedidos_calculo,
+                    "pedidos_detalle_horizonte": pedidos_horizonte,
                     "inventario_global": inventario_global,
                     "candidatos_por_pedido": candidatos_por_pedido,
                     "cultivo_actual": cultivos_validos[0],
