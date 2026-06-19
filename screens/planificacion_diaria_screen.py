@@ -730,12 +730,15 @@ class PlanificacionDiariaScreen(ttk.Frame):
                     return
 
                 t0 = perf_counter()
+                sim_context = service.build_simulacion_context(filtros, policy=policy)
                 candidatos_por_pedido: dict[tuple[str, str], list[dict]] = {}
                 for pedido in pedidos_calculo:
                     key = (str(pedido.get("IdPedidoLora", pedido.get("id_pedido", ""))), str(pedido.get("Línea", pedido.get("linea", ""))))
-                    candidatos_por_pedido[key] = service.get_candidatos_compatibles_para_pedido(filtros, pedido, policy_cfg=policy)
-                logger.info("[SIM] candidatos_calculados_para=%s pedidos", len(pedidos_calculo))
+                    candidatos_por_pedido[key] = service.get_candidatos_compatibles_para_pedido(filtros, pedido, policy_cfg=policy, context=sim_context)
                 marks["pools"] = perf_counter() - t0
+                media_pedido = marks["pools"] / len(pedidos_calculo) if pedidos_calculo else 0.0
+                logger.info("[SIM] candidatos_calculados_para=%s pedidos", len(pedidos_calculo))
+                logger.info("[PERF SimPools] pedidos=%s total=%.2fs media_por_pedido=%.2fs", len(pedidos_calculo), marks["pools"], media_pedido)
 
                 result = {
                     "empty": False,

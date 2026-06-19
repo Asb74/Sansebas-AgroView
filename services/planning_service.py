@@ -42,11 +42,17 @@ class PlanningService:
     def get_balance_cobertura_detalle(self, filters: dict, balance_row: dict, policy: dict | None = None) -> list[dict]:
         return self.repo.get_balance_cobertura_detalle(filters, balance_row, policy=policy)
 
+    def build_simulacion_context(self, filters: dict, policy: dict | None = None) -> dict:
+        return self.repo.build_simulacion_context(filters, policy=policy)
+
+    def get_balance_cobertura_detalle_from_context(self, context: dict, balance_row: dict) -> list[dict]:
+        return self.repo.get_balance_cobertura_detalle_from_context(context, balance_row)
+
     def get_inventario_operativo_global(self, filters: dict, policy: dict | None = None) -> list[dict]:
         return self.repo.get_inventario_operativo_global(filters, policy=policy)
 
-    def get_candidatos_compatibles_para_pedido(self, filters: dict, pedido: dict, policy_cfg: dict | None = None) -> list[dict]:
-        return self.repo.get_candidatos_compatibles_para_pedido(filters, pedido, policy_cfg=policy_cfg)
+    def get_candidatos_compatibles_para_pedido(self, filters: dict, pedido: dict, policy_cfg: dict | None = None, context: dict | None = None) -> list[dict]:
+        return self.repo.get_candidatos_compatibles_para_pedido(filters, pedido, policy_cfg=policy_cfg, context=context)
 
 
     def get_pedidos_pendientes(self, filters: dict, modo: str = "10_dias") -> tuple[list[dict], dict]:
