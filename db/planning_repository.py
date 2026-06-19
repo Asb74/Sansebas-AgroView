@@ -3164,16 +3164,60 @@ class PlanningRepository:
         )
         return data
 
-    def get_balance_cobertura_detalle(self, filters: dict, balance_row: dict, policy: dict | None = None) -> list[dict]:
+    def build_simulacion_context(self, filters: dict, policy: dict | None = None) -> dict:
         policy_cfg = self._merge_policy(policy)
+        t_total = time.perf_counter()
+
+        t0 = time.perf_counter()
         detalle_rows = self.get_stock_almacen_detalle_palets(filters)
+        stock_almacen_secs = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
         stock_campo_rows, _, _ = self.get_stock_campo(filters)
+        stock_campo_secs = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        if policy_cfg["usar_entrada_estimada"]:
+            campo_real_rows, _ = self._get_campo_disponibilidad_aprovechamiento(stock_campo_rows, filters)
+        else:
+            campo_real_rows = []
+        aprovechamiento_secs = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        calibre_map = self.get_mcalibres_map()
+        calibres_secs = time.perf_counter() - t0
+
+        total_secs = time.perf_counter() - t_total
+        logger.info(
+            "[PERF SimContext] stock_almacen_detalle=%.2fs stock_campo=%.2fs aprovechamiento=%.2fs calibres=%.2fs total=%.2fs",
+            stock_almacen_secs,
+            stock_campo_secs,
+            aprovechamiento_secs,
+            calibres_secs,
+            total_secs,
+        )
+        return {
+            "policy_cfg": policy_cfg,
+            "detalle_rows": detalle_rows,
+            "stock_campo_rows": stock_campo_rows,
+            "campo_real_rows": campo_real_rows,
+            "calibre_map": calibre_map,
+        }
+
+    def get_balance_cobertura_detalle(self, filters: dict, balance_row: dict, policy: dict | None = None) -> list[dict]:
+        context = self.build_simulacion_context(filters, policy=policy)
+        return self.get_balance_cobertura_detalle_from_context(context, balance_row)
+
+    def get_balance_cobertura_detalle_from_context(self, context: dict, balance_row: dict) -> list[dict]:
+        policy_cfg = context["policy_cfg"]
+        detalle_rows = context["detalle_rows"]
+        campo_real_rows = context["campo_real_rows"]
+        calibre_map = context["calibre_map"]
         cultivo = str(balance_row.get("Cultivo", "") or "").strip()
         campana = str(balance_row.get("Campaña", "") or "").strip()
         grupo = str(balance_row.get("Grupo varietal", "") or "").strip()
         calibre_pedido = str(balance_row.get("Calibre", "") or "").strip()
         categoria = str(balance_row.get("Categoría", "") or "").strip()
-        calibre_map = self.get_mcalibres_map()
 
         agrupado: dict[tuple[Any, ...], dict[str, Any]] = {}
         for row in detalle_rows:
@@ -3261,7 +3305,6 @@ class PlanningRepository:
             acc["Kg disponibles"] += float(row.get("Neto", 0) or 0)
 
         if policy_cfg["usar_entrada_estimada"]:
-            campo_real_rows, _ = self._get_campo_disponibilidad_aprovechamiento(stock_campo_rows, filters)
             for row in campo_real_rows:
                 stock_cultivo = str(row.get("Cultivo", "") or "").strip()
                 stock_campana = str(row.get("Campaña", "") or "").strip()
@@ -3335,7 +3378,7 @@ class PlanningRepository:
         return out
 
 
-    def get_candidatos_compatibles_para_pedido(self, filters: dict, pedido: dict, policy_cfg: dict | None = None) -> list[dict]:
+    def get_candidatos_compatibles_para_pedido(self, filters: dict, pedido: dict, policy_cfg: dict | None = None, context: dict | None = None) -> list[dict]:
         """Fuente única de candidatos compatibles para Balance y Simulación."""
         pedido_normalizado = dict(pedido)
         cultivo = str(pedido_normalizado.get("Cultivo", pedido_normalizado.get("cultivo", "")) or "").strip()
@@ -3368,7 +3411,10 @@ class PlanningRepository:
             calibre,
             categoria,
         )
-        candidatos = self.get_balance_cobertura_detalle(filters, pedido_normalizado, policy=policy_cfg)
+        if context is not None:
+            candidatos = self.get_balance_cobertura_detalle_from_context(context, pedido_normalizado)
+        else:
+            candidatos = self.get_balance_cobertura_detalle(filters, pedido_normalizado, policy=policy_cfg)
         out: list[dict] = []
         for row in candidatos:
             cand = dict(row)
