@@ -2254,7 +2254,7 @@ class PlanningRepository:
         logger.debug("[PDF] Tiempo de generación: %.3fs", time.perf_counter() - start)
         return rows
 
-    def get_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
+    def get_stock_campo(self, filters: dict, incluir_resumen_aprovechamiento: bool = True) -> tuple[list[dict], str | None, bool]:
         fruta_path = self._db_path(DB_FRUTA)
         calidad_path = self._db_path(DB_CALIDAD)
         if not fruta_path.exists():
@@ -2336,10 +2336,11 @@ class PlanningRepository:
                 }
             )
 
-        resumen_aprov, _ = self.build_aprovechamiento_stock_campo(data, filters)
-        for row in data:
-            partida_key = self._stock_campo_partida_key(row)
-            row.update(resumen_aprov.get(partida_key, {"Estado aprovechamiento": "Sin aprovechamiento", "Nº calibres aprovechamiento": 0, "Kg estimados calculados": 0.0}))
+        if incluir_resumen_aprovechamiento:
+            resumen_aprov, _ = self.build_aprovechamiento_stock_campo(data, filters)
+            for row in data:
+                partida_key = self._stock_campo_partida_key(row)
+                row.update(resumen_aprov.get(partida_key, {"Estado aprovechamiento": "Sin aprovechamiento", "Nº calibres aprovechamiento": 0, "Kg estimados calculados": 0.0}))
 
         update_file = self.base_dir / "ultima_actualizacion.txt"
         last_update = None
@@ -3164,6 +3165,55 @@ class PlanningRepository:
         )
         return data
 
+    def _build_detalle_simulacion_index(self, detalle_rows: list[dict], calibre_map: dict[str, str] | None = None) -> dict[str, Any]:
+        """Preprocesa stock de almacén para reducir los candidatos por pedido."""
+        index: dict[tuple[str, str, str, str], list[dict]] = {}
+        broad_index: dict[tuple[str, str], list[dict]] = {}
+        for row in detalle_rows:
+            stock_cultivo_norm = str(row.get("Cultivo", "") or "").strip().upper()
+            stock_campana_norm = str(row.get("Campaña", row.get("Campana", "")) or "").strip()
+            stock_grupo_norm = str(row.get("GrupoVarietal", "") or "").strip().upper()
+            stock_categoria_norm = str(row.get("Categoria", "") or "").strip().upper()
+            calibre_normalizado = str(row.get("Calibre", "") or "").strip()
+            calibre_set = self.normalizar_calibre_a_set(calibre_normalizado, calibre_map=calibre_map)
+            confe = str(row.get("Confeccion", "") or "").strip()
+            id_confeccion = str(row.get("IdConfeccion", "") or "").strip()
+            row["_sim"] = {
+                "is_industrial": self._is_stock_industrial(row.get("Pedido"), confe, id_confeccion),
+                "is_sp_comercial": self._is_stock_sp_comercial(row.get("Pedido"), confe, id_confeccion),
+                "calibre_set": calibre_set,
+                "calibre_normalizado": calibre_normalizado,
+                "stock_cultivo_norm": stock_cultivo_norm,
+                "stock_grupo_norm": stock_grupo_norm,
+                "stock_categoria_norm": stock_categoria_norm,
+                "stock_campana_norm": stock_campana_norm,
+            }
+            key = (stock_cultivo_norm, stock_campana_norm, stock_grupo_norm, stock_categoria_norm)
+            index.setdefault(key, []).append(row)
+            broad_index.setdefault((stock_cultivo_norm, stock_campana_norm), []).append(row)
+        return {"exact": index, "broad": broad_index}
+
+    def _compare_calibres_cached(self, context: dict, calibre_pedido: Any, calibre_stock: Any) -> dict[str, Any]:
+        cache = context.setdefault("calibre_compare_cache", {})
+        key = ("compare", str(calibre_pedido or "").strip().upper(), str(calibre_stock or "").strip().upper())
+        if key not in cache:
+            cache[key] = self.comparar_calibres_para_cobertura(calibre_pedido, calibre_stock, calibre_map=context.get("calibre_map"))
+        return cache[key]
+
+    def _normalizar_calibre_set_cached(self, context: dict, calibre: Any) -> set[str]:
+        cache = context.setdefault("calibre_compare_cache", {})
+        key = ("set", str(calibre or "").strip().upper())
+        if key not in cache:
+            cache[key] = self.normalizar_calibre_a_set(calibre, calibre_map=context.get("calibre_map"))
+        return cache[key]
+
+    def _calibres_coincidentes_cached(self, context: dict, calibre_pedido: Any, calibre_stock: Any) -> str:
+        cache = context.setdefault("calibre_compare_cache", {})
+        key = ("coincidentes", str(calibre_pedido or "").strip().upper(), str(calibre_stock or "").strip().upper())
+        if key not in cache:
+            cache[key] = self.calibres_coincidentes(calibre_pedido, calibre_stock, calibre_map=context.get("calibre_map"))
+        return cache[key]
+
     def build_simulacion_context(self, filters: dict, policy: dict | None = None) -> dict:
         policy_cfg = self._merge_policy(policy)
         t_total = time.perf_counter()
@@ -3173,7 +3223,17 @@ class PlanningRepository:
         stock_almacen_secs = time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        stock_campo_rows, _, _ = self.get_stock_campo(filters)
+        calibre_map = self.get_mcalibres_map()
+        calibres_secs = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        detalle_index = self._build_detalle_simulacion_index(detalle_rows, calibre_map=calibre_map)
+        index_secs = time.perf_counter() - t0
+        index_keys = len(detalle_index.get("exact", {}))
+        logger.info("[PERF SimIndex] detalle_rows=%s index_keys=%s total=%.2fs", len(detalle_rows), index_keys, index_secs)
+
+        t0 = time.perf_counter()
+        stock_campo_rows, _, _ = self.get_stock_campo(filters, incluir_resumen_aprovechamiento=False)
         stock_campo_secs = time.perf_counter() - t0
 
         t0 = time.perf_counter()
@@ -3183,17 +3243,14 @@ class PlanningRepository:
             campo_real_rows = []
         aprovechamiento_secs = time.perf_counter() - t0
 
-        t0 = time.perf_counter()
-        calibre_map = self.get_mcalibres_map()
-        calibres_secs = time.perf_counter() - t0
-
         total_secs = time.perf_counter() - t_total
         logger.info(
-            "[PERF SimContext] stock_almacen_detalle=%.2fs stock_campo=%.2fs aprovechamiento=%.2fs calibres=%.2fs total=%.2fs",
+            "[PERF SimContext] stock_almacen_detalle=%.2fs stock_campo_raw=%.2fs aprovechamiento=%.2fs calibres=%.2fs index=%.2fs total=%.2fs",
             stock_almacen_secs,
             stock_campo_secs,
             aprovechamiento_secs,
             calibres_secs,
+            index_secs,
             total_secs,
         )
         return {
@@ -3202,6 +3259,8 @@ class PlanningRepository:
             "stock_campo_rows": stock_campo_rows,
             "campo_real_rows": campo_real_rows,
             "calibre_map": calibre_map,
+            "detalle_index": detalle_index,
+            "calibre_compare_cache": {},
         }
 
     def get_balance_cobertura_detalle(self, filters: dict, balance_row: dict, policy: dict | None = None) -> list[dict]:
@@ -3219,12 +3278,22 @@ class PlanningRepository:
         calibre_pedido = str(balance_row.get("Calibre", "") or "").strip()
         categoria = str(balance_row.get("Categoría", "") or "").strip()
 
+        cultivo_norm = cultivo.upper()
+        grupo_norm = grupo.upper()
+        categoria_norm = categoria.upper()
+        detalle_index = context.get("detalle_index") or {}
+        if policy_cfg["mismo_grupo_varietal"] and (not policy_cfg["permitir_grupo_varietal_alternativo"]) and not policy_cfg["permitir_categoria_inferior"] and not policy_cfg["permitir_categoria_superior"]:
+            detalle_candidates = detalle_index.get("exact", {}).get((cultivo_norm, campana, grupo_norm, categoria_norm), [])
+        else:
+            detalle_candidates = detalle_index.get("broad", {}).get((cultivo_norm, campana), detalle_rows)
+
         agrupado: dict[tuple[Any, ...], dict[str, Any]] = {}
-        for row in detalle_rows:
+        for row in detalle_candidates:
             confe = str(row.get("Confeccion", "") or "").strip()
             id_confeccion = str(row.get("IdConfeccion", "") or "").strip()
-            is_ind = self._is_stock_industrial(row.get("Pedido"), confe, id_confeccion)
-            is_sp = self._is_stock_sp_comercial(row.get("Pedido"), confe, id_confeccion)
+            row_sim = row.get("_sim", {})
+            is_ind = bool(row_sim.get("is_industrial")) if row_sim else self._is_stock_industrial(row.get("Pedido"), confe, id_confeccion)
+            is_sp = bool(row_sim.get("is_sp_comercial")) if row_sim else self._is_stock_sp_comercial(row.get("Pedido"), confe, id_confeccion)
             if not ((policy_cfg["usar_stock_industrial"] and is_ind) or (policy_cfg["usar_stock_comercial"] and is_sp)):
                 continue
 
@@ -3232,16 +3301,16 @@ class PlanningRepository:
             stock_campana = str(row.get("Campaña", row.get("Campana", "")) or "").strip()
             stock_grupo = str(row.get("GrupoVarietal", "") or "").strip()
             stock_categoria = str(row.get("Categoria", "") or "").strip()
-            if stock_cultivo.upper() != cultivo.upper():
+            if stock_cultivo.upper() != cultivo_norm:
                 continue
             if stock_campana != campana:
                 continue
-            if policy_cfg["mismo_grupo_varietal"] and (not policy_cfg["permitir_grupo_varietal_alternativo"]) and stock_grupo.upper() != grupo.upper():
+            if policy_cfg["mismo_grupo_varietal"] and (not policy_cfg["permitir_grupo_varietal_alternativo"]) and stock_grupo.upper() != grupo_norm:
                 continue
-            if stock_categoria.upper() != categoria.upper() and not policy_cfg["permitir_categoria_inferior"] and not policy_cfg["permitir_categoria_superior"]:
+            if stock_categoria.upper() != categoria_norm and not policy_cfg["permitir_categoria_inferior"] and not policy_cfg["permitir_categoria_superior"]:
                 continue
 
-            cmp_result = self.comparar_calibres_para_cobertura(calibre_pedido, row.get("Calibre", ""), calibre_map=calibre_map)
+            cmp_result = self._compare_calibres_cached(context, calibre_pedido, row.get("Calibre", ""))
             if cmp_result["tipo"] == "SIN_COBERTURA":
                 continue
             if cmp_result["tipo"] == "CALIBRE_ADMITIDO" and not policy_cfg["permitir_calibre_admitido"]:
@@ -3251,12 +3320,11 @@ class PlanningRepository:
             if cmp_result["tipo"] == "SOLAPE_PARCIAL" and not policy_cfg["permitir_solape_parcial"]:
                 continue
 
-            is_sp = self._is_stock_sp_comercial(row.get("Pedido"), confe, id_confeccion)
             if cmp_result["tipo"] == "EXACTA":
                 tipo = "Comercial S/P" if is_sp else "Industrial exacta"
                 aviso = ""
                 orden = 1
-            elif len(self.normalizar_calibre_a_set(row.get("Calibre", ""), calibre_map=calibre_map)) > 1:
+            elif len(row_sim.get("calibre_set") or self._normalizar_calibre_set_cached(context, row.get("Calibre", ""))) > 1:
                 tipo = "Comercial S/P" if is_sp else "Industrial agrupada"
                 aviso = "Stock comercial S/P compatible por marca y calibre admitido" if is_sp else "Cobertura por calibre agrupado; puede requerir reparto"
                 orden = 3
@@ -3265,9 +3333,9 @@ class PlanningRepository:
                 aviso = "Stock comercial S/P compatible por marca y calibre admitido" if is_sp else "Cobertura por calibre admitido"
                 orden = 2
 
-            coincidencia_label = "Exacta" if cmp_result["tipo"] == "EXACTA" else ("Calibre agrupado" if len(self.normalizar_calibre_a_set(row.get("Calibre", ""), calibre_map=calibre_map)) > 1 else "Calibre admitido")
+            coincidencia_label = "Exacta" if cmp_result["tipo"] == "EXACTA" else ("Calibre agrupado" if len(row_sim.get("calibre_set") or self._normalizar_calibre_set_cached(context, row.get("Calibre", ""))) > 1 else "Calibre admitido")
             calibre_stock = str(row.get("Calibre", "") or "").strip()
-            coincidentes_txt = self.calibres_coincidentes(calibre_pedido, calibre_stock, calibre_map=calibre_map)
+            coincidentes_txt = self._calibres_coincidentes_cached(context, calibre_pedido, calibre_stock)
             key = (
                 stock_cultivo, stock_campana, stock_grupo, str(row.get("Variedad", "") or "").strip(), calibre_stock,
                 stock_categoria, id_confeccion, confe, tipo, coincidencia_label, coincidentes_txt, aviso, orden,
@@ -3314,7 +3382,7 @@ class PlanningRepository:
                     continue
                 if policy_cfg["mismo_grupo_varietal"] and (not policy_cfg["permitir_grupo_varietal_alternativo"]) and stock_grupo.upper() != grupo.upper():
                     continue
-                cmp_result = self.comparar_calibres_para_cobertura(calibre_pedido, row.get("Calibre", ""), calibre_map=calibre_map)
+                cmp_result = self._compare_calibres_cached(context, calibre_pedido, row.get("Calibre", ""))
                 if cmp_result["tipo"] == "SIN_COBERTURA":
                     continue
                 aviso_base = str(row.get("Aviso", "") or "").strip()
@@ -3335,7 +3403,7 @@ class PlanningRepository:
                         "Grupo varietal": stock_grupo,
                         "Variedad stock": str(row.get("Variedad", "") or "").strip(),
                         "Calibre stock": str(row.get("Calibre", "") or "").strip(),
-                        "Calibres coincidentes": self.calibres_coincidentes(calibre_pedido, row.get("Calibre", ""), calibre_map=calibre_map),
+                        "Calibres coincidentes": self._calibres_coincidentes_cached(context, calibre_pedido, row.get("Calibre", "")),
                         "Marca stock": "",
                         "Categoría": stock_categoria,
                         "IdConfeccion stock": "",
