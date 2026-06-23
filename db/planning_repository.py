@@ -3573,24 +3573,21 @@ class PlanningRepository:
     def build_simulacion_context(self, filters: dict, policy: dict | None = None) -> dict:
         policy_cfg = self._merge_policy(policy)
         t_total = time.perf_counter()
+        logger.info("[PERF SimContext.Start] filters=%s policy=%s", filters, policy_cfg)
 
         t0 = time.perf_counter()
         detalle_rows = self.get_stock_almacen_detalle_palets(filters)
         stock_almacen_secs = time.perf_counter() - t0
+        logger.info("[PERF SimContext.StockAlmacenDetalle] tiempo=%.2fs rows=%s", stock_almacen_secs, len(detalle_rows))
 
         t0 = time.perf_counter()
         calibre_map = self.get_mcalibres_map()
         calibres_secs = time.perf_counter() - t0
 
         t0 = time.perf_counter()
-        detalle_index = self._build_detalle_simulacion_index(detalle_rows, calibre_map=calibre_map)
-        index_secs = time.perf_counter() - t0
-        index_keys = len(detalle_index.get("exact", {}))
-        logger.info("[PERF SimIndex] detalle_rows=%s index_keys=%s total=%.2fs", len(detalle_rows), index_keys, index_secs)
-
-        t0 = time.perf_counter()
         stock_campo_rows, _, _ = self.get_stock_campo(filters, incluir_resumen_aprovechamiento=False)
         stock_campo_secs = time.perf_counter() - t0
+        logger.info("[PERF SimContext.StockCampo] tiempo=%.2fs rows=%s", stock_campo_secs, len(stock_campo_rows))
 
         t0 = time.perf_counter()
         if policy_cfg["usar_entrada_estimada"]:
@@ -3598,17 +3595,23 @@ class PlanningRepository:
         else:
             campo_real_rows = []
         aprovechamiento_secs = time.perf_counter() - t0
+        logger.info("[PERF SimContext.AprovechamientoCampo] tiempo=%.2fs rows=%s", aprovechamiento_secs, len(campo_real_rows))
+
+        t0 = time.perf_counter()
+        detalle_index = self._build_detalle_simulacion_index(detalle_rows, calibre_map=calibre_map)
+        index_secs = time.perf_counter() - t0
+        index_keys = len(detalle_index.get("exact", {}))
+        broad_index_keys = len(detalle_index.get("broad", {}))
+        industrial_map = sum(1 for row in detalle_rows if (row.get("_sim", {}) or {}).get("is_industrial"))
+        logger.info("[PERF SimContext.Indexes] tiempo=%.2fs detalle_index=%s industrial_map=%s", index_secs, index_keys, industrial_map)
+        logger.info("[PERF SimIndex] detalle_rows=%s index_keys=%s total=%.2fs", len(detalle_rows), index_keys, index_secs)
 
         total_secs = time.perf_counter() - t_total
         logger.info(
             "[PERF SimContext] stock_almacen_detalle=%.2fs stock_campo_raw=%.2fs aprovechamiento=%.2fs calibres=%.2fs index=%.2fs total=%.2fs",
-            stock_almacen_secs,
-            stock_campo_secs,
-            aprovechamiento_secs,
-            calibres_secs,
-            index_secs,
-            total_secs,
+            stock_almacen_secs, stock_campo_secs, aprovechamiento_secs, calibres_secs, index_secs, total_secs,
         )
+        logger.info("[PERF SimContext.Total] tiempo=%.2fs", total_secs)
         return {
             "policy_cfg": policy_cfg,
             "stock_almacen_detalle": detalle_rows,
@@ -3618,6 +3621,17 @@ class PlanningRepository:
             "calibre_map": calibre_map,
             "detalle_index": detalle_index,
             "calibre_compare_cache": {},
+            "_perf": {
+                "stock_almacen_detalle_secs": stock_almacen_secs,
+                "stock_campo_secs": stock_campo_secs,
+                "aprovechamiento_secs": aprovechamiento_secs,
+                "calibres_secs": calibres_secs,
+                "index_secs": index_secs,
+                "total_secs": total_secs,
+                "detalle_index_keys": index_keys,
+                "detalle_broad_index_keys": broad_index_keys,
+                "industrial_map": industrial_map,
+            },
         }
 
     def get_balance_cobertura_detalle(self, filters: dict, balance_row: dict, policy: dict | None = None) -> list[dict]:
@@ -3805,6 +3819,7 @@ class PlanningRepository:
 
     def get_candidatos_compatibles_para_pedido(self, filters: dict, pedido: dict, policy_cfg: dict | None = None, context: dict | None = None) -> list[dict]:
         """Fuente única de candidatos compatibles para Balance y Simulación."""
+        t_total = time.perf_counter()
         pedido_normalizado = dict(pedido)
         cultivo = str(pedido_normalizado.get("Cultivo", pedido_normalizado.get("cultivo", "")) or "").strip()
         campana = str(pedido_normalizado.get("Campaña", pedido_normalizado.get("Campana", pedido_normalizado.get("campana", ""))) or "").strip()
@@ -3841,6 +3856,7 @@ class PlanningRepository:
         else:
             candidatos = self.get_balance_cobertura_detalle(filters, pedido_normalizado, policy=policy_cfg)
         out: list[dict] = []
+        stock_iterado = len(context.get("detalle_rows", [])) + len(context.get("campo_real_rows", [])) if context is not None else len(candidatos)
         for row in candidatos:
             cand = dict(row)
             cand.setdefault("Grupo varietal stock", cand.get("Grupo varietal", ""))
@@ -3854,6 +3870,16 @@ class PlanningRepository:
             cand.setdefault("kg_primera_estimado", kg_disp)
             cand.setdefault("kg_segunda_estimado", 0.0)
             out.append(cand)
+        elapsed = time.perf_counter() - t_total
+        if elapsed > 0.25:
+            logger.debug(
+                "[PERF CandidatoPedidoSlow] pedido=%s linea=%s tiempo=%.2fs stock_iterado=%s candidatos=%s",
+                pedido_normalizado.get("IdPedidoLora", pedido_normalizado.get("id_pedido", "")),
+                pedido_normalizado.get("Línea", pedido_normalizado.get("linea", "")),
+                elapsed,
+                stock_iterado,
+                len(out),
+            )
         return out
 
     def build_inventario_operativo_from_context(self, context: dict) -> list[dict]:
@@ -3946,8 +3972,18 @@ class PlanningRepository:
         return pools
 
     def get_inventario_operativo_global(self, filters: dict, policy: dict | None = None) -> list[dict]:
+        t_total = time.perf_counter()
+        logger.info("[PERF InventarioOperativo.Start] filters=%s", filters)
         context = self.build_simulacion_context(filters, policy=policy)
-        return self.build_inventario_operativo_from_context(context)
+        perf = context.get("_perf", {})
+        logger.info("[PERF InventarioOperativo.StockAlmacenDetalle] tiempo=%.2fs rows=%s", perf.get("stock_almacen_detalle_secs", 0.0), len(context.get("stock_almacen_detalle", context.get("detalle_rows", []))))
+        logger.info("[PERF InventarioOperativo.StockCampo] tiempo=%.2fs rows=%s", perf.get("stock_campo_secs", 0.0), len(context.get("stock_campo_rows", [])))
+        logger.info("[PERF InventarioOperativo.AprovechamientoCampo] tiempo=%.2fs rows=%s", perf.get("aprovechamiento_secs", 0.0), len(context.get("campo_real_rows", [])))
+        t0 = time.perf_counter()
+        out = self.build_inventario_operativo_from_context(context)
+        logger.info("[PERF InventarioOperativo.Aggregation] tiempo=%.2fs rows=%s", time.perf_counter() - t0, len(out))
+        logger.info("[PERF InventarioOperativo.Total] tiempo=%.2fs", time.perf_counter() - t_total)
+        return out
 
     @staticmethod
     def _ensure_planning_indexes(conn: sqlite3.Connection) -> None:
