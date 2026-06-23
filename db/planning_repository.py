@@ -3430,6 +3430,7 @@ class PlanningRepository:
         )
         return {
             "policy_cfg": policy_cfg,
+            "stock_almacen_detalle": detalle_rows,
             "detalle_rows": detalle_rows,
             "stock_campo_rows": stock_campo_rows,
             "campo_real_rows": campo_real_rows,
@@ -3674,17 +3675,19 @@ class PlanningRepository:
             out.append(cand)
         return out
 
-    def get_inventario_operativo_global(self, filters: dict, policy: dict | None = None) -> list[dict]:
-        policy_cfg = self._merge_policy(policy)
-        detalle_rows = self.get_stock_almacen_detalle_palets(filters)
-        stock_campo_rows, _, _ = self.get_stock_campo(filters)
+    def build_inventario_operativo_from_context(self, context: dict) -> list[dict]:
+        t_total = time.perf_counter()
+        policy_cfg = context["policy_cfg"]
+        detalle_rows = context.get("stock_almacen_detalle", context.get("detalle_rows", []))
+        campo_real_rows = context.get("campo_real_rows", [])
 
         pools: list[dict] = []
         for row in detalle_rows:
             confe = str(row.get("Confeccion", "") or "").strip()
             id_confeccion = str(row.get("IdConfeccion", "") or "").strip()
-            is_ind = self._is_stock_industrial(row.get("Pedido"), confe, id_confeccion)
-            is_sp = self._is_stock_sp_comercial(row.get("Pedido"), confe, id_confeccion)
+            row_sim = row.get("_sim", {})
+            is_ind = bool(row_sim.get("is_industrial")) if row_sim else self._is_stock_industrial(row.get("Pedido"), confe, id_confeccion)
+            is_sp = bool(row_sim.get("is_sp_comercial")) if row_sim else self._is_stock_sp_comercial(row.get("Pedido"), confe, id_confeccion)
             if not ((policy_cfg["usar_stock_industrial"] and is_ind) or (policy_cfg["usar_stock_comercial"] and is_sp)):
                 continue
             kg_fisicos = float(row.get("Neto", 0) or 0)
@@ -3723,16 +3726,16 @@ class PlanningRepository:
             })
 
         if policy_cfg["usar_entrada_estimada"]:
-            campo_real_rows, _ = self._get_campo_disponibilidad_aprovechamiento(stock_campo_rows, filters)
             for row in campo_real_rows:
                 kg_fisicos = float(row.get("Kg disponibles", 0) or 0)
                 if kg_fisicos <= 0:
                     continue
                 calibre = str(row.get("Calibre", "") or "").strip()
                 categoria = str(row.get("Categoría", "") or "").strip()
+                origen = "CAMPO_ESTIMADO_MANUAL" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else row.get("Origen", "CAMPO_REAL")
                 pools.append({
-                    "pool_id": f"{('CAMPO_ESTIMADO_MANUAL' if str(row.get('Origen aprovechamiento', '')).upper() == 'ESTIMADO_MANUAL' else row.get('Origen', 'CAMPO_REAL'))}|{row.get('Cultivo','')}|{row.get('Campaña','')}|{row.get('Grupo varietal','')}|{row.get('Variedad','')}|{calibre}|{categoria}|{row.get('Boleta','')}",
-                    "origen": "CAMPO_ESTIMADO_MANUAL" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else row.get("Origen", "CAMPO_REAL"),
+                    "pool_id": f"{origen}|{row.get('Cultivo','')}|{row.get('Campaña','')}|{row.get('Grupo varietal','')}|{row.get('Variedad','')}|{calibre}|{categoria}|{row.get('Boleta','')}",
+                    "origen": origen,
                     "tipo_stock": "CAMPO",
                     "variedad": str(row.get("Variedad", "") or "").strip(),
                     "grupo_varietal": str(row.get("Grupo varietal", "") or "").strip(),
@@ -3742,7 +3745,7 @@ class PlanningRepository:
                     "kg_restante_simulado": round(kg_fisicos, 2),
                     "destrio_pct": 0.0,
                     "coef_primera": 1.0,
-                    "Origen": "CAMPO_ESTIMADO_MANUAL" if str(row.get("Origen aprovechamiento", "")).upper() == "ESTIMADO_MANUAL" else row.get("Origen", "CAMPO_REAL"),
+                    "Origen": origen,
                     "Cultivo": str(row.get("Cultivo", "") or "").strip(),
                     "Campaña": str(row.get("Campaña", "") or "").strip(),
                     "Grupo varietal": str(row.get("Grupo varietal", "") or "").strip(),
@@ -3758,7 +3761,12 @@ class PlanningRepository:
                     "kg_primera_estimado": round(kg_fisicos, 2),
                     "kg_segunda_estimado": 0.0,
                 })
+        logger.info("[PERF InventarioFromContext] detalle_rows=%s campo_real_rows=%s pools=%s total=%.2fs", len(detalle_rows), len(campo_real_rows), len(pools), time.perf_counter() - t_total)
         return pools
+
+    def get_inventario_operativo_global(self, filters: dict, policy: dict | None = None) -> list[dict]:
+        context = self.build_simulacion_context(filters, policy=policy)
+        return self.build_inventario_operativo_from_context(context)
 
     @staticmethod
     def _ensure_planning_indexes(conn: sqlite3.Connection) -> None:

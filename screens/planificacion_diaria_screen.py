@@ -714,23 +714,15 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 marks["pedidos"] = perf_counter() - t0
 
                 t0 = perf_counter()
-                stock_comercial = list(self.stock_almacen_rows or [])
-                marks["stock_comercial"] = perf_counter() - t0
-
-                t0 = perf_counter()
-                inventario_global = service.get_inventario_operativo_global(filtros, policy=policy)
-                marks["stock_industrial"] = perf_counter() - t0
-
-                t0 = perf_counter()
-                stock_campo = list(self.stock_campo_rows or [])
-                marks["entrada"] = perf_counter() - t0
+                sim_context = service.build_simulacion_context(filtros, policy=policy)
+                inventario_global = service.build_inventario_operativo_from_context(sim_context)
+                marks["stock_context"] = perf_counter() - t0
 
                 if not pedidos_calculo and not inventario_global:
                     result = {"empty": True}
                     return
 
                 t0 = perf_counter()
-                sim_context = service.build_simulacion_context(filtros, policy=policy)
                 candidatos_por_pedido: dict[tuple[str, str], list[dict]] = {}
                 for pedido in pedidos_calculo:
                     key = (str(pedido.get("IdPedidoLora", pedido.get("id_pedido", ""))), str(pedido.get("Línea", pedido.get("linea", ""))))
@@ -750,8 +742,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
                     "campana_actual": campanas_validas[0],
                     "empresa_actual": empresa_actual,
                     "filters_payload": filtros,
-                    "stock_campo_len": len(stock_campo),
-                    "stock_comercial_len": len(stock_comercial),
+                    "stock_campo_len": len(sim_context.get("stock_campo_rows", [])),
+                    "stock_comercial_len": len(sim_context.get("stock_almacen_detalle", sim_context.get("detalle_rows", []))),
                 }
             except Exception as exc:
                 error = exc
@@ -760,7 +752,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 logger.info(
                     "[PERF SimularAsignacion] pedidos=%.2fs stock=%.2fs pools=%.2fs asignacion=%.2fs render=%.2fs total=%.2fs",
                     marks.get("pedidos", 0.0),
-                    marks.get("stock_comercial", 0.0) + marks.get("stock_industrial", 0.0) + marks.get("entrada", 0.0),
+                    marks.get("stock_context", 0.0),
                     marks.get("pools", 0.0),
                     0.0,
                     0.0,

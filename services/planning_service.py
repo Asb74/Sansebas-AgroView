@@ -51,6 +51,9 @@ class PlanningService:
     def get_inventario_operativo_global(self, filters: dict, policy: dict | None = None) -> list[dict]:
         return self.repo.get_inventario_operativo_global(filters, policy=policy)
 
+    def build_inventario_operativo_from_context(self, context: dict) -> list[dict]:
+        return self.repo.build_inventario_operativo_from_context(context)
+
     def get_candidatos_compatibles_para_pedido(self, filters: dict, pedido: dict, policy_cfg: dict | None = None, context: dict | None = None) -> list[dict]:
         return self.repo.get_candidatos_compatibles_para_pedido(filters, pedido, policy_cfg=policy_cfg, context=context)
 
