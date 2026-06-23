@@ -18,6 +18,26 @@ from services.pedidos_previstos_service import cargar_pedidos_previstos_filtrado
 
 logger = logging.getLogger(__name__)
 
+_CALIBRES_PERF = {
+    "normalizaciones": 0,
+    "comparaciones": 0,
+    "tiempo_normalizaciones": 0.0,
+    "tiempo_comparaciones": 0.0,
+}
+
+
+def reset_calibres_perf_counters() -> None:
+    _CALIBRES_PERF.update({
+        "normalizaciones": 0,
+        "comparaciones": 0,
+        "tiempo_normalizaciones": 0.0,
+        "tiempo_comparaciones": 0.0,
+    })
+
+
+def get_calibres_perf_counters() -> dict[str, float | int]:
+    return dict(_CALIBRES_PERF)
+
 
 CANONICAL_ALIASES = {
     "campana": ["campana", "campaña", "CAMPAÑA", "Campana", "Campaña"],
@@ -269,51 +289,56 @@ class PlanningRepository:
 
     @staticmethod
     def normalizar_calibre_a_set(calibre_texto: Any, calibre_map: dict[str, str] | None = None) -> set[str]:
+        t_perf = time.perf_counter()
+        _CALIBRES_PERF["normalizaciones"] += 1
         raw_text = str(calibre_texto or "").strip()
-        text = raw_text.upper()
-        if not text:
-            return set()
-        text = re.sub(r"\bCAL(?:\.)?\b", " ", text)
-        text = re.sub(r"\s+", " ", text).strip()
-        mapped = (calibre_map or {}).get(text)
-        if mapped and str(mapped).strip().upper() != text:
-            return PlanningRepository.normalizar_calibre_a_set(mapped, calibre_map=calibre_map)
+        try:
+            text = raw_text.upper()
+            if not text:
+                return set()
+            text = re.sub(r"\bCAL(?:\.)?\b", " ", text)
+            text = re.sub(r"\s+", " ", text).strip()
+            mapped = (calibre_map or {}).get(text)
+            if mapped and str(mapped).strip().upper() != text:
+                return PlanningRepository.normalizar_calibre_a_set(mapped, calibre_map=calibre_map)
 
-        es_formato_piezas = bool(re.search(r"\bPZS?\b|\bPIEZA(?:S)?\b", raw_text.upper()))
-        if not es_formato_piezas:
-            m_formato_simple = re.match(r"^\s*(\d+)\s*/\s*(\d+)\s*$", raw_text)
-            if m_formato_simple:
-                es_formato_piezas = int(m_formato_simple.group(2)) >= 10
-        if es_formato_piezas:
-            m = re.match(r"^\s*(\d+)\s*/", raw_text)
-            return {m.group(1)} if m else set()
+            es_formato_piezas = bool(re.search(r"\bPZS?\b|\bPIEZA(?:S)?\b", raw_text.upper()))
+            if not es_formato_piezas:
+                m_formato_simple = re.match(r"^\s*(\d+)\s*/\s*(\d+)\s*$", raw_text)
+                if m_formato_simple:
+                    es_formato_piezas = int(m_formato_simple.group(2)) >= 10
+            if es_formato_piezas:
+                m = re.match(r"^\s*(\d+)\s*/", raw_text)
+                return {m.group(1)} if m else set()
 
-        clean = re.sub(r"\bPZS?\b|\bPIEZAS?\b", " ", text)
-        clean = re.sub(r"\s+", " ", clean).strip()
-        nums = re.findall(r"\d+", clean)
-        if not nums:
-            return set()
-        if re.fullmatch(r"\d+", clean):
-            return {clean}
-        if re.fullmatch(r"\d+(?:\s*/\s*\d+)+", clean):
-            nums_int = [int(n) for n in nums]
-            if len(nums_int) == 2:
-                a, b = nums_int
-                if abs(a - b) <= 1:
-                    return {str(a), str(b)}
+            clean = re.sub(r"\bPZS?\b|\bPIEZAS?\b", " ", text)
+            clean = re.sub(r"\s+", " ", clean).strip()
+            nums = re.findall(r"\d+", clean)
+            if not nums:
+                return set()
+            if re.fullmatch(r"\d+", clean):
+                return {clean}
+            if re.fullmatch(r"\d+(?:\s*/\s*\d+)+", clean):
+                nums_int = [int(n) for n in nums]
+                if len(nums_int) == 2:
+                    a, b = nums_int
+                    if abs(a - b) <= 1:
+                        return {str(a), str(b)}
+                    lo, hi = sorted((a, b))
+                    result = {str(i) for i in range(lo, hi + 1)}
+                    logger.debug("Calibre compuesto expandido original=%s set=%s", calibre_texto, sorted(result))
+                    return result
+                return {str(n) for n in nums_int}
+            m_range = re.fullmatch(r"(\d+)\s*[-.]\s*(\d+)", clean)
+            if m_range:
+                a, b = int(m_range.group(1)), int(m_range.group(2))
                 lo, hi = sorted((a, b))
                 result = {str(i) for i in range(lo, hi + 1)}
                 logger.debug("Calibre compuesto expandido original=%s set=%s", calibre_texto, sorted(result))
                 return result
-            return {str(n) for n in nums_int}
-        m_range = re.fullmatch(r"(\d+)\s*[-.]\s*(\d+)", clean)
-        if m_range:
-            a, b = int(m_range.group(1)), int(m_range.group(2))
-            lo, hi = sorted((a, b))
-            result = {str(i) for i in range(lo, hi + 1)}
-            logger.debug("Calibre compuesto expandido original=%s set=%s", calibre_texto, sorted(result))
-            return result
-        return set(nums)
+            return set(nums)
+        finally:
+            _CALIBRES_PERF["tiempo_normalizaciones"] += time.perf_counter() - t_perf
 
     @staticmethod
     def _es_pesosfres_aprovechamiento_valido(distribucion_calibres: dict[str, float]) -> bool:
@@ -429,22 +454,27 @@ class PlanningRepository:
         return factor, "SOLAPE_PARCIAL", coincidentes
 
     def comparar_calibres_para_cobertura(self, calibre_pedido: Any, calibre_stock: Any, calibre_map: dict[str, str] | None = None) -> dict[str, Any]:
-        pedido = self.normalizar_calibre_a_set(calibre_pedido, calibre_map=calibre_map)
-        stock = self.normalizar_calibre_a_set(calibre_stock, calibre_map=calibre_map)
-        if not pedido or not stock:
-            return {"tipo": "SIN_COBERTURA", "pedido_set": pedido, "stock_set": stock, "coincidentes": []}
-        coincidentes = sorted(pedido.intersection(stock), key=lambda x: int(x) if x.isdigit() else 9999)
-        if pedido == stock:
-            tipo = "EXACTA"
-        elif not coincidentes:
-            tipo = "SIN_COBERTURA"
-        elif stock.issubset(pedido):
-            tipo = "CALIBRE_ADMITIDO"
-        elif pedido.issubset(stock):
-            tipo = "AGRUPADA"
-        else:
-            tipo = "SOLAPE_PARCIAL"
-        return {"tipo": tipo, "pedido_set": pedido, "stock_set": stock, "coincidentes": coincidentes}
+        t_perf = time.perf_counter()
+        _CALIBRES_PERF["comparaciones"] += 1
+        try:
+            pedido = self.normalizar_calibre_a_set(calibre_pedido, calibre_map=calibre_map)
+            stock = self.normalizar_calibre_a_set(calibre_stock, calibre_map=calibre_map)
+            if not pedido or not stock:
+                return {"tipo": "SIN_COBERTURA", "pedido_set": pedido, "stock_set": stock, "coincidentes": []}
+            coincidentes = sorted(pedido.intersection(stock), key=lambda x: int(x) if x.isdigit() else 9999)
+            if pedido == stock:
+                tipo = "EXACTA"
+            elif not coincidentes:
+                tipo = "SIN_COBERTURA"
+            elif stock.issubset(pedido):
+                tipo = "CALIBRE_ADMITIDO"
+            elif pedido.issubset(stock):
+                tipo = "AGRUPADA"
+            else:
+                tipo = "SOLAPE_PARCIAL"
+            return {"tipo": tipo, "pedido_set": pedido, "stock_set": stock, "coincidentes": coincidentes}
+        finally:
+            _CALIBRES_PERF["tiempo_comparaciones"] += time.perf_counter() - t_perf
 
     @staticmethod
     def calibres_coincidentes(calibre_pedido: Any, calibre_stock: Any, calibre_map: dict[str, str] | None = None) -> str:
