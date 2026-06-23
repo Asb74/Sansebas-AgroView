@@ -514,3 +514,52 @@ def test_loteado_bulk_varias_boletas_varios_lotes_aplica_calidad_por_boleta(tmp_
     assert {r["Comercial %"] for r in rows if r["Boleta"] == "B2"} == {80.0}
     assert {r["Destrío %"] for r in rows if r["Boleta"] == "B1"} == {10.0}
     assert {r["Industria %"] for r in rows if r["Boleta"] == "B2"} == {15.0}
+
+
+def test_loteado_bulk_ruta_rapida_coincidencia_directa_mantiene_resultado(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    _crear_loteado(
+        tmp_path,
+        [
+            {"IdPalet": "P1", "IdLote": "A1", "Neto": 300, "Calibre": "1", "Categoria": "PRIMERA"},
+            {"IdPalet": "P2", "IdLote": "A2", "Neto": 700, "Calibre": "2", "Categoria": "SEGUNDA"},
+        ],
+    )
+    repo = PlanningRepository(base_dir=tmp_path)
+
+    with caplog.at_level("INFO"):
+        result = repo._get_loteado_aprovechamiento_por_boleta_bulk(
+            {"B1": ["A1", "A2"]},
+            {"campana": "2026", "cultivo": "NECTARINA", "empresa": "EMP"},
+            {"B1": 1000},
+            {},
+        )
+
+    rows = result["B1"]
+    assert [(r["Calibre"], r["Categoría"], r["% loteado bruto"], r["% aprovechamiento"]) for r in rows] == [
+        ("CAL 1", "PRIMERA", 30.0, 30.0),
+        ("CAL 2", "SEGUNDA", 70.0, 70.0),
+    ]
+    assert {r["Comercial %"] for r in rows} == {100.0}
+    assert "ruta=rapida" in caplog.text
+
+
+def test_loteado_bulk_fallback_lento_con_espacios(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    with sqlite3.connect(tmp_path / "bdloteado.sqlite") as conn:
+        conn.execute('CREATE TABLE Loteado (IdPalet TEXT, Campaña TEXT, CULTIVO TEXT, EMPRESA TEXT)')
+        conn.execute('CREATE TABLE Lote (IdPalet TEXT, IdLote TEXT, Neto REAL, Calibre TEXT, Lote TEXT)')
+        conn.execute('INSERT INTO Loteado VALUES (?, ?, ?, ?)', ("P1", "2026", "NECTARINA", "EMP"))
+        conn.execute('INSERT INTO Lote VALUES (?, ?, ?, ?, ?)', (" P1 ", " A1 ", 500, "3", "NORMAL"))
+    repo = PlanningRepository(base_dir=tmp_path)
+
+    with caplog.at_level("INFO"):
+        result = repo._get_loteado_aprovechamiento_por_boleta_bulk(
+            {"B1": ["A1"]},
+            {"campana": "2026", "cultivo": "NECTARINA", "empresa": "EMP"},
+            {"B1": 500},
+            {},
+        )
+
+    assert [(r["Calibre"], r["% loteado bruto"], r["% aprovechamiento"]) for r in result["B1"]] == [("CAL 3", 100.0, 100.0)]
+    assert "ruta=fallback_lenta" in caplog.text

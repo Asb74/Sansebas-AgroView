@@ -1476,7 +1476,7 @@ class PlanningRepository:
             if vistos:
                 normalized[boleta_norm] = list(vistos)
         if not normalized or not self.db_loteado.exists():
-            logger.info("[PERF LoteadoBulk] boletas=%s albaranes=%s filas_lote=%s tiempo=%.2fs", len(normalized), len(albaran_to_boletas), 0, time.perf_counter() - start)
+            logger.info("[PERF LoteadoBulk.Total] boletas=%s albaranes=%s filas_lote=%s tiempo=%.2fs", len(normalized), len(albaran_to_boletas), 0, time.perf_counter() - start)
             return {}
 
         grouped: dict[str, dict[tuple[str, str], float]] = defaultdict(lambda: defaultdict(float))
@@ -1486,10 +1486,11 @@ class PlanningRepository:
         try:
             with sqlite3.connect(self.db_loteado) as conn:
                 conn.row_factory = sqlite3.Row
+                schema_start = time.perf_counter()
                 ldo_table = self._find_table(conn, ["Loteado", "loteado", "LOTEADO"])
                 lote_table = self._find_table(conn, ["Lote", "lote", "LOTE"])
                 if not ldo_table or not lote_table:
-                    logger.info("[PERF LoteadoBulk] boletas=%s albaranes=%s filas_lote=%s tiempo=%.2fs", len(normalized), len(albaran_to_boletas), 0, time.perf_counter() - start)
+                    logger.info("[PERF LoteadoBulk.Total] boletas=%s albaranes=%s filas_lote=%s tiempo=%.2fs", len(normalized), len(albaran_to_boletas), 0, time.perf_counter() - start)
                     return {}
                 ldo_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{ldo_table}")').fetchall()]
                 lote_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{lote_table}")').fetchall()]
@@ -1503,44 +1504,85 @@ class PlanningRepository:
                 cultivo_col = self._find_column(ldo_cols, ["CULTIVO", "Cultivo", "cultivo"])
                 empresa_col = self._find_column(ldo_cols, ["EMPRESA", "Empresa", "empresa"])
                 if not all([idpalet_ldo, idpalet_lote, idlote_col, neto_col, calibre_col]):
-                    logger.info("[PERF LoteadoBulk] boletas=%s albaranes=%s filas_lote=%s tiempo=%.2fs", len(normalized), len(albaran_to_boletas), 0, time.perf_counter() - start)
+                    logger.info("[PERF LoteadoBulk.Total] boletas=%s albaranes=%s filas_lote=%s tiempo=%.2fs", len(normalized), len(albaran_to_boletas), 0, time.perf_counter() - start)
                     return {}
-                where = [f'CAST(lote."{neto_col}" AS REAL) > 0', f'TRIM(CAST(lote."{calibre_col}" AS TEXT)) <> ""']
-                params: list[Any] = []
-                for values, column, upper in (
+                conn.execute(f'CREATE INDEX IF NOT EXISTS idx_lote_idlote ON "{lote_table}"("{idlote_col}")')
+                conn.execute(f'CREATE INDEX IF NOT EXISTS idx_lote_idpalet ON "{lote_table}"("{idpalet_lote}")')
+                conn.execute(f'CREATE INDEX IF NOT EXISTS idx_loteado_idpalet ON "{ldo_table}"("{idpalet_ldo}")')
+                logger.info("[PERF LoteadoBulk.Schema] tiempo=%.2fs", time.perf_counter() - schema_start)
+
+                insert_start = time.perf_counter()
+                conn.execute("DROP TABLE IF EXISTS temp_lotes_busqueda")
+                conn.execute("CREATE TEMP TABLE temp_lotes_busqueda(id_lote TEXT PRIMARY KEY, boleta TEXT)")
+                conn.executemany(
+                    "INSERT OR IGNORE INTO temp_lotes_busqueda(id_lote, boleta) VALUES (?, ?)",
+                    [(albaran, next(iter(boletas), "")) for albaran, boletas in albaran_to_boletas.items()],
+                )
+                logger.info("[PERF LoteadoBulk.InsertTemp] albaranes=%s tiempo=%.2fs", len(albaran_to_boletas), time.perf_counter() - insert_start)
+
+                filter_specs = (
                     (self._normalize_filter_values((filters or {}).get("campana")), campana_col, False),
                     (self._normalize_filter_values_upper((filters or {}).get("cultivo")), cultivo_col, True),
                     (self._normalize_filter_values((filters or {}).get("empresa")), empresa_col, False),
-                ):
-                    values = [v for v in values if v.upper() != "TODOS"]
-                    if values and column:
-                        placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(values))
-                        expr = f'UPPER(TRIM(CAST(ldo."{column}" AS TEXT)))' if upper else f'TRIM(CAST(ldo."{column}" AS TEXT))'
-                        where.append(f"{expr} IN ({placeholders})")
-                        params.extend(values)
+                )
                 cat_expr = f'lote."{categoria_col}"' if categoria_col else "'NORMAL'"
-                all_albaranes = list(albaran_to_boletas)
-                for i in range(0, len(all_albaranes), 500):
-                    chunk = all_albaranes[i:i + 500]
-                    placeholders = ",".join(["TRIM(CAST(? AS TEXT))"] * len(chunk))
-                    sql = (f'SELECT lote."{idpalet_lote}" AS IdPalet, lote."{idlote_col}" AS IdLote, lote."{neto_col}" AS Neto, lote."{calibre_col}" AS Calibre, {cat_expr} AS Categoria '
-                           f'FROM "{lote_table}" lote JOIN "{ldo_table}" ldo ON TRIM(CAST(lote."{idpalet_lote}" AS TEXT)) = TRIM(CAST(ldo."{idpalet_ldo}" AS TEXT)) '
-                           f'WHERE {" AND ".join(where)} AND TRIM(CAST(lote."{idlote_col}" AS TEXT)) IN ({placeholders})')
-                    for row in conn.execute(sql, params + chunk).fetchall():
-                        filas_lote += 1
-                        id_lote = str(row["IdLote"] or "").strip()
-                        id_palet = str(row["IdPalet"] or "").strip()
-                        dedup_key = (id_palet, id_lote)
-                        if dedup_key in seen_rows:
-                            continue
-                        seen_rows.add(dedup_key)
-                        kg = float(row["Neto"] or 0)
-                        reparto = self._repartir_kg_loteado_por_calibres(kg, self._expandir_calibre_loteado(row["Calibre"]))
-                        categoria = str(row["Categoria"] or "NORMAL").strip() or "NORMAL"
-                        for boleta in albaran_to_boletas.get(id_lote, set()):
-                            for calibre, kg_cal in reparto.items():
-                                grouped[boleta][(calibre, categoria)] += kg_cal
-                                totals[boleta] += kg_cal
+
+                def fetch_rows(legacy: bool) -> list[sqlite3.Row]:
+                    where = [f'CAST(lote."{neto_col}" AS REAL) > 0']
+                    params: list[Any] = []
+                    calibre_expr = f'TRIM(CAST(lote."{calibre_col}" AS TEXT))' if legacy else f'lote."{calibre_col}"'
+                    where.append(f'{calibre_expr} <> ""')
+                    for values, column, upper in filter_specs:
+                        values = [v for v in values if v.upper() != "TODOS"]
+                        if values and column:
+                            placeholders = ",".join(["?"] * len(values))
+                            if legacy:
+                                expr = f'UPPER(TRIM(CAST(ldo."{column}" AS TEXT)))' if upper else f'TRIM(CAST(ldo."{column}" AS TEXT))'
+                            else:
+                                expr = f'ldo."{column}"'
+                            where.append(f"{expr} IN ({placeholders})")
+                            params.extend(values)
+                    if legacy:
+                        join_palet = f'TRIM(CAST(lote."{idpalet_lote}" AS TEXT)) = TRIM(CAST(ldo."{idpalet_ldo}" AS TEXT))'
+                        join_lote = f'TRIM(CAST(lote."{idlote_col}" AS TEXT)) = temp.id_lote'
+                    else:
+                        join_palet = f'lote."{idpalet_lote}" = ldo."{idpalet_ldo}"'
+                        join_lote = f'lote."{idlote_col}" = temp.id_lote'
+                    sql = (
+                        f'SELECT lote."{idpalet_lote}" AS IdPalet, lote."{idlote_col}" AS IdLote, '
+                        f'lote."{neto_col}" AS Neto, lote."{calibre_col}" AS Calibre, {cat_expr} AS Categoria '
+                        f'FROM temp_lotes_busqueda temp '
+                        f'JOIN "{lote_table}" lote ON {join_lote} '
+                        f'JOIN "{ldo_table}" ldo ON {join_palet} '
+                        f'WHERE {" AND ".join(where)}'
+                    )
+                    return conn.execute(sql, params).fetchall()
+
+                query_start = time.perf_counter()
+                rows = fetch_rows(legacy=False)
+                if not rows:
+                    rows = fetch_rows(legacy=True)
+                    logger.info("[PERF LoteadoBulk.Query] ruta=fallback_lenta filas=%s tiempo=%.2fs", len(rows), time.perf_counter() - query_start)
+                else:
+                    logger.info("[PERF LoteadoBulk.Query] ruta=rapida filas=%s tiempo=%.2fs", len(rows), time.perf_counter() - query_start)
+
+                process_start = time.perf_counter()
+                for row in rows:
+                    filas_lote += 1
+                    id_lote = str(row["IdLote"] or "").strip()
+                    id_palet = str(row["IdPalet"] or "").strip()
+                    dedup_key = (id_palet, id_lote)
+                    if dedup_key in seen_rows:
+                        continue
+                    seen_rows.add(dedup_key)
+                    kg = float(row["Neto"] or 0)
+                    reparto = self._repartir_kg_loteado_por_calibres(kg, self._expandir_calibre_loteado(row["Calibre"]))
+                    categoria = str(row["Categoria"] or "NORMAL").strip() or "NORMAL"
+                    for boleta in albaran_to_boletas.get(id_lote, set()):
+                        for calibre, kg_cal in reparto.items():
+                            grouped[boleta][(calibre, categoria)] += kg_cal
+                            totals[boleta] += kg_cal
+                logger.info("[PERF LoteadoBulk.ProcessRows] filas=%s tiempo=%.2fs", filas_lote, time.perf_counter() - process_start)
         except Exception as exc:
             logger.warning("No se pudo consultar loteado bulk: %s", exc)
             return {}
@@ -1560,7 +1602,7 @@ class PlanningRepository:
                 industria_pct = None
                 comercial_pct = 100.0
                 logger.info("[LOTEADO APROV] boleta=%s sin DatosCalibre asociado; comercial=100", boleta)
-            rows: list[dict[str, Any]] = []
+            rows_out: list[dict[str, Any]] = []
             distribucion_pct: dict[str, float] = {}
             for calibre, categoria in sorted(grouped[boleta], key=lambda x: (int(x[0].replace("CAL ", "")) if str(x[0]).startswith("CAL ") else 99, x[1])):
                 kg_cal = grouped[boleta][(calibre, categoria)]
@@ -1569,10 +1611,10 @@ class PlanningRepository:
                 pct_bruto = round(kg_cal / total * 100, 4)
                 pct = round(comercial_pct * pct_bruto / 100, 4)
                 distribucion_pct[f"{calibre}|{categoria}"] = pct
-                rows.append({"Origen": "CAMPO_REAL_LOTEADO", "Calibre": calibre, "Categoría": categoria, "% aprovechamiento": pct, "% loteado bruto": pct_bruto, "Destrío %": destrio_pct, "Industria %": industria_pct, "Comercial %": round(comercial_pct, 4), f"{calibre} %": pct, "Origen aprovechamiento": "LOTEADO", "Aviso": f"Aprovechamiento calculado desde loteado boleta {boleta}".strip(), "Explicación": "Distribución porcentual por calibre calculada desde netos loteados y ajustada por destrío/industria de calidad cuando hay volcado asociado; los kilos se aplican después a cada partida"})
+                rows_out.append({"Origen": "CAMPO_REAL_LOTEADO", "Calibre": calibre, "Categoría": categoria, "% aprovechamiento": pct, "% loteado bruto": pct_bruto, "Destrío %": destrio_pct, "Industria %": industria_pct, "Comercial %": round(comercial_pct, 4), f"{calibre} %": pct, "Origen aprovechamiento": "LOTEADO", "Aviso": f"Aprovechamiento calculado desde loteado boleta {boleta}".strip(), "Explicación": "Distribución porcentual por calibre calculada desde netos loteados y ajustada por destrío/industria de calidad cuando hay volcado asociado; los kilos se aplican después a cada partida"})
             logger.debug("APROVECHAMIENTO Loteado boleta=%s total_kg_loteado=%s kg_campo=%s distribucion_pct=%s", boleta, round(total, 2), round(float((kg_campo_por_boleta or {}).get(boleta, 0) or 0), 2), distribucion_pct)
-            out[boleta] = rows
-        logger.info("[PERF LoteadoBulk] boletas=%s albaranes=%s filas_lote=%s tiempo=%.2fs", len(normalized), len(albaran_to_boletas), filas_lote, time.perf_counter() - start)
+            out[boleta] = rows_out
+        logger.info("[PERF LoteadoBulk.Total] boletas=%s albaranes=%s filas_lote=%s tiempo=%.2fs", len(normalized), len(albaran_to_boletas), filas_lote, time.perf_counter() - start)
         return out
 
     def _get_loteado_aprovechamiento_por_boleta(self, boleta: str, albaranes_boleta: list[str], filters: dict, calidad_pcts: dict[str, float] | None = None) -> list[dict[str, Any]]:
