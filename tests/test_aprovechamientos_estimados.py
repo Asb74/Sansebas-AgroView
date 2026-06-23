@@ -311,6 +311,61 @@ def test_loteado_aplica_filtros_sql_de_boleta_campana_cultivo_empresa(tmp_path, 
     assert sin_datos == 3
 
 
+def test_loteado_bulk_calidad_varias_boletas_una_llamada(tmp_path, monkeypatch):
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    _crear_pesosfres(
+        tmp_path,
+        [
+            {"Boleta": "B1", "AlbaranDef": "A1", "Cal1": 1000},
+            {"Boleta": "B2", "AlbaranDef": "A2", "Cal1": 1000},
+        ],
+    )
+    _crear_loteado(
+        tmp_path,
+        [
+            {"IdLote": "A1", "Neto": 1000, "Calibre": "2"},
+            {"IdLote": "A2", "Neto": 1000, "Calibre": "3"},
+        ],
+    )
+    with sqlite3.connect(tmp_path / "BdCalidad.sqlite") as conn:
+        conn.execute(
+            "CREATE TABLE Partidas (IdPartidaP TEXT, IdPartida0 TEXT, kg0 REAL, IdPartida1 TEXT, kg1 REAL, "
+            "IdPartida2 TEXT, kg2 REAL, IdPartida3 TEXT, kg3 REAL, IdPartida4 TEXT, kg4 REAL, "
+            "IdPartida5 TEXT, kg5 REAL, IdPartida6 TEXT, kg6 REAL, IdPartida7 TEXT, kg7 REAL, "
+            "IdPartida8 TEXT, kg8 REAL, IdPartida9 TEXT, kg9 REAL)"
+        )
+        conn.execute(
+            "CREATE TABLE DatosCalibre (IdPartida TEXT, Neto REAL, Podrido REAL, DLinea REAL, DMesa REAL, Inutil REAL, Piquera REAL, VerdeR REAL)"
+        )
+        conn.execute(
+            "INSERT INTO Partidas VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("PQUAL1", "A1", 1000, "", None, "", None, "", None, "", None, "", None, "", None, "", None, "", None, "", None),
+        )
+        conn.execute(
+            "INSERT INTO Partidas VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("PQUAL2", "A2", 1000, "", None, "", None, "", None, "", None, "", None, "", None, "", None, "", None, "", None),
+        )
+        conn.execute("INSERT INTO DatosCalibre VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("PQUAL1", 1000, 50, 100, 0, 0, 0, 0))
+        conn.execute("INSERT INTO DatosCalibre VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("PQUAL2", 1000, 100, 200, 0, 0, 0, 0))
+    repo = PlanningRepository(base_dir=tmp_path)
+    original_bulk = repo._get_loteado_calidad_pcts_por_boleta_bulk
+    llamadas = 0
+
+    def wrapped_bulk(boleta_to_id_lotes):
+        nonlocal llamadas
+        llamadas += 1
+        return original_bulk(boleta_to_id_lotes)
+
+    monkeypatch.setattr(repo, "_get_loteado_calidad_pcts_por_boleta_bulk", wrapped_bulk)
+
+    rows, _ = repo._get_campo_disponibilidad_aprovechamiento(_stock("B1", 1000) + _stock("B2", 1000), {})
+
+    assert llamadas == 1
+    por_boleta = {boleta: next(r for r in rows if r["Boleta"] == boleta) for boleta in ("B1", "B2")}
+    assert (por_boleta["B1"]["Destrío %"], por_boleta["B1"]["Industria %"], por_boleta["B1"]["Comercial %"]) == (5.0, 10.0, 85.0)
+    assert (por_boleta["B2"]["Destrío %"], por_boleta["B2"]["Industria %"], por_boleta["B2"]["Comercial %"]) == (10.0, 20.0, 70.0)
+
+
 def test_prioridad_pesosfres_valido_gana_a_loteado(tmp_path, monkeypatch):
     monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
     _crear_pesosfres(tmp_path, [{"Boleta": "B1", "AlbaranDef": "A1", "Cal1": 500, "Cal2": 500}])
