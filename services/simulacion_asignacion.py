@@ -1014,6 +1014,15 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
     count_candidatos_evaluados = 0
     count_subcandidatos = 0
     count_asignaciones = 0
+    eval_perf_totals = {
+        "compatibilidad": 0.0,
+        "cobertura": 0.0,
+        "stock": 0.0,
+        "disponibilidad": 0.0,
+        "restricciones": 0.0,
+        "score": 0.0,
+    }
+    eval_count_totals = {key: 0 for key in eval_perf_totals}
     t_bloque = perf_counter()
     repo_calibre = PlanningRepository()
     calibre_map = repo_calibre.get_mcalibres_map()
@@ -1110,12 +1119,46 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             )
         candidatos: list[dict] = []
         t_eval_candidatos = perf_counter()
+        eval_perf_pedido = {key: 0.0 for key in eval_perf_totals}
+        eval_count_pedido = {key: 0 for key in eval_count_totals}
         subcandidatos_pedido = 0
-        for cand in deepcopy(candidatos_raw):
+        t_eval_deepcopy = perf_counter()
+        candidatos_raw_copia = deepcopy(candidatos_raw)
+        eval_deepcopy_secs = perf_counter() - t_eval_deepcopy
+        if eval_deepcopy_secs > 0.005:
+            logger.info(
+                "[PERF EvalCandidatoSlow] pedido=%s candidato=%s operacion=Deepcopy tiempo=%.4fs tamaño_lista=%s",
+                pedido_id,
+                "<lista_candidatos>",
+                eval_deepcopy_secs,
+                len(candidatos_raw),
+            )
+        for cand in candidatos_raw_copia:
             count_candidatos_evaluados += 1
+            candidato_ref = cand.get("pool_id", cand.get("IdLote", cand.get("id_lote", cand.get("Albarán", cand.get("albaran", "")))))
+
+            t_eval_op = perf_counter()
             score, flex_txt = calcular_score_candidato(cand, pedido=pedido, scoring=scoring)
+            op_secs = perf_counter() - t_eval_op
+            eval_perf_pedido["score"] += op_secs
+            eval_perf_totals["score"] += op_secs
+            eval_count_pedido["score"] += 1
+            eval_count_totals["score"] += 1
+            if op_secs > 0.005:
+                logger.info("[PERF EvalCandidatoSlow] pedido=%s candidato=%s operacion=Score tiempo=%.4fs", pedido_id, candidato_ref, op_secs)
+
+            t_eval_op = perf_counter()
             utilidad = calcular_utilidad_operativa(pedido, cand)
             cand.update(utilidad)
+            op_secs = perf_counter() - t_eval_op
+            eval_perf_pedido["cobertura"] += op_secs
+            eval_perf_totals["cobertura"] += op_secs
+            eval_count_pedido["cobertura"] += 1
+            eval_count_totals["cobertura"] += 1
+            if op_secs > 0.005:
+                logger.info("[PERF EvalCandidatoSlow] pedido=%s candidato=%s operacion=Cobertura tiempo=%.4fs", pedido_id, candidato_ref, op_secs)
+
+            t_eval_op = perf_counter()
             rank_var, txt_var = _compatibilidad_varietal(pedido, cand)
             cand["compatibilidad_varietal_rank"] = rank_var
             cand["compatibilidad_varietal"] = txt_var
@@ -1124,9 +1167,25 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             cand["score_simulacion"] = score
             cand["flexibilidad_usada_simulacion"] = ("Variedad exacta" if rank_var == 0 else "Mismo grupo varietal" if rank_var == 1 else "Grupo varietal alternativo" if rank_var == 2 else "Incompatible")
             kg_pedido = _kg_pendiente_linea(pedido)
+            op_secs = perf_counter() - t_eval_op
+            eval_perf_pedido["restricciones"] += op_secs
+            eval_perf_totals["restricciones"] += op_secs
+            eval_count_pedido["restricciones"] += 1
+            eval_count_totals["restricciones"] += 1
+            if op_secs > 0.005:
+                logger.info("[PERF EvalCandidatoSlow] pedido=%s candidato=%s operacion=Restricciones tiempo=%.4fs", pedido_id, candidato_ref, op_secs)
             if kg_pedido <= 0:
                 continue
+
+            t_eval_op = perf_counter()
             compat = evaluar_compatibilidad_operativa(pedido, cand, reglas_compat, repo=repo_calibre, calibre_map=calibre_map)
+            op_secs = perf_counter() - t_eval_op
+            eval_perf_pedido["compatibilidad"] += op_secs
+            eval_perf_totals["compatibilidad"] += op_secs
+            eval_count_pedido["compatibilidad"] += 1
+            eval_count_totals["compatibilidad"] += 1
+            if op_secs > 0.005:
+                logger.info("[PERF EvalCandidatoSlow] pedido=%s candidato=%s operacion=Compatibilidad tiempo=%.4fs", pedido_id, candidato_ref, op_secs)
             cand["tipo_compatibilidad"] = compat.get("tipo", "INCOMPATIBLE")
             cand["penalizacion_compatibilidad"] = int(_to_float(compat.get("penalizacion", 0)))
             cand["motivo_compatibilidad"] = compat.get("motivo", "")
@@ -1166,6 +1225,7 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             factor_calibre = 1.0
             calibres_coincidentes: list[str] = []
             tipo_factor = "SIN_COBERTURA"
+            t_eval_op = perf_counter()
             if SIMULACION_PERMITIR_SOLAPE_PARCIAL:
                 factor_calibre, tipo_factor, calibres_coincidentes = repo_calibre.calcular_factor_cobertura_calibre(
                     pedido.get("Calibre", pedido.get("calibre", "")),
@@ -1173,8 +1233,16 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
                     calibre_map=calibre_map,
                     usar_stock_completo_en_calibre_admitido=SIMULACION_USAR_STOCK_COMPLETO_CALIBRE_ADMITIDO,
                 )
+            op_secs = perf_counter() - t_eval_op
+            eval_perf_pedido["cobertura"] += op_secs
+            eval_perf_totals["cobertura"] += op_secs
+            eval_count_pedido["cobertura"] += 1
+            eval_count_totals["cobertura"] += 1
+            if op_secs > 0.005:
+                logger.info("[PERF EvalCandidatoSlow] pedido=%s candidato=%s operacion=CoberturaCalibre tiempo=%.4fs", pedido_id, candidato_ref, op_secs)
             if factor_calibre <= 0:
                 continue
+            t_eval_op = perf_counter()
             perfil_conf = _norm_text(pedido.get("perfil_confeccion", "")) or detectar_perfil_confeccion(pedido)
             cat_pedido = _norm_text(pedido.get("Categoría", pedido.get("categoria", "")))
             subcands: list[dict] = []
@@ -1192,7 +1260,15 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
                     subcands = [dict(cand, subpool_calidad="PRIMERA", categoria_util="I", kg_utiles_finales=_to_float(cand.get("kg_primera_estimado", 0)))]
             else:
                 subcands = [dict(cand, subpool_calidad="MIXTO", categoria_util=cand.get("Categoría", ""), kg_utiles_finales=_to_float(cand.get("kg_utiles_estimados", 0)))]
+            op_secs = perf_counter() - t_eval_op
+            eval_perf_pedido["disponibilidad"] += op_secs
+            eval_perf_totals["disponibilidad"] += op_secs
+            eval_count_pedido["disponibilidad"] += 1
+            eval_count_totals["disponibilidad"] += 1
+            if op_secs > 0.005:
+                logger.info("[PERF EvalCandidatoSlow] pedido=%s candidato=%s operacion=Disponibilidad tiempo=%.4fs", pedido_id, candidato_ref, op_secs)
 
+            t_eval_op = perf_counter()
             for sc in subcands:
                 count_subcandidatos += 1
                 subcandidatos_pedido += 1
@@ -1219,7 +1295,36 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
                         "subpool_calidad": sc.get("subpool_calidad", "MIXTO"),
                     }
                 candidatos.append(sc)
+            op_secs = perf_counter() - t_eval_op
+            eval_perf_pedido["stock"] += op_secs
+            eval_perf_totals["stock"] += op_secs
+            eval_count_pedido["stock"] += 1
+            eval_count_totals["stock"] += 1
+            if op_secs > 0.005:
+                logger.info("[PERF EvalCandidatoSlow] pedido=%s candidato=%s operacion=Stock tiempo=%.4fs", pedido_id, candidato_ref, op_secs)
         eval_candidatos_secs = perf_counter() - t_eval_candidatos
+        if eval_candidatos_secs > 0:
+            logger.info(
+                "[PERF EvalCandidato.Compatibilidad] pedido=%s tiempo=%.3fs candidatos=%s",
+                pedido_id, eval_perf_pedido["compatibilidad"], eval_count_pedido["compatibilidad"],
+            )
+            logger.info("[PERF EvalCandidato.Cobertura] pedido=%s tiempo=%.3fs candidatos=%s", pedido_id, eval_perf_pedido["cobertura"], eval_count_pedido["cobertura"])
+            logger.info("[PERF EvalCandidato.Stock] pedido=%s tiempo=%.3fs candidatos=%s", pedido_id, eval_perf_pedido["stock"], eval_count_pedido["stock"])
+            logger.info("[PERF EvalCandidato.Disponibilidad] pedido=%s tiempo=%.3fs candidatos=%s", pedido_id, eval_perf_pedido["disponibilidad"], eval_count_pedido["disponibilidad"])
+            logger.info("[PERF EvalCandidato.Restricciones] pedido=%s tiempo=%.3fs candidatos=%s", pedido_id, eval_perf_pedido["restricciones"], eval_count_pedido["restricciones"])
+            logger.info("[PERF EvalCandidato.Score] pedido=%s tiempo=%.3fs candidatos=%s", pedido_id, eval_perf_pedido["score"], eval_count_pedido["score"])
+            logger.info(
+                "[COUNT EvalCandidato] pedido=%s compatibilidad=%s cobertura=%s stock=%s disponibilidad=%s restricciones=%s score=%s tamaño_lista=%s deepcopy=%.3fs",
+                pedido_id,
+                eval_count_pedido["compatibilidad"],
+                eval_count_pedido["cobertura"],
+                eval_count_pedido["stock"],
+                eval_count_pedido["disponibilidad"],
+                eval_count_pedido["restricciones"],
+                eval_count_pedido["score"],
+                len(candidatos_raw),
+                eval_deepcopy_secs,
+            )
         t_orden_cobertura = perf_counter()
         candidatos = ordenar_candidatos_simulacion(candidatos)
         acumulado_potencial = 0.0
@@ -1295,6 +1400,24 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
     for sim in simulaciones:
         for c in sim["candidatos"]:
             c["compartido"] = "Sí" if conteo_pooles.get(c["pool_id"], 0) > 1 else "No"
+    logger.info(
+        "[PERF EvalCandidato.Total] compatibilidad=%.3fs cobertura=%.3fs stock=%.3fs disponibilidad=%.3fs restricciones=%.3fs score=%.3fs",
+        eval_perf_totals["compatibilidad"],
+        eval_perf_totals["cobertura"],
+        eval_perf_totals["stock"],
+        eval_perf_totals["disponibilidad"],
+        eval_perf_totals["restricciones"],
+        eval_perf_totals["score"],
+    )
+    logger.info(
+        "[COUNT EvalCandidato.Total] compatibilidad=%s cobertura=%s stock=%s disponibilidad=%s restricciones=%s score=%s",
+        eval_count_totals["compatibilidad"],
+        eval_count_totals["cobertura"],
+        eval_count_totals["stock"],
+        eval_count_totals["disponibilidad"],
+        eval_count_totals["restricciones"],
+        eval_count_totals["score"],
+    )
     logger.info(
         "[PERF BuildRows.Bloque3Compartidos] tiempo=%.3fs simulaciones=%s pools_compartidos=%s",
         perf_counter() - t_bloque,
