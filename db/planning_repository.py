@@ -1384,15 +1384,39 @@ class PlanningRepository:
             for id_lote in ids:
                 id_to_boletas[id_lote].add(boleta)
         if not id_to_boletas or not calidad_path.exists():
-            logger.info("[PERF CalidadBulk] boletas=%s id_lotes=%s partidas_principales=%s tiempo=%.2fs", len(normalized), len(id_to_boletas), 0, time.perf_counter() - start)
+            logger.info("[PERF CalidadBulk.Total] boletas=%s id_lotes=%s partidas_principales=%s tiempo=%.2fs", len(normalized), len(id_to_boletas), 0, time.perf_counter() - start)
             return {}
         total_peso: dict[str, float] = defaultdict(float)
         destrio_pond: dict[str, float] = defaultdict(float)
         industria_pond: dict[str, float] = defaultdict(float)
         partidas_principales: dict[str, set[str]] = defaultdict(set)
+
+        def acumular_row(row: sqlite3.Row, neto_col: str, podrido_col: str, industria_cols: list[str | None]) -> bool:
+            incluida = str(row["Incluida"] or "").strip()
+            if incluida not in id_to_boletas:
+                return False
+            neto = float(row[neto_col] or 0)
+            if neto <= 0:
+                return False
+            peso = float(row["KgIncluida"] or 0) or neto
+            if peso <= 0:
+                return False
+            destrio_pct = float(row[podrido_col] or 0) / neto * 100
+            industria = sum(float(row[c] or 0) for c in industria_cols if c)
+            industria_pct = industria / neto * 100
+            partida_principal = str(row["IdPartidaP"] or "").strip()
+            for boleta in id_to_boletas[incluida]:
+                total_peso[boleta] += peso
+                destrio_pond[boleta] += destrio_pct * peso
+                industria_pond[boleta] += industria_pct * peso
+                if partida_principal:
+                    partidas_principales[boleta].add(partida_principal)
+            return True
+
         try:
             with sqlite3.connect(calidad_path) as conn:
                 conn.row_factory = sqlite3.Row
+                schema_start = time.perf_counter()
                 dc_table = self._find_table(conn, ["DatosCalibre", "datoscalibre"])
                 p_table = self._find_table(conn, ["Partidas", "partidas"])
                 if not dc_table or not p_table:
@@ -1406,39 +1430,66 @@ class PlanningRepository:
                 idp_col = self._find_column(p_cols, ["IdPartidaP"])
                 if not id_dc or not neto_col or not podrido_col or not idp_col:
                     return {}
-                ids_lote = set(id_to_boletas)
+                logger.info("[PERF CalidadBulk.Schema] tiempo=%.3fs", time.perf_counter() - schema_start)
+
+                temp_start = time.perf_counter()
+                conn.execute("DROP TABLE IF EXISTS temp_ids_lote")
+                conn.execute("CREATE TEMP TABLE temp_ids_lote(id_lote TEXT PRIMARY KEY)")
+                conn.executemany(
+                    "INSERT OR IGNORE INTO temp_ids_lote(id_lote) VALUES (?)",
+                    [(id_lote,) for id_lote in id_to_boletas],
+                )
+                logger.info("[PERF CalidadBulk.InsertTemp] id_lotes=%s tiempo=%.3fs", len(id_to_boletas), time.perf_counter() - temp_start)
+
+                idx_start = time.perf_counter()
+                conn.execute(f'CREATE INDEX IF NOT EXISTS idx_partidas_idpartidap ON "{p_table}"("{idp_col}")')
+                conn.execute(f'CREATE INDEX IF NOT EXISTS idx_datoscalibre_idpartida ON "{dc_table}"("{id_dc}")')
+                inc_cols: dict[int, str] = {}
                 for idx in range(10):
                     inc_col = self._find_column(p_cols, [f"IdPartida{idx}"])
+                    if inc_col:
+                        inc_cols[idx] = inc_col
+                        conn.execute(f'CREATE INDEX IF NOT EXISTS idx_partidas_idpartida{idx} ON "{p_table}"("{inc_col}")')
+                logger.info("[PERF CalidadBulk.Indexes] indices=%s tiempo=%.3fs", len(inc_cols) + 2, time.perf_counter() - idx_start)
+
+                query_total_start = time.perf_counter()
+                filas = 0
+                for idx, inc_col in inc_cols.items():
+                    query_start = time.perf_counter()
                     kg_col = self._find_column(p_cols, [f"kg{idx}", f"Kg{idx}", f"KG{idx}"])
-                    if not inc_col:
-                        continue
                     kg_expr = f'p."{kg_col}"' if kg_col else "NULL"
                     sql = (
                         f'SELECT p."{inc_col}" AS Incluida, p."{idp_col}" AS IdPartidaP, {kg_expr} AS KgIncluida, dc.* '
-                        f'FROM "{p_table}" p JOIN "{dc_table}" dc '
-                        f'ON TRIM(CAST(p."{idp_col}" AS TEXT)) = TRIM(CAST(dc."{id_dc}" AS TEXT)) '
-                        f'WHERE TRIM(CAST(p."{inc_col}" AS TEXT)) <> ""'
+                        f'FROM "{p_table}" p '
+                        f'JOIN temp_ids_lote t ON p."{inc_col}" = t.id_lote '
+                        f'JOIN "{dc_table}" dc ON p."{idp_col}" = dc."{id_dc}"'
                     )
-                    for row in conn.execute(sql).fetchall():
-                        incluida = str(row["Incluida"] or "").strip()
-                        if incluida not in ids_lote:
-                            continue
-                        neto = float(row[neto_col] or 0)
-                        if neto <= 0:
-                            continue
-                        peso = float(row["KgIncluida"] or 0) or neto
-                        if peso <= 0:
-                            continue
-                        destrio_pct = float(row[podrido_col] or 0) / neto * 100
-                        industria = sum(float(row[c] or 0) for c in industria_cols if c)
-                        industria_pct = industria / neto * 100
-                        partida_principal = str(row["IdPartidaP"] or "").strip()
-                        for boleta in id_to_boletas[incluida]:
-                            total_peso[boleta] += peso
-                            destrio_pond[boleta] += destrio_pct * peso
-                            industria_pond[boleta] += industria_pct * peso
-                            if partida_principal:
-                                partidas_principales[boleta].add(partida_principal)
+                    count_idx = 0
+                    for row in conn.execute(sql):
+                        if acumular_row(row, neto_col, podrido_col, industria_cols):
+                            count_idx += 1
+                    filas += count_idx
+                    logger.info("[PERF CalidadBulk.Query.idx%s] filas=%s tiempo=%.3fs", idx, count_idx, time.perf_counter() - query_start)
+
+                if filas == 0:
+                    logger.info("[PERF CalidadBulk.QueryTotal] ruta=fast filas=0 tiempo=%.3fs", time.perf_counter() - query_total_start)
+                    fallback_start = time.perf_counter()
+                    placeholders = ",".join("?" for _ in id_to_boletas)
+                    params = list(id_to_boletas)
+                    for idx, inc_col in inc_cols.items():
+                        kg_col = self._find_column(p_cols, [f"kg{idx}", f"Kg{idx}", f"KG{idx}"])
+                        kg_expr = f'p."{kg_col}"' if kg_col else "NULL"
+                        sql = (
+                            f'SELECT p."{inc_col}" AS Incluida, p."{idp_col}" AS IdPartidaP, {kg_expr} AS KgIncluida, dc.* '
+                            f'FROM "{p_table}" p JOIN "{dc_table}" dc '
+                            f'ON TRIM(CAST(p."{idp_col}" AS TEXT)) = TRIM(CAST(dc."{id_dc}" AS TEXT)) '
+                            f'WHERE TRIM(CAST(p."{inc_col}" AS TEXT)) IN ({placeholders})'
+                        )
+                        for row in conn.execute(sql, params):
+                            acumular_row(row, neto_col, podrido_col, industria_cols)
+                    logger.info("[PERF CalidadBulk.QueryTotal] ruta=fallback tiempo=%.3fs", time.perf_counter() - fallback_start)
+                else:
+                    logger.info("[PERF CalidadBulk.QueryTotal] ruta=fast filas=%s tiempo=%.3fs", filas, time.perf_counter() - query_total_start)
         except Exception as exc:
             logger.warning("No se pudo consultar calidad bulk de loteado: %s", exc)
             return {}
@@ -1449,7 +1500,7 @@ class PlanningRepository:
             destrio_pct = round(destrio_pond[boleta] / peso, 4)
             industria_pct = round(industria_pond[boleta] / peso, 4)
             out[boleta] = {"Destrío %": destrio_pct, "Industria %": industria_pct, "Comercial %": round(max(0.0, 100.0 - destrio_pct - industria_pct), 4), "partidas_principales": len(partidas_principales.get(boleta, set()))}
-        logger.info("[PERF CalidadBulk] boletas=%s id_lotes=%s partidas_principales=%s tiempo=%.2fs", len(normalized), len(id_to_boletas), sum(len(v) for v in partidas_principales.values()), time.perf_counter() - start)
+        logger.info("[PERF CalidadBulk.Total] boletas=%s id_lotes=%s partidas_principales=%s tiempo=%.2fs", len(normalized), len(id_to_boletas), sum(len(v) for v in partidas_principales.values()), time.perf_counter() - start)
         return out
 
     def _get_loteado_aprovechamiento_por_boleta_bulk(
