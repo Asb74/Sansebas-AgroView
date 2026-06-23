@@ -2015,6 +2015,13 @@ def construir_panel_pedidos_previstos(
 
 def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None, pedidos_detalle_horizonte: list[dict] | None = None, cultivo_actual: str = "", campana_actual: str = "", empresa_actual: str = "", filters_payload: dict | None = None, mode_refresh: bool = False, sim_window: tk.Toplevel | None = None) -> None:
     logger.info("[TRACE BOTON SIMULACION] entrando en abrir_simulacion_asignacion")
+    render_total_start = perf_counter()
+
+    def _log_render_perf(bloque: str, start: float, **extra) -> None:
+        extra_txt = " ".join(f"{key}={value}" for key, value in extra.items())
+        logger.info("[PERF Render.%s] %.2fs%s%s", bloque, perf_counter() - start, " " if extra_txt else "", extra_txt)
+
+    t_crear_ventana = perf_counter()
     popup = sim_window if mode_refresh and sim_window is not None else tk.Toplevel(parent)
     if mode_refresh:
         for child in popup.winfo_children():
@@ -2090,6 +2097,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     tecnico_tab = ttk.Frame(notebook, padding=8)
     compat_tab = ttk.Frame(notebook, padding=8)
     previstos_tab = ttk.Frame(notebook, padding=8)
+    _log_render_perf("CrearVentana", t_crear_ventana, mode_refresh=mode_refresh)
 
     pedidos_previstos_payload = _cargar_pedidos_previstos()
     pedidos_previstos = list(pedidos_previstos_payload.get("pedidos", []))
@@ -2114,7 +2122,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             previstos_activos.append(p)
     logger.debug("Pedidos previstos incluidos en simulación: %s", len(previstos_activos))
 
+    t_columnas = perf_counter()
     pedidos_cols = ["Origen demanda", "Fecha salida", "Bloque temporal", "Prioridad manual", "Prioridad total", "Motivo prioridad", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Kg potencial físico", "Kg potencial útil"]
+    t_treeview = perf_counter()
     pedidos_tbl = DataTable(top, pedidos_cols)
     pedidos_tbl.pack(fill="both", expand=True)
     pedidos_op_cols = ["Fecha salida", "Bloque temporal", "Variedad", "Calibre", "Categoría", "Grupo confección", "Kg pendientes", "Kg asignado global", "Kg faltante global", "Estado global"]
@@ -2138,11 +2148,14 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     plan_cols = ["Prioridad", "Tipo acción", "Origen", "Grupo varietal", "Variedad", "Calibre", "Kg afectados", "Fecha límite", "Motivo", "Acción recomendada"]
     plan_tbl = DataTable(plan_operativo_tab, plan_cols)
     plan_tbl.pack(fill="both", expand=True)
+    _log_render_perf("Columnas", t_columnas, tablas_base=6, columnas=sum(len(cols) for cols in (pedidos_cols, pedidos_op_cols, cand_cols, needs_cols, sobrantes_cols, plan_cols)))
+    _log_render_perf("Treeview", t_treeview, tablas_base=6)
 
     resumen = ttk.Label(popup, text="", anchor="w")
     resumen.pack(fill="x", padx=10, pady=(0, 4))
     detalle = ttk.Label(popup, text="", anchor="w")
     detalle.pack(fill="x", padx=10, pady=(0, 8))
+    t_tags = perf_counter()
     pedidos_tbl.tree.tag_configure("estado_total", background="#DDF4DD")
     pedidos_tbl.tree.tag_configure("estado_cubierto", background="#DDF4DD")
     pedidos_tbl.tree.tag_configure("estado_flexible", background="#FFF3C4")
@@ -2154,6 +2167,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     cand_tbl.tree.tag_configure("riesgo_bajo", background="#d0f0c0")
     cand_tbl.tree.tag_configure("riesgo_medio", background="#fff8b3")
     cand_tbl.tree.tag_configure("riesgo_alto", background="#f8d7da")
+    _log_render_perf("Tags", t_tags, configuraciones=11)
 
     prioridades_map = _cargar_prioridades_pedidos()
     pedidos_reales = [dict(p) for p in pedidos]
@@ -2406,12 +2420,19 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         detalle.configure(text=f"Necesidad recolección · Nº necesidades: {need_tot['n']} · Kg útiles faltantes: {formatear_kg(need_tot['kg_falt'])} · Kg campo estimados total: {formatear_kg(need_tot['kg_campo'])} · Sobrantes · Kg útiles sobrantes: {formatear_kg(sob_total)} · Orígenes con sobrante: {len(sob_origenes)}")
 
     t_render = perf_counter()
+    t_insert_pedidos = perf_counter()
     pedidos_tbl.set_rows(resumen_rows)
     pedidos_op_tbl.set_rows([{k: r.get(k, "") for k in pedidos_op_cols} for r in resumen_rows])
+    _log_render_perf("InsertPedidos", t_insert_pedidos, rows_pedidos=len(resumen_rows), inserts=len(resumen_rows) * 2)
+    t_insert_necesidades = perf_counter()
     needs_tbl.set_rows(necesidades_rows)
+    _log_render_perf("InsertNecesidades", t_insert_necesidades, rows_necesidades=len(necesidades_rows), inserts=len(necesidades_rows))
+    t_insert_sobrantes = perf_counter()
     sobrantes_tbl.set_rows(sobrantes_rows)
+    _log_render_perf("InsertSobrantes", t_insert_sobrantes, rows_sobrantes=len(sobrantes_rows), inserts=len(sobrantes_rows))
     render_secs = perf_counter() - t_render
     logger.info("[PERF SimularAsignacionRender] asignacion=%.2fs render_inicial=%.2fs pedidos=%s sobrantes=%s necesidades=%s", asignacion_secs, render_secs, len(resumen_rows), len(sobrantes_rows), len(necesidades_rows))
+    t_tags = perf_counter()
     needs_tbl.tree.tag_configure("prio_hoy", background="#f8d7da")
     needs_tbl.tree.tag_configure("prio_23", background="#fff3cd")
     needs_tbl.tree.tag_configure("prio_future", background="#dff0d8")
@@ -2421,6 +2442,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         tbl.tree.tag_configure("origen_campo_real", background="#d9edf7")
         tbl.tree.tag_configure("origen_campo_estimado", background="#e7d9f7")
         tbl.tree.tag_configure("origen_desconocido", background="#eeeeee")
+    _log_render_perf("Tags", t_tags, configuraciones=13, fase="post_inserts")
 
     pedidos_horizonte_base = list(pedidos_detalle_horizonte or pedidos_reales)
     pedidos_horizonte = pedidos_horizonte_base + pedidos_previstos_sim
@@ -2570,7 +2592,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Acción sugerida": r.get("Acción sugerida", ""),
             "__tags__": (tag,),
         })
+    t_sorting = perf_counter()
     timeline_rows.sort(key=lambda x: (x.get("Fecha salida", "9999-99-99"), -_to_float(x.get("Prioridad total", 0)), -_to_float(x.get("Kg faltantes", 0))))
+    _log_render_perf("Sorting", t_sorting, bloque="timeline_rows", rows=len(timeline_rows))
     horizon_tbl.set_rows(timeline_rows)
     matriz_rows = _build_matriz_cobertura(simulaciones, inventario_global_simulado, horizonte)
 
@@ -2781,7 +2805,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             plan_actions.append({"Prioridad": "MEDIA", "Tipo acción": "OPORTUNIDAD", "Origen": r.get("Origen", ""), "Grupo varietal": r.get("Grupo varietal", ""), "Variedad": r.get("Variedad", ""), "Calibre": r.get("Calibre", ""), "Kg afectados": formatear_kg(kg_libre), "Fecha límite": "", "Motivo": "Sobrante aprovechable", "Acción recomendada": accion})
     if not any(a.get("Tipo acción") == "RECOLECTAR" for a in plan_actions):
         plan_actions.append({"Prioridad": "BAJA", "Tipo acción": "RECOLECTAR", "Origen": "", "Grupo varietal": "", "Variedad": "", "Calibre": "", "Kg afectados": "0", "Fecha límite": "", "Motivo": "Sin faltantes", "Acción recomendada": "No es necesario recolectar para cubrir los pedidos seleccionados."})
+    t_sorting = perf_counter()
     plan_actions.sort(key=lambda r: (0 if r.get("Tipo acción") == "RECOLECTAR" else 1, {"ALTA": 0, "MEDIA": 1, "BAJA": 2}.get(r.get("Prioridad", "BAJA"), 9), r.get("Fecha límite", "9999-99-99"), -_to_float(r.get("Kg afectados", 0))))
+    _log_render_perf("Sorting", t_sorting, bloque="plan_actions", rows=len(plan_actions))
     plan_tbl.set_rows(plan_actions)
     plan_tbl.tree.tag_configure("accion_recolectar", background="#FFE0B2")
     plan_tbl.tree.tag_configure("accion_no_recolectar", background="#E3EDF7")
@@ -2913,12 +2939,14 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         idx = pedidos_tbl.tree.index(sel[0])
         render_candidatos(idx)
 
+    t_eventos = perf_counter()
     pedidos_tbl.tree.bind("<<TreeviewSelect>>", on_select)
     if resumen_rows:
         first = pedidos_tbl.tree.get_children()
         if first:
             pedidos_tbl.tree.selection_set(first[0])
             render_candidatos(0)
+    _log_render_perf("Eventos", t_eventos, bindings=1, seleccion_inicial=bool(resumen_rows))
     matriz_cols = ["Grupo varietal", "Variedad", "Calibre", "Categoría / calidad útil", "Origen principal", "Kg pedidos", "Kg cubiertos", "Kg faltantes", "Kg stock útil", "Kg sobrantes", "% cobertura", "Estado cobertura", "Tipo compatibilidad", "Penalización", "Riesgo compatibilidad", "Motivo compatibilidad", "Riesgo", "Acción recomendada"]
     matriz_tbl = DataTable(matriz_tab, matriz_cols)
     matriz_tbl.pack(fill="both", expand=True)
@@ -2986,4 +3014,19 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         filters_payload=filters_payload,
         refresh_command=_refrescar_simulacion_previstos,
         refresh_button_text="Refrescar simulación",
+    )
+    t_autowidth = perf_counter()
+    # No hay autosize explícito en este render; DataTable fija width=120 por columna.
+    _log_render_perf("AutoWidth", t_autowidth, filas_recorridas=0, autosize_explicito=False)
+    logger.info(
+        "[PERF Render.Total] %.2fs rows_pedidos=%s rows_sobrantes=%s rows_necesidades=%s patron_insert_uno_a_uno=%s autosize_columnas=%s sort_tras_insert=%s tags_repetidos=%s redraw_continuo=%s",
+        perf_counter() - render_total_start,
+        len(resumen_rows),
+        len(sobrantes_rows),
+        len(necesidades_rows),
+        "DataTable.set_rows usa tree.insert por fila",
+        "no detectado",
+        "no detectado",
+        "tag_configure en varios bloques",
+        "no update_idletasks/update explícito detectado",
     )
