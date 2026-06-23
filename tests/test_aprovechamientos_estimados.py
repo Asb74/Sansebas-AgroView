@@ -109,6 +109,47 @@ def _crear_loteado(path, lote_rows):
             conn.execute('INSERT INTO Lote VALUES (?, ?, ?, ?, ?, ?)', (palet, row.get("IdLote"), row.get("Neto"), row.get("Calibre"), "VAR", row.get("Categoria", "NORMAL")))
 
 
+def _crear_calidad_loteado(path):
+    with sqlite3.connect(path / "BdCalidad.sqlite") as conn:
+        conn.execute(
+            "CREATE TABLE Partidas (IdPartidaP TEXT, IdPartida0 TEXT, kg0 REAL, IdPartida1 TEXT, kg1 REAL, "
+            "IdPartida2 TEXT, kg2 REAL, IdPartida3 TEXT, kg3 REAL, IdPartida4 TEXT, kg4 REAL, "
+            "IdPartida5 TEXT, kg5 REAL, IdPartida6 TEXT, kg6 REAL, IdPartida7 TEXT, kg7 REAL, "
+            "IdPartida8 TEXT, kg8 REAL, IdPartida9 TEXT, kg9 REAL)"
+        )
+        conn.execute(
+            "CREATE TABLE DatosCalibre (IdPartida TEXT, Neto REAL, Podrido REAL, DLinea REAL, DMesa REAL, Inutil REAL, Piquera REAL, VerdeR REAL)"
+        )
+        conn.execute(
+            "INSERT INTO Partidas VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("PQUAL", "L1", 1000, "L2", 1000, "", None, "", None, "", None, "", None, "", None, "", None, "", None, "", None),
+        )
+        conn.execute("INSERT INTO DatosCalibre VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("PQUAL", 2000, 100, 120, 80, 0, 0, 0))
+
+
+def test_loteado_ajusta_calibres_con_destrio_industria_de_calidad(tmp_path, monkeypatch):
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    _crear_loteado(
+        tmp_path,
+        [
+            {"IdPalet": "P1", "IdLote": "L1", "Neto": 400, "Calibre": "2"},
+            {"IdPalet": "P2", "IdLote": "L2", "Neto": 600, "Calibre": "3"},
+        ],
+    )
+    _crear_calidad_loteado(tmp_path)
+    repo = PlanningRepository(base_dir=tmp_path)
+
+    rows = repo._get_loteado_aprovechamiento_por_boleta("B1", ["L1", "L2"], {})
+
+    assert [(r["Calibre"], r["% loteado bruto"], r["% aprovechamiento"]) for r in rows] == [
+        ("CAL 2", 40.0, 34.0),
+        ("CAL 3", 60.0, 51.0),
+    ]
+    assert {r["Destrío %"] for r in rows} == {5.0}
+    assert {r["Industria %"] for r in rows} == {10.0}
+    assert {r["Comercial %"] for r in rows} == {85.0}
+
+
 def test_normalizar_calibres_rangos_y_piezas(tmp_path, monkeypatch):
     monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
     repo = PlanningRepository(base_dir=tmp_path)
