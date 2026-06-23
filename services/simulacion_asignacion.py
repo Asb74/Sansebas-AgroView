@@ -2021,6 +2021,13 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         extra_txt = " ".join(f"{key}={value}" for key, value in extra.items())
         logger.info("[PERF Render.%s] %.2fs%s%s", bloque, perf_counter() - start, " " if extra_txt else "", extra_txt)
 
+    def _log_asignacion_perf(bloque: str, start: float, **extra) -> None:
+        secs = perf_counter() - start
+        extra_txt = " ".join(f"{key}={value}" for key, value in extra.items())
+        logger.info("[PERF Asignacion.%s] %.2fs%s%s", bloque, secs, " " if extra_txt else "", extra_txt)
+        if secs > 0.5:
+            logger.info("[PERF SlowBlock] nombre=%s tiempo=%.2fs", f"Asignacion.{bloque}", secs)
+
     t_crear_ventana = perf_counter()
     popup = sim_window if mode_refresh and sim_window is not None else tk.Toplevel(parent)
     if mode_refresh:
@@ -2169,6 +2176,8 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     cand_tbl.tree.tag_configure("riesgo_alto", background="#f8d7da")
     _log_render_perf("Tags", t_tags, configuraciones=11)
 
+    t_build_rows = perf_counter()
+    t_agrupaciones = perf_counter()
     prioridades_map = _cargar_prioridades_pedidos()
     pedidos_reales = [dict(p) for p in pedidos]
     for p in pedidos_reales:
@@ -2221,11 +2230,19 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         pedidos_detalle_horizonte = [dict(p) for p in pedidos_detalle_horizonte]
         for p in pedidos_detalle_horizonte:
             p["prioridad_manual"] = prioridades_map.get(_pedido_id_prioridad(p), int(_to_float(p.get("prioridad_manual", 0))))
+    _log_asignacion_perf(
+        "Agrupaciones",
+        t_agrupaciones,
+        rows_entrada=len(pedidos) + len(previstos_activos),
+        rows_salida=len(pedidos_operativos),
+        previstos=len(pedidos_previstos_sim),
+    )
 
     t_asignacion = perf_counter()
     simulaciones, asignaciones_simuladas, _stock_simulado = simular_asignacion_global(pedidos_operativos, get_candidatos_cb, scoring=scoring)
     asignacion_secs = perf_counter() - t_asignacion
     inventario_global_simulado = dict(_stock_simulado)
+    t_calibres = perf_counter()
     calibres_tecnicos = sorted({
         str(p.get("calibre", "")).strip()
         for p in inventario_global_simulado.values()
@@ -2236,6 +2253,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         len(inventario_global_simulado),
         calibres_tecnicos,
     )
+    _log_asignacion_perf("Calibres", t_calibres, rows_entrada=len(inventario_global_simulado), rows_salida=len(calibres_tecnicos))
     if callable(get_inventario_global_cb):
         inventario_global_simulado = construir_inventario_global_simulado(get_inventario_global_cb() or [])
         calibres_globales = sorted({
@@ -2264,7 +2282,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             kg_asignado,
             kg_libre,
         )
+    t_necesidades = perf_counter()
     necesidades_rows, need_tot = _calcular_necesidades(simulaciones)
+    _log_asignacion_perf("Necesidades", t_necesidades, rows_entrada=len(simulaciones), rows_salida=len(necesidades_rows))
     resumen_rows: list[dict] = []
     def _grupo_pedido(p: dict) -> str:
         return _norm_text(p.get("grupo_confeccion") or p.get("GrupoConfeccion") or p.get("GRUPO") or p.get("grupo")) or "DESCONOCIDO"
@@ -2272,6 +2292,8 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     def _perfil_pedido(p: dict, grupo: str) -> str:
         return _norm_text(p.get("perfil_confeccion")) or detectar_perfil_confeccion_desde_grupo(grupo) or "DESCONOCIDO"
 
+    t_pedidos_rows = perf_counter()
+    rows_pedidos_entrada = len(simulaciones) + len(pedidos_informativos)
     for simulacion in simulaciones:
         pedido = simulacion["pedido"]
         estado = simulacion["estado_global"]
@@ -2352,7 +2374,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         ptotal = ptemp + pman + priesgo
         r["Prioridad total"] = ptotal
         r["Motivo prioridad"] = _motivo_prioridad(pman, priesgo, bloque)
+    _log_asignacion_perf("Pedidos", t_pedidos_rows, rows_entrada=rows_pedidos_entrada, rows_salida=len(resumen_rows))
 
+    t_formato = perf_counter()
     total_pedidos = len(simulaciones)
     totales = sum(1 for s in simulaciones if s["estado_global"] == "TOTAL")
     parciales = sum(1 for s in simulaciones if s["estado_global"] == "PARCIAL")
@@ -2363,6 +2387,8 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     sobrantes_rows = []
     sob_total = 0.0
     sob_origenes = set()
+    t_sobrantes_rows = perf_counter()
+    rows_sobrantes_entrada = len(inventario_global_simulado)
     for pool_id, pool in inventario_global_simulado.items():
         restante = _to_float(pool.get("kg_restante_simulado", 0))
         inicial = _to_float(pool.get("kg_utiles_finales", 0))
@@ -2411,6 +2437,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         len(sobrantes_rows),
         calibres_sobrantes,
     )
+    _log_asignacion_perf("Sobrantes", t_sobrantes_rows, rows_entrada=rows_sobrantes_entrada, rows_salida=len(sobrantes_rows))
     if total_pedidos == 0:
         kg_stock_total_util = sum(_to_float(p.get("kg_fisicos", 0)) for p in inventario_global_simulado.values())
         resumen.configure(text=f"SIN NECESIDAD DE ASIGNACIÓN · Pedidos operativos: 0 · Kg stock útil: {formatear_kg(kg_stock_total_util)} · Kg asignados: {formatear_kg(0)} · Kg libres: {formatear_kg(sob_total)} · Kg faltantes: {formatear_kg(0)}")
@@ -2418,6 +2445,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     else:
         resumen.configure(text=f"Cobertura global · Pedidos: {total_pedidos} · Totales: {totales} · Parciales: {parciales} · Insuficientes: {insuficientes} · Kg asignados simulados: {formatear_kg(kg_asig_total)} · Kg faltantes simulados: {formatear_kg(kg_falt_total)} · Kg sobrantes útiles: {formatear_kg(sob_total)}")
         detalle.configure(text=f"Necesidad recolección · Nº necesidades: {need_tot['n']} · Kg útiles faltantes: {formatear_kg(need_tot['kg_falt'])} · Kg campo estimados total: {formatear_kg(need_tot['kg_campo'])} · Sobrantes · Kg útiles sobrantes: {formatear_kg(sob_total)} · Orígenes con sobrante: {len(sob_origenes)}")
+    _log_asignacion_perf("Formato", t_formato, rows_entrada=len(simulaciones) + len(inventario_global_simulado), rows_salida=len(resumen_rows) + len(sobrantes_rows) + len(necesidades_rows))
+    _log_asignacion_perf("BuildRows", t_build_rows, rows_entrada=len(pedidos) + len(previstos_activos) + len(inventario_global_simulado), rows_salida=len(resumen_rows) + len(sobrantes_rows) + len(necesidades_rows))
+    _log_asignacion_perf("Total", t_build_rows, rows_entrada=len(pedidos) + len(previstos_activos) + len(inventario_global_simulado), rows_salida=len(resumen_rows) + len(sobrantes_rows) + len(necesidades_rows))
 
     t_render = perf_counter()
     t_insert_pedidos = perf_counter()
