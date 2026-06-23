@@ -2014,6 +2014,7 @@ def construir_panel_pedidos_previstos(
     return {"refresh_rows": refresh_rows, "table": prev_tbl}
 
 def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None, pedidos_detalle_horizonte: list[dict] | None = None, cultivo_actual: str = "", campana_actual: str = "", empresa_actual: str = "", filters_payload: dict | None = None, mode_refresh: bool = False, sim_window: tk.Toplevel | None = None) -> None:
+    logger.info("[TRACE BOTON SIMULACION] entrando en abrir_simulacion_asignacion")
     popup = sim_window if mode_refresh and sim_window is not None else tk.Toplevel(parent)
     if mode_refresh:
         for child in popup.winfo_children():
@@ -2959,6 +2960,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     reglas_tbl.set_rows(reglas_rows)
 
     def _refrescar_simulacion_previstos() -> None:
+        logger.info("[TRACE BOTON SIMULACION] entrando en _refrescar_simulacion_previstos")
         logger.debug("Refrescando simulación por cambio en pedidos previstos")
         ctx = getattr(popup, "_sim_context", {})
         abrir_simulacion_asignacion(
