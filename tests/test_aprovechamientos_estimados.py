@@ -563,3 +563,39 @@ def test_loteado_bulk_fallback_lento_con_espacios(tmp_path, monkeypatch, caplog)
 
     assert [(r["Calibre"], r["% loteado bruto"], r["% aprovechamiento"]) for r in result["B1"]] == [("CAL 3", 100.0, 100.0)]
     assert "ruta=fallback_lenta" in caplog.text
+
+
+def test_loteado_calidad_bulk_filtra_ids_y_pondera_por_kg(tmp_path, monkeypatch):
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    with sqlite3.connect(tmp_path / "BdCalidad.sqlite") as conn:
+        conn.execute(
+            "CREATE TABLE Partidas (IdPartidaP TEXT, IdPartida0 TEXT, kg0 REAL, IdPartida1 TEXT, kg1 REAL, "
+            "IdPartida2 TEXT, kg2 REAL, IdPartida3 TEXT, kg3 REAL, IdPartida4 TEXT, kg4 REAL, "
+            "IdPartida5 TEXT, kg5 REAL, IdPartida6 TEXT, kg6 REAL, IdPartida7 TEXT, kg7 REAL, "
+            "IdPartida8 TEXT, kg8 REAL, IdPartida9 TEXT, kg9 REAL)"
+        )
+        conn.execute(
+            "CREATE TABLE DatosCalibre (IdPartida TEXT, Neto REAL, Podrido REAL, DLinea REAL, DMesa REAL, Inutil REAL, Piquera REAL, VerdeR REAL)"
+        )
+        empty = ["", None] * 9
+        conn.execute(
+            "INSERT INTO Partidas VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("P1", "L0", 100, *empty),
+        )
+        row = ["P2", "", None, "", None, "", None, "L3", 300, "", None, "", None, "", None, "", None, "", None, "L9", 600]
+        conn.execute("INSERT INTO Partidas VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
+        row = ["P3", "", None, "", None, "", None, "", None, "", None, "L5", None, "", None, "", None, "", None, "", None]
+        conn.execute("INSERT INTO Partidas VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row)
+        conn.execute("INSERT INTO DatosCalibre VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("P1", 1000, 100, 100, 0, 0, 0, 0))
+        conn.execute("INSERT INTO DatosCalibre VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("P2", 1000, 50, 200, 0, 0, 0, 0))
+        conn.execute("INSERT INTO DatosCalibre VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("P3", 500, 50, 50, 0, 0, 0, 0))
+        # Many unrelated rows would have been fetched by the previous implementation but
+        # must not affect the result when SQL filters through temp_ids_lote.
+        conn.execute("INSERT INTO Partidas VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", ("P4", "OTHER", 9999, *empty))
+        conn.execute("INSERT INTO DatosCalibre VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("P4", 1000, 1000, 1000, 0, 0, 0, 0))
+
+    repo = PlanningRepository(base_dir=tmp_path)
+    result = repo._get_loteado_calidad_pcts_por_boleta_bulk({"B1": {"L0", "L3"}, "B2": {"L9", "L5"}})
+
+    assert result["B1"] == {"Destrío %": 6.25, "Industria %": 17.5, "Comercial %": 76.25, "partidas_principales": 2}
+    assert result["B2"] == {"Destrío %": 7.2727, "Industria %": 15.4545, "Comercial %": 77.2728, "partidas_principales": 2}
