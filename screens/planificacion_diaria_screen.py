@@ -641,10 +641,11 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
 
     def _open_simulacion_asignacion(self) -> None:
+        logger = logging.getLogger(__name__)
+        logger.info("[TRACE BOTON SIMULACION] entrando en _open_simulacion_asignacion")
         if getattr(self, "_simulacion_en_curso", False):
             return
         t0_total = time.perf_counter()
-        logger = logging.getLogger(__name__)
         logger.info("[PERF SimularAsignacion.Start]")
         t_total = t0_total
         filtros = self._filters_payload()
