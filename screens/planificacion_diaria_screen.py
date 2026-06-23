@@ -5,6 +5,7 @@ import platform
 import subprocess
 import tempfile
 import threading
+import time
 from time import perf_counter
 from datetime import datetime, date
 from pathlib import Path
@@ -642,13 +643,15 @@ class PlanificacionDiariaScreen(ttk.Frame):
     def _open_simulacion_asignacion(self) -> None:
         if getattr(self, "_simulacion_en_curso", False):
             return
+        t0_total = time.perf_counter()
         logger = logging.getLogger(__name__)
-        t_total = perf_counter()
+        logger.info("[PERF SimularAsignacion.Start]")
+        t_total = t0_total
         filtros = self._filters_payload()
         self._ensure_cache_key(filtros)
         policy = self._build_sim_policy()
         modo_pedidos = self.pedidos_modo_var.get()
-        logger.info("[PERF SimularAsignacion.Start] filters=%s modo_pedidos=%s policy=%s", filtros, modo_pedidos, policy)
+        logger.info("[PERF SimularAsignacion.Start.Context] filters=%s modo_pedidos=%s policy=%s", filtros, modo_pedidos, policy)
         pedidos_balance_rows_all = [r for r in self.balance_rows_all if str(r.get("Tipo línea", "")).strip() == "Pedido"]
 
         cultivos = filtros.get("cultivo", [])
@@ -713,7 +716,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 )
                 logger.info("[SIM] kg_pendiente_horizonte=%.2f", kg_pendiente_horizonte)
                 marks["pedidos"] = perf_counter() - t0
-                logger.info("[PERF SimularAsignacion.Pedidos] tiempo=%.2fs rows=%s kg_pendiente=%.2f", marks["pedidos"], len(pedidos_horizonte), kg_pendiente_horizonte)
+                logger.info("[PERF SimularAsignacion.Pedidos] tiempo=%.2fs rows=%s", marks["pedidos"], len(pedidos_horizonte))
+                logger.info("[SIM] kg_pendiente_horizonte=%.2f", kg_pendiente_horizonte)
 
                 t0 = perf_counter()
                 sim_context = service.build_simulacion_context(filtros, policy=policy)
@@ -726,16 +730,19 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 boletas_campo = len({str(r.get("Boleta", r.get("boleta", "")) or "").strip() for r in stock_campo_rows if str(r.get("Boleta", r.get("boleta", "")) or "").strip()})
                 palets_almacen = len({str(r.get("IdPalet", r.get("id_palet", "")) or "").strip() for r in stock_almacen_rows if str(r.get("IdPalet", r.get("id_palet", "")) or "").strip()})
                 logger.info("[PERF SimularAsignacion.StockCampo] tiempo=%.2fs rows=%s boletas=%s", context_perf.get("stock_campo_secs", 0.0), len(stock_campo_rows), boletas_campo)
-                logger.info("[PERF SimularAsignacion.StockAlmacen] tiempo=%.2fs rows=%s palets=%s", context_perf.get("stock_almacen_detalle_secs", 0.0), len(stock_almacen_rows), palets_almacen)
+                logger.info("[PERF SimularAsignacion.StockAlmacen] tiempo=%.2fs rows=%s", context_perf.get("stock_almacen_detalle_secs", 0.0), len(stock_almacen_rows))
+                logger.info("[SIM] palets_almacen=%s", palets_almacen)
+                logger.info("[PERF SimularAsignacion.SimContext] tiempo=%.2fs", marks["sim_context"])
                 logger.info(
-                    "[PERF SimularAsignacion.SimContext] tiempo=%.2fs keys=%s campo_real_rows=%s stock_almacen_rows=%s detalle_index=%s",
-                    marks["sim_context"], len(sim_context), len(campo_real_rows), len(stock_almacen_rows), context_perf.get("detalle_index_keys", len(detalle_index.get("exact", {}))),
+                    "[SIM] sim_context_keys=%s campo_real_rows=%s stock_almacen_rows=%s detalle_index=%s",
+                    len(sim_context), len(campo_real_rows), len(stock_almacen_rows), context_perf.get("detalle_index_keys", len(detalle_index.get("exact", {}))),
                 )
 
                 t0 = perf_counter()
                 inventario_global = service.build_inventario_operativo_from_context(sim_context)
                 marks["inventario"] = perf_counter() - t0
-                logger.info("[PERF SimularAsignacion.InventarioOperativo] tiempo=%.2fs rows=%s campo_rows=%s almacen_rows=%s", marks["inventario"], len(inventario_global), len(campo_real_rows), len(stock_almacen_rows))
+                logger.info("[PERF SimularAsignacion.InventarioOperativo] tiempo=%.2fs rows=%s", marks["inventario"], len(inventario_global))
+                logger.info("[SIM] inventario_campo_rows=%s inventario_almacen_rows=%s", len(campo_real_rows), len(stock_almacen_rows))
 
                 if not pedidos_calculo and not inventario_global:
                     result = {"empty": True}
@@ -754,11 +761,13 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 media_pedido = marks["pools"] / len(pedidos_calculo) if pedidos_calculo else 0.0
                 logger.info("[SIM] candidatos_calculados_para=%s pedidos", len(pedidos_calculo))
                 logger.info("[PERF SimPools] pedidos=%s total=%.2fs media_por_pedido=%.2fs", len(pedidos_calculo), marks["pools"], media_pedido)
-                logger.info("[PERF SimularAsignacion.Candidatos] tiempo=%.2fs pedidos=%s candidatos_total=%s candidatos_media=%.2f candidatos_max=%s", marks["pools"], len(pedidos_calculo), candidatos_total, candidatos_media, candidatos_max)
+                logger.info("[PERF SimularAsignacion.Candidatos] tiempo=%.2fs pedidos=%s candidatos=%s", marks["pools"], len(pedidos_calculo), candidatos_total)
+                logger.info("[SIM] candidatos_media=%.2f candidatos_max=%s", candidatos_media, candidatos_max)
 
                 calibres_distintos = len({str(r.get("Calibre stock", r.get("calibre", r.get("Calibre", ""))) or "").strip() for r in inventario_global if str(r.get("Calibre stock", r.get("calibre", r.get("Calibre", ""))) or "").strip()})
                 variedades_distintas = len({str(r.get("Variedad stock", r.get("variedad", r.get("Variedad", ""))) or "").strip() for r in inventario_global if str(r.get("Variedad stock", r.get("variedad", r.get("Variedad", ""))) or "").strip()})
-                logger.info("[COUNT SimularAsignacion] pedidos=%s stock_campo_rows=%s boletas_campo=%s stock_almacen_rows=%s inventario_rows=%s calibres_distintos=%s variedades_distintas=%s", len(pedidos_calculo), len(stock_campo_rows), boletas_campo, len(stock_almacen_rows), len(inventario_global), calibres_distintos, variedades_distintas)
+                logger.info("[COUNT SimularAsignacion] pedidos=%s stock_campo=%s stock_almacen=%s inventario=%s boletas=%s", len(pedidos_calculo), len(stock_campo_rows), len(stock_almacen_rows), len(inventario_global), boletas_campo)
+                logger.info("[SIM] calibres_distintos=%s variedades_distintas=%s", calibres_distintos, variedades_distintas)
 
                 result = {
                     "empty": False,
@@ -832,9 +841,9 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 filters_payload=result["filters_payload"],
             )
             render_secs = perf_counter() - t_render
-            total_secs = perf_counter() - result.get("t_total_start", t_render)
-            logger.info("[PERF SimularAsignacion.Render] tiempo=%.2fs rows_treeview=%s", render_secs, len(result.get("pedidos", [])))
-            logger.info("[PERF SimularAsignacion.Total] tiempo_total=%.2fs pedidos=%s stock_total=%s candidatos_total=%s", total_secs, len(result.get("pedidos", [])), result.get("stock_total", 0), result.get("candidatos_total", 0))
+            logger.info("[PERF SimularAsignacion.Render] tiempo=%.2fs rows=%s", render_secs, len(result.get("pedidos", [])))
+            logger.info("[PERF SimularAsignacion.Total] tiempo=%.2fs", time.perf_counter() - t0_total)
+            logger.info("[SIM] total_pedidos=%s stock_total=%s candidatos_total=%s", len(result.get("pedidos", [])), result.get("stock_total", 0), result.get("candidatos_total", 0))
 
         threading.Thread(target=worker, name="SimularAsignacionWorker", daemon=True).start()
 
