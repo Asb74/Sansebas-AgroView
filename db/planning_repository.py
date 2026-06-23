@@ -1343,6 +1343,74 @@ class PlanningRepository:
             logger.warning("No se pudo consultar destrío/industria de volcado: %s", exc)
         return out
 
+    def _get_loteado_calidad_pcts_por_id_lotes(self, id_lotes: list[str]) -> dict[str, float] | None:
+        calidad_path = self._db_path(DB_CALIDAD)
+        ids_lote = {str(v or "").strip() for v in id_lotes if str(v or "").strip()}
+        if not ids_lote or not calidad_path.exists():
+            return None
+        try:
+            with sqlite3.connect(calidad_path) as conn:
+                conn.row_factory = sqlite3.Row
+                dc_table = self._find_table(conn, ["DatosCalibre", "datoscalibre"])
+                p_table = self._find_table(conn, ["Partidas", "partidas"])
+                if not dc_table or not p_table:
+                    return None
+                dc_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{dc_table}")').fetchall()]
+                p_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{p_table}")').fetchall()]
+                id_dc = self._find_column(dc_cols, ["IdPartida"])
+                neto_col = self._find_column(dc_cols, ["Neto"])
+                podrido_col = self._find_column(dc_cols, ["Podrido"])
+                industria_cols = [self._find_column(dc_cols, [name]) for name in ("DLinea", "DMesa", "Inutil", "Piquera", "VerdeR")]
+                idp_col = self._find_column(p_cols, ["IdPartidaP"])
+                if not id_dc or not neto_col or not podrido_col or not idp_col:
+                    return None
+
+                total_peso = 0.0
+                destrio_pond = 0.0
+                industria_pond = 0.0
+                partidas_principales: set[str] = set()
+                for idx in range(10):
+                    inc_col = self._find_column(p_cols, [f"IdPartida{idx}"])
+                    kg_col = self._find_column(p_cols, [f"kg{idx}", f"Kg{idx}", f"KG{idx}"])
+                    if not inc_col:
+                        continue
+                    kg_expr = f'p."{kg_col}"' if kg_col else "NULL"
+                    sql = (
+                        f'SELECT p."{inc_col}" AS Incluida, p."{idp_col}" AS IdPartidaP, {kg_expr} AS KgIncluida, dc.* '
+                        f'FROM "{p_table}" p JOIN "{dc_table}" dc '
+                        f'ON TRIM(CAST(p."{idp_col}" AS TEXT)) = TRIM(CAST(dc."{id_dc}" AS TEXT)) '
+                        f'WHERE TRIM(CAST(p."{inc_col}" AS TEXT)) <> ""'
+                    )
+                    for row in conn.execute(sql).fetchall():
+                        if str(row["Incluida"] or "").strip() not in ids_lote:
+                            continue
+                        neto = float(row[neto_col] or 0)
+                        if neto <= 0:
+                            continue
+                        peso = float(row["KgIncluida"] or 0) or neto
+                        if peso <= 0:
+                            continue
+                        destrio_pct = float(row[podrido_col] or 0) / neto * 100
+                        industria = sum(float(row[c] or 0) for c in industria_cols if c)
+                        industria_pct = industria / neto * 100
+                        total_peso += peso
+                        destrio_pond += destrio_pct * peso
+                        industria_pond += industria_pct * peso
+                        partidas_principales.add(str(row["IdPartidaP"] or "").strip())
+                if total_peso <= 0:
+                    return None
+                destrio_pct = round(destrio_pond / total_peso, 4)
+                industria_pct = round(industria_pond / total_peso, 4)
+                return {
+                    "Destrío %": destrio_pct,
+                    "Industria %": industria_pct,
+                    "Comercial %": round(max(0.0, 100.0 - destrio_pct - industria_pct), 4),
+                    "partidas_principales": len(partidas_principales),
+                }
+        except Exception as exc:
+            logger.warning("No se pudo consultar calidad de loteado: %s", exc)
+        return None
+
     def _get_loteado_aprovechamiento_por_boleta(self, boleta: str, albaranes_boleta: list[str], filters: dict) -> list[dict[str, Any]]:
         start = time.perf_counter()
         if not boleta or not albaranes_boleta or not self.db_loteado.exists():
@@ -1408,15 +1476,28 @@ class PlanningRepository:
         logger.debug("APROVECHAMIENTO Loteado boleta=%s albaranes=%s filas_lote=%s tiempo=%.2fs", boleta, len(albaranes_boleta), len(lote_rows), elapsed)
         if total <= 0:
             return []
+        calidad_pcts = self._get_loteado_calidad_pcts_por_id_lotes([key[1] for key in seen_rows])
+        if calidad_pcts:
+            destrio_pct = float(calidad_pcts["Destrío %"])
+            industria_pct = float(calidad_pcts["Industria %"])
+            comercial_pct = float(calidad_pcts["Comercial %"])
+            logger.info("[LOTEADO APROV] boleta=%s id_lotes=%s partidas_principales=%s destrio=%s industria=%s comercial=%s", boleta, len({key[1] for key in seen_rows}), calidad_pcts.get("partidas_principales", 0), destrio_pct, industria_pct, comercial_pct)
+        else:
+            destrio_pct = None
+            industria_pct = None
+            comercial_pct = 100.0
+            logger.info("[LOTEADO APROV] boleta=%s sin DatosCalibre asociado; comercial=100", boleta)
         out = []
         distribucion_pct: dict[str, float] = {}
         for calibre, categoria in sorted(grouped, key=lambda x: (int(x[0].replace("CAL ", "")) if str(x[0]).startswith("CAL ") else 99, x[1])):
             kg_cal = grouped[(calibre, categoria)]
             if kg_cal <= 0:
                 continue
-            pct = round(kg_cal / total * 100, 4)
+            pct_bruto = round(kg_cal / total * 100, 4)
+            pct = round(comercial_pct * pct_bruto / 100, 4)
             distribucion_pct[f"{calibre}|{categoria}"] = pct
-            out.append({"Origen": "CAMPO_REAL_LOTEADO", "Calibre": calibre, "Categoría": categoria, "% aprovechamiento": pct, "Origen aprovechamiento": "LOTEADO", "Aviso": f"Aprovechamiento calculado desde loteado boleta {boleta}".strip(), "Explicación": "Distribución porcentual por calibre calculada desde netos loteados; los kilos se aplican después a cada partida"})
+            row = {"Origen": "CAMPO_REAL_LOTEADO", "Calibre": calibre, "Categoría": categoria, "% aprovechamiento": pct, "% loteado bruto": pct_bruto, "Destrío %": destrio_pct, "Industria %": industria_pct, "Comercial %": round(comercial_pct, 4), f"{calibre} %": pct, "Origen aprovechamiento": "LOTEADO", "Aviso": f"Aprovechamiento calculado desde loteado boleta {boleta}".strip(), "Explicación": "Distribución porcentual por calibre calculada desde netos loteados y ajustada por destrío/industria de calidad cuando hay volcado asociado; los kilos se aplican después a cada partida"}
+            out.append(row)
         logger.debug("APROVECHAMIENTO Loteado boleta=%s total_kg_loteado=%s distribucion_pct=%s", boleta, round(total, 2), distribucion_pct)
         return out
 
