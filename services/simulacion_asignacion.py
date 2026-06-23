@@ -20,7 +20,7 @@ from services.pedidos_previstos_service import (
     pedido_previsto_a_demanda,
     filtrar_pedidos_previstos,
 )
-from db.planning_repository import PlanningRepository
+from db.planning_repository import PlanningRepository, get_calibres_perf_counters, reset_calibres_perf_counters
 from widgets.data_table import DataTable
 from widgets.date_picker import DatePickerPopup
 
@@ -1007,6 +1007,14 @@ def simular_asignacion_pedido(pedido: dict, candidatos: list[dict], scoring: dic
 
 
 def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None) -> tuple[list[dict], list[dict], dict]:
+    t_total_global = perf_counter()
+    reset_calibres_perf_counters()
+    count_pedidos = 0
+    count_candidatos_raw = 0
+    count_candidatos_evaluados = 0
+    count_subcandidatos = 0
+    count_asignaciones = 0
+    t_bloque = perf_counter()
     repo_calibre = PlanningRepository()
     calibre_map = repo_calibre.get_mcalibres_map()
     hoy = date.today()
@@ -1034,13 +1042,23 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
             int(_to_float(p.get("Línea", p.get("linea", 0)))),
         )
     )
+    logger.info(
+        "[PERF BuildRows.Bloque1PrepararPedidos] tiempo=%.3fs pedidos_entrada=%s pedidos_meta=%s",
+        perf_counter() - t_bloque,
+        len(pedidos),
+        len(pedidos_meta),
+    )
 
+    t_bloque = perf_counter()
     stock_simulado: dict[str, dict] = {}
     asignaciones: list[dict] = []
     simulaciones: list[dict] = []
     reglas_compat = cargar_reglas_compatibilidad_operativa()
+    logger.info("[PERF BuildRows.Bloque2ReglasCompatibilidad] tiempo=%.3fs reglas=%s", perf_counter() - t_bloque, sum(len(v) for v in reglas_compat.values() if isinstance(v, list)))
 
     for pedido in pedidos_meta:
+        t_pedido = perf_counter()
+        count_pedidos += 1
         kg_necesario = _kg_pendiente_linea(pedido)
         if kg_necesario <= 0:
             logger.debug(
@@ -1062,7 +1080,10 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
                 "candidatos": [],
             })
             continue
+        t_get_candidatos = perf_counter()
         candidatos_raw = get_candidatos_cb(pedido) or []
+        get_candidatos_secs = perf_counter() - t_get_candidatos
+        count_candidatos_raw += len(candidatos_raw)
         pedido_id = pedido.get("IdPedidoLora", pedido.get("id_pedido", ""))
         variedad = pedido.get("Variedad", pedido.get("variedad", ""))
         grupo_varietal = pedido.get("Grupo varietal", pedido.get("grupo_varietal", ""))
@@ -1088,7 +1109,10 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
                 pedido_id, calibre, kg_necesario, len(candidatos_raw), sum_kg_candidatos,
             )
         candidatos: list[dict] = []
+        t_eval_candidatos = perf_counter()
+        subcandidatos_pedido = 0
         for cand in deepcopy(candidatos_raw):
+            count_candidatos_evaluados += 1
             score, flex_txt = calcular_score_candidato(cand, pedido=pedido, scoring=scoring)
             utilidad = calcular_utilidad_operativa(pedido, cand)
             cand.update(utilidad)
@@ -1170,6 +1194,8 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
                 subcands = [dict(cand, subpool_calidad="MIXTO", categoria_util=cand.get("Categoría", ""), kg_utiles_finales=_to_float(cand.get("kg_utiles_estimados", 0)))]
 
             for sc in subcands:
+                count_subcandidatos += 1
+                subcandidatos_pedido += 1
                 kg_base = _to_float(sc.get("kg_utiles_finales", 0))
                 kg_final = kg_base * factor_calibre if SIMULACION_USAR_FACTOR_CALIBRE_AGRUPADO else kg_base
                 sc["factor_calibre"] = factor_calibre
@@ -1193,17 +1219,21 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
                         "subpool_calidad": sc.get("subpool_calidad", "MIXTO"),
                     }
                 candidatos.append(sc)
+        eval_candidatos_secs = perf_counter() - t_eval_candidatos
+        t_orden_cobertura = perf_counter()
         candidatos = ordenar_candidatos_simulacion(candidatos)
         acumulado_potencial = 0.0
         for cand in candidatos:
             acumulado_potencial += _to_float(cand.get("kg_utiles_finales", 0))
             cand["cobertura_acumulada"] = acumulado_potencial
+        orden_cobertura_secs = perf_counter() - t_orden_cobertura
 
         kg_necesario = _kg_pendiente_linea(pedido)
         pendiente = kg_necesario
         if pendiente <= 0:
             continue
         asignado = 0.0
+        t_asignar_cobertura = perf_counter()
         for cand in candidatos:
             if pendiente <= 0:
                 break
@@ -1228,17 +1258,36 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
                     despues,
                 )
                 asignaciones.append({"pedido_id": pedido.get("IdPedidoLora", pedido.get("id_pedido", "")), "pool_id": cand["pool_id"], "kg_asignados": kg_asign, "origen": cand.get("Origen", ""), "tipo_cobertura": cand.get("Tipo cobertura", ""), "score": cand.get("score_total", 0), "riesgo": cand.get("riesgo_operativo", "")})
+                count_asignaciones += 1
                 asignaciones[-1].update({
                     "tipo_compatibilidad": cand.get("tipo_compatibilidad", ""),
                     "penalizacion_compatibilidad": cand.get("penalizacion_compatibilidad", 0),
                     "motivo_compatibilidad": cand.get("motivo_compatibilidad", ""),
                     "riesgo_compatibilidad": cand.get("riesgo_compatibilidad", ""),
                 })
+        asignar_cobertura_secs = perf_counter() - t_asignar_cobertura
 
         uso_flexible = any(_to_float(c.get("kg_asignado_simulado", 0)) > 0 and c.get("tipo_compatibilidad") == "FLEXIBLE" for c in candidatos)
         estado_global = "CUBIERTO FLEXIBLE" if (asignado >= kg_necesario and kg_necesario > 0 and uso_flexible) else ("CUBIERTO EXACTO" if asignado >= kg_necesario and kg_necesario > 0 else "PARCIAL" if asignado > 0 else "INSUFICIENTE")
         simulaciones.append({"pedido": pedido, "kg_necesario": kg_necesario, "kg_pendientes": kg_necesario, "estado": estado_global, "kg_cobertura_simulada": asignado, "kg_asignado_simulado": asignado, "kg_faltante_simulado": max(0.0, kg_necesario - asignado), "estado_global": estado_global, "kg_potencial_fisico": sum(_to_float(c.get("kg_fisicos", 0)) for c in candidatos), "kg_potencial_util": acumulado_potencial, "uso_compatibilidad_flexible": uso_flexible, "candidatos": candidatos})
+        pedido_secs = perf_counter() - t_pedido
+        if pedido_secs > 0.1:
+            logger.info(
+                "[PERF LoopPedido] pedido=%s candidatos_raw=%s candidatos_utiles=%s subcandidatos=%s tiempo=%.3fs get_candidatos=%.3fs evaluar_candidatos=%.3fs ordenar_cobertura=%.3fs asignar_cobertura=%.3fs kg_necesario=%s kg_asignado=%s",
+                pedido_id,
+                len(candidatos_raw),
+                len(candidatos),
+                subcandidatos_pedido,
+                pedido_secs,
+                get_candidatos_secs,
+                eval_candidatos_secs,
+                orden_cobertura_secs,
+                asignar_cobertura_secs,
+                kg_necesario,
+                asignado,
+            )
 
+    t_bloque = perf_counter()
     conteo_pooles: dict[str, int] = {}
     for sim in simulaciones:
         for c in sim["candidatos"]:
@@ -1246,6 +1295,42 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
     for sim in simulaciones:
         for c in sim["candidatos"]:
             c["compartido"] = "Sí" if conteo_pooles.get(c["pool_id"], 0) > 1 else "No"
+    logger.info(
+        "[PERF BuildRows.Bloque3Compartidos] tiempo=%.3fs simulaciones=%s pools_compartidos=%s",
+        perf_counter() - t_bloque,
+        len(simulaciones),
+        len(conteo_pooles),
+    )
+    calibres_perf = get_calibres_perf_counters()
+    logger.info(
+        "[COUNT Calibres] normalizaciones=%s comparaciones=%s tiempo_total=%.3fs tiempo_normalizaciones=%.3fs tiempo_comparaciones=%.3fs",
+        calibres_perf.get("normalizaciones", 0),
+        calibres_perf.get("comparaciones", 0),
+        _to_float(calibres_perf.get("tiempo_normalizaciones", 0)) + _to_float(calibres_perf.get("tiempo_comparaciones", 0)),
+        calibres_perf.get("tiempo_normalizaciones", 0),
+        calibres_perf.get("tiempo_comparaciones", 0),
+    )
+    logger.info(
+        "[PERF BuildRows.Total] tiempo=%.3fs pedidos=%s candidatos_raw=%s candidatos_evaluados=%s subcandidatos=%s asignaciones=%s simulaciones=%s stock_pools=%s",
+        perf_counter() - t_total_global,
+        count_pedidos,
+        count_candidatos_raw,
+        count_candidatos_evaluados,
+        count_subcandidatos,
+        count_asignaciones,
+        len(simulaciones),
+        len(stock_simulado),
+    )
+    logger.info(
+        "[COUNT BuildRows] pedidos=%s candidatos_raw=%s candidatos_evaluados=%s subcandidatos=%s asignaciones=%s simulaciones=%s stock_pools=%s",
+        count_pedidos,
+        count_candidatos_raw,
+        count_candidatos_evaluados,
+        count_subcandidatos,
+        count_asignaciones,
+        len(simulaciones),
+        len(stock_simulado),
+    )
     return simulaciones, asignaciones, stock_simulado
 
 
@@ -2241,6 +2326,14 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     t_asignacion = perf_counter()
     simulaciones, asignaciones_simuladas, _stock_simulado = simular_asignacion_global(pedidos_operativos, get_candidatos_cb, scoring=scoring)
     asignacion_secs = perf_counter() - t_asignacion
+    logger.info(
+        "[PERF BuildRows.BloqueAsignacionGlobal] tiempo=%.3fs pedidos_operativos=%s simulaciones=%s asignaciones=%s stock_pools=%s",
+        asignacion_secs,
+        len(pedidos_operativos),
+        len(simulaciones),
+        len(asignaciones_simuladas),
+        len(_stock_simulado),
+    )
     inventario_global_simulado = dict(_stock_simulado)
     t_calibres = perf_counter()
     calibres_tecnicos = sorted({
