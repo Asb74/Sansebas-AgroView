@@ -991,7 +991,18 @@ class PlanningRepository:
         avg_aprov = {c: sum(normalizar_numero(self._harvestsync_get_field(m, c)) for m in muestras) / len(muestras) for c in campos_aprov}
         destrio = avg_aprov.get("Destrio", avg_aprov.get("Destrío", 0.0))
         industria = avg_aprov.get("Industria", 0.0)
-        fruta_comercial = max(0.0, 100.0 - float(destrio or 0) - float(industria or 0))
+        categoria_i = avg_aprov.get("Categoria I", avg_aprov.get("Categoría I", 0.0))
+        categoria_ii = avg_aprov.get("Categoria II", avg_aprov.get("Categoría II", 0.0))
+        tiene_categoria_comercial = any(
+            self._harvestsync_get_field(m, "Categoria I") not in (None, "")
+            or self._harvestsync_get_field(m, "Categoría I") not in (None, "")
+            or self._harvestsync_get_field(m, "Categoria II") not in (None, "")
+            or self._harvestsync_get_field(m, "Categoría II") not in (None, "")
+            for m in muestras
+        )
+        fruta_comercial = max(0.0, float(categoria_i or 0) + float(categoria_ii or 0))
+        if not tiene_categoria_comercial:
+            fruta_comercial = max(0.0, 100.0 - float(destrio or 0) - float(industria or 0))
         avg_cal = {c: sum(normalizar_numero(self._harvestsync_get_field(m, c)) for m in muestras) / len(muestras) for c in campos_calibre}
         total_cal = sum(v for c, v in avg_cal.items() if v > 0 and self.expandir_grupo_calibre_harvestsync(c))
         if fruta_comercial <= 0 or total_cal <= 0:
@@ -1004,7 +1015,7 @@ class PlanningRepository:
                 continue
             pct_grupo = fruta_comercial * max(valor, 0.0) / total_cal
             for calibre, pct_puro in self._repartir_kg_loteado_por_calibres(pct_grupo, calibres).items():
-                rows.append({"Origen": "CAMPO_ESTIMADO_HARVESTSYNC", "Calibre": calibre, "Categoría": "NORMAL", "% aprovechamiento": round(pct_puro, 4), "Destrío %": round(float(destrio or 0), 4), "Industria %": round(float(industria or 0), 4), "Origen aprovechamiento": "HARVESTSYNC", "Aviso": f"Aprovechamiento HarvestSync boleta {boleta}".strip(), "Explicación": "Estimación media HarvestSync últimos 3 días"})
+                rows.append({"Origen": "CAMPO_ESTIMADO_HARVESTSYNC", "Calibre": calibre, "Categoría": "NORMAL", "% aprovechamiento": round(pct_puro, 4), "Destrío %": round(float(destrio or 0), 4), "Industria %": round(float(industria or 0), 4), "Comercial %": round(fruta_comercial, 4), "Origen aprovechamiento": "HARVESTSYNC", "Aviso": f"Aprovechamiento HarvestSync boleta {boleta}".strip(), "Explicación": "Estimación media HarvestSync últimos 3 días"})
         logger.debug("HARVESTSYNC aplicado boleta=%s fruta_comercial=%s calibres=%s", boleta, round(fruta_comercial, 4), len(rows))
         self._harvestsync_cache[cache_key] = rows
         return [dict(r) for r in rows]
@@ -1060,6 +1071,7 @@ class PlanningRepository:
 
         out: list[dict[str, Any]] = []
         sin_datos = 0
+        detalle_stats = {"pesosfres_partidas": 0, "loteado_con_volcado": 0, "loteado_sin_volcado": 0, "harvestsync_partidas": 0, "harvestsync_comercial_sum": 0.0, "manual_partidas": 0}
         used: set[str] = set()
         for partida in stock_campo_rows:
             boleta = str(partida.get("Boleta", "") or "").strip()
@@ -1091,6 +1103,9 @@ class PlanningRepository:
                     kg_estimado = round(kg_campo * pct / 100, 2)
                 if kg_estimado <= 0:
                     continue
+                calibre_row = str(row.get("Calibre", "") or "").strip().upper()
+                if calibre_row.startswith("CAL "):
+                    row[f"{calibre_row} %"] = round(pct, 4)
                 row.update({
                     "Tipo stock": "CAMPO",
                     "Cultivo": partida.get("Cultivo", row.get("Cultivo", "")),
@@ -1106,6 +1121,21 @@ class PlanningRepository:
                 logger.debug("APROVECHAMIENTO reparto boleta=%s calibre=%s kg=%s pct=%s", boleta, row.get("Calibre"), kg_estimado, pct)
                 partida_rows.append(row)
             kg_estimado_total = round(sum(float(r.get("Kg disponibles", 0) or 0) for r in partida_rows), 2)
+            origenes_partida = {str(r.get("Origen aprovechamiento", "")).upper() for r in partida_rows}
+            if "REAL_PESOSFRES" in origenes_partida:
+                detalle_stats["pesosfres_partidas"] += 1
+            if "LOTEADO" in origenes_partida:
+                if any(r.get("Destrío %") is not None or r.get("Industria %") is not None for r in partida_rows):
+                    detalle_stats["loteado_con_volcado"] += 1
+                else:
+                    detalle_stats["loteado_sin_volcado"] += 1
+            if "HARVESTSYNC" in origenes_partida:
+                detalle_stats["harvestsync_partidas"] += 1
+                comerciales = [float(r.get("Comercial %", 0) or 0) for r in partida_rows if r.get("Comercial %") is not None]
+                if comerciales:
+                    detalle_stats["harvestsync_comercial_sum"] += sum(comerciales) / len(comerciales)
+            if "ESTIMADO_MANUAL" in origenes_partida:
+                detalle_stats["manual_partidas"] += 1
             if kg_campo > 0 and kg_estimado_total > kg_campo * 1.01:
                 logger.error("Aprovechamiento incoherente: boleta=%s kg_partida=%s kg_estimado=%s", boleta, kg_campo, kg_estimado_total)
                 if kg_estimado_total > 0:
@@ -1115,6 +1145,12 @@ class PlanningRepository:
                     kg_estimado_total = round(sum(float(r.get("Kg disponibles", 0) or 0) for r in partida_rows), 2)
             logger.debug("APROVECHAMIENTO aplicado boleta=%s kg_partida=%s pct_total=%s kg_estimado_total=%s", boleta, kg_campo, round(min(pct_total, 100.0), 4), kg_estimado_total)
             out.extend(partida_rows)
+        hs_filas = detalle_stats["harvestsync_partidas"]
+        hs_media = (detalle_stats["harvestsync_comercial_sum"] / hs_filas) if hs_filas else 0.0
+        logger.info("[APROV DETALLE] PesosFres filas con destrio/industria=%s", detalle_stats["pesosfres_partidas"])
+        logger.info("[APROV DETALLE] Loteado partidas con volcado=%s sin_volcado=%s", detalle_stats["loteado_con_volcado"], detalle_stats["loteado_sin_volcado"])
+        logger.info("[APROV DETALLE] HarvestSync filas=%s comercial_pct_medio=%.1f", hs_filas, hs_media)
+        logger.info("[APROV DETALLE] Manual filas=%s", detalle_stats["manual_partidas"])
         return out, sin_datos
 
     def _get_pesosfres_albaranes_por_boleta(self, boletas: list[str], filters: dict) -> dict[str, list[str]]:
@@ -1192,6 +1228,9 @@ class PlanningRepository:
             neto_col = self._find_column(cols, ["Neto"])
             neto_partida_col = self._find_column(cols, ["NetoPartida"])
             categoria_col = self._find_column(cols, ["Categoria", "Categoría"])
+            podrido_col = self._find_column(cols, ["Podrido"])
+            deslinea_col = self._find_column(cols, ["DesLinea"])
+            desmesa_col = self._find_column(cols, ["DesMesa"])
             cal_cols = [(f"CAL {i}", self._find_column(cols, [f"Cal{i}"])) for i in range(12)]
             cal_cols = [(label, col) for label, col in cal_cols if col]
             if not boleta_col or not cal_cols:
@@ -1223,6 +1262,8 @@ class PlanningRepository:
         sum_cal: dict[str, float] = defaultdict(float)
         total_valido = 0.0
         categoria = ""
+        podrido_total = 0.0
+        industria_total = 0.0
         validas = 0
         ignoradas = 0
         for row in rows:
@@ -1233,6 +1274,8 @@ class PlanningRepository:
                 continue
             validas += 1
             total_valido += kg_total
+            podrido_total += float(row.get(podrido_col, 0) or 0) if podrido_col else 0.0
+            industria_total += (float(row.get(deslinea_col, 0) or 0) if deslinea_col else 0.0) + (float(row.get(desmesa_col, 0) or 0) if desmesa_col else 0.0)
             if not categoria and categoria_col:
                 categoria = str(row.get(categoria_col, "") or "").strip()
             for label, kg in cal_values.items():
@@ -1242,6 +1285,9 @@ class PlanningRepository:
             logger.debug("APROVECHAMIENTO PesosFres boleta=%s entregas_validas=%s entregas_ignoradas=%s total_kg_valido=0 distribucion_pct={}", boleta, validas, ignoradas)
             return []
         out = []
+        destrio_pct = round(podrido_total / total_valido * 100, 4) if total_valido > 0 else 0.0
+        industria_pct = round(industria_total / total_valido * 100, 4) if total_valido > 0 else 0.0
+        comercial_pct = round(sum(sum_cal.values()) / total_valido * 100, 4) if total_valido > 0 else 0.0
         distribucion_pct: dict[str, float] = {}
         for calibre in sorted(sum_cal, key=lambda x: int(x.replace("CAL ", ""))):
             pct = sum_cal[calibre] / total_valido * 100
@@ -1249,8 +1295,52 @@ class PlanningRepository:
                 continue
             pct_redondeado = round(pct, 4)
             distribucion_pct[calibre] = pct_redondeado
-            out.append({"Origen": "CAMPO_REAL_PESOSFRES", "Calibre": calibre, "Categoría": categoria or "NORMAL", "% aprovechamiento": pct_redondeado, "Origen aprovechamiento": "REAL_PESOSFRES", "Aviso": f"Aprovechamiento real PesosFres boleta {boleta}".strip(), "Explicación": "Distribución porcentual media por calibre calculada desde entregas válidas de PesosFres; los kilos se aplican después a cada partida"})
+            out.append({"Origen": "CAMPO_REAL_PESOSFRES", "Calibre": calibre, "Categoría": categoria or "NORMAL", "% aprovechamiento": pct_redondeado, "Destrío %": destrio_pct, "Industria %": industria_pct, "Comercial %": comercial_pct, f"{calibre} %": pct_redondeado, "Origen aprovechamiento": "REAL_PESOSFRES", "Aviso": f"Aprovechamiento real PesosFres boleta {boleta}".strip(), "Explicación": "Distribución porcentual media por calibre calculada desde entregas válidas de PesosFres; los kilos se aplican después a cada partida"})
         logger.debug("APROVECHAMIENTO PesosFres boleta=%s entregas_validas=%s entregas_ignoradas=%s total_kg_valido=%s distribucion_pct=%s", boleta, validas, ignoradas, round(total_valido, 2), distribucion_pct)
+        return out
+
+    def _get_volcado_pcts_por_partida_incluida(self, ids_partida: list[str]) -> dict[str, dict[str, float]]:
+        calidad_path = self._db_path(DB_CALIDAD)
+        ids = [str(v or "").strip() for v in ids_partida if str(v or "").strip()]
+        if not ids or not calidad_path.exists():
+            return {}
+        out: dict[str, dict[str, float]] = {}
+        try:
+            with sqlite3.connect(calidad_path) as conn:
+                conn.row_factory = sqlite3.Row
+                dc_table = self._find_table(conn, ["DatosCalibre", "datoscalibre"])
+                p_table = self._find_table(conn, ["Partidas", "partidas"])
+                if not dc_table or not p_table:
+                    return {}
+                dc_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{dc_table}")').fetchall()]
+                p_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{p_table}")').fetchall()]
+                id_dc = self._find_column(dc_cols, ["IdPartida"])
+                neto_col = self._find_column(dc_cols, ["Neto"])
+                podrido_col = self._find_column(dc_cols, ["Podrido"])
+                industria_cols = [self._find_column(dc_cols, [name]) for name in ("DLinea", "DMesa", "Inutil", "Piquera", "VerdeR")]
+                idp_col = self._find_column(p_cols, ["IdPartidaP"])
+                if not id_dc or not neto_col or not podrido_col or not idp_col:
+                    return {}
+                ids_set = set(ids)
+                for idx in range(10):
+                    inc_col = self._find_column(p_cols, [f"IdPartida{idx}"])
+                    if not inc_col:
+                        continue
+                    sql = f'SELECT p."{inc_col}" AS Incluida, dc.* FROM "{p_table}" p JOIN "{dc_table}" dc ON TRIM(CAST(p."{idp_col}" AS TEXT)) = TRIM(CAST(dc."{id_dc}" AS TEXT)) WHERE TRIM(CAST(p."{inc_col}" AS TEXT)) <> ""'
+                    for row in conn.execute(sql).fetchall():
+                        incluida = str(row["Incluida"] or "").strip()
+                        if incluida not in ids_set:
+                            continue
+                        neto = float(row[neto_col] or 0)
+                        if neto <= 0:
+                            continue
+                        industria = sum(float(row[c] or 0) for c in industria_cols if c)
+                        out[incluida] = {
+                            "Destrío %": round(float(row[podrido_col] or 0) / neto * 100, 4),
+                            "Industria %": round(industria / neto * 100, 4),
+                        }
+        except Exception as exc:
+            logger.warning("No se pudo consultar destrío/industria de volcado: %s", exc)
         return out
 
     def _get_loteado_aprovechamiento_por_boleta(self, boleta: str, albaranes_boleta: list[str], filters: dict) -> list[dict[str, Any]]:
@@ -1525,6 +1615,8 @@ class PlanningRepository:
                         if albaran and boleta in pendientes and albaran not in albaran_to_boleta:
                             albaran_to_boleta[albaran] = boleta
             logger.debug("PesosFres albaranes encontrados=%s", len(albaran_to_boleta))
+            volcado_pcts_por_albaran = self._get_volcado_pcts_por_partida_incluida(list(albaran_to_boleta))
+            volcado_pcts_por_boleta = {albaran_to_boleta[k]: v for k, v in volcado_pcts_por_albaran.items() if k in albaran_to_boleta}
             if not albaran_to_boleta:
                 log_loteado_exit(0)
                 return [], len(pendientes)
@@ -1685,7 +1777,9 @@ class PlanningRepository:
                 continue
             for (b, calibre, categoria), kg_cal in grouped.items():
                 if b == boleta and kg_cal > 0:
-                    out.append({"Origen": "CAMPO_REAL_LOTEADO", "Tipo stock": "CAMPO", "Cultivo": partida.get("Cultivo", ""), "Campaña": partida.get("Campaña", partida.get("Campana", "")), "Grupo varietal": partida.get("Grupo varietal", ""), "Variedad": partida.get("Variedad", ""), "Calibre": calibre, "Categoría": categoria, "Kg disponibles": round(kg_cal, 2), "Kg campo origen": kg_campo, "Boleta": boleta, "Socio": partida.get("Socio", ""), "Fecha carga": partida.get("Fecha carga", partida.get("FechaCarga", "")), "% aprovechamiento": round((kg_cal / kg_campo * 100) if kg_campo > 0 else 0, 4), "Origen aprovechamiento": "LOTEADO", "Aviso": f"Aprovechamiento calculado desde loteado boleta {boleta}".strip(), "Explicación": "Kg estimados por calibre calculados desde netos loteados vinculados a PesosFres"})
+                    row_out = {"Origen": "CAMPO_REAL_LOTEADO", "Tipo stock": "CAMPO", "Cultivo": partida.get("Cultivo", ""), "Campaña": partida.get("Campaña", partida.get("Campana", "")), "Grupo varietal": partida.get("Grupo varietal", ""), "Variedad": partida.get("Variedad", ""), "Calibre": calibre, "Categoría": categoria, "Kg disponibles": round(kg_cal, 2), "Kg campo origen": kg_campo, "Boleta": boleta, "Socio": partida.get("Socio", ""), "Fecha carga": partida.get("Fecha carga", partida.get("FechaCarga", "")), "% aprovechamiento": round((kg_cal / kg_campo * 100) if kg_campo > 0 else 0, 4), "Origen aprovechamiento": "LOTEADO", "Aviso": f"Aprovechamiento calculado desde loteado boleta {boleta}".strip(), "Explicación": "Kg estimados por calibre calculados desde netos loteados vinculados a PesosFres"}
+                    row_out.update(volcado_pcts_por_boleta.get(boleta, {}))
+                    out.append(row_out)
         log_loteado_exit()
         return out, len(pendientes - {str(r.get("Boleta", "") or "").strip() for r in out})
 
