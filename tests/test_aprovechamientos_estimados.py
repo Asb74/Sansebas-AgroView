@@ -446,3 +446,71 @@ def test_pesosfres_historicos_generan_una_distribucion_y_se_aplican_a_cada_parti
     assert [r["Kg disponibles"] for r in rows] == [300.0, 1200.0]
     assert {r["Kg campo origen"] for r in rows} == {1500}
     assert round(sum(float(r["Kg disponibles"]) for r in rows), 2) == 1500
+
+
+def test_loteado_bulk_varias_boletas_varios_lotes_aplica_calidad_por_boleta(tmp_path, monkeypatch):
+    monkeypatch.setattr(connection, "APP_DB_PATH", tmp_path / "app_config.sqlite")
+    _crear_pesosfres(
+        tmp_path,
+        [
+            {"Boleta": "B1", "AlbaranDef": "A1", "Cal1": 1000},
+            {"Boleta": "B1", "AlbaranDef": "A2", "Cal1": 1000},
+            {"Boleta": "B2", "AlbaranDef": "A3", "Cal1": 1000},
+            {"Boleta": "B2", "AlbaranDef": "A4", "Cal1": 1000},
+        ],
+    )
+    _crear_loteado(
+        tmp_path,
+        [
+            {"IdPalet": "P1", "IdLote": "A1", "Neto": 300, "Calibre": "1"},
+            {"IdPalet": "P2", "IdLote": "A2", "Neto": 700, "Calibre": "2"},
+            {"IdPalet": "P3", "IdLote": "A3", "Neto": 250, "Calibre": "3"},
+            {"IdPalet": "P4", "IdLote": "A4", "Neto": 750, "Calibre": "4"},
+        ],
+    )
+    with sqlite3.connect(tmp_path / "BdCalidad.sqlite") as conn:
+        conn.execute(
+            "CREATE TABLE Partidas (IdPartidaP TEXT, IdPartida0 TEXT, kg0 REAL, IdPartida1 TEXT, kg1 REAL, "
+            "IdPartida2 TEXT, kg2 REAL, IdPartida3 TEXT, kg3 REAL, IdPartida4 TEXT, kg4 REAL, "
+            "IdPartida5 TEXT, kg5 REAL, IdPartida6 TEXT, kg6 REAL, IdPartida7 TEXT, kg7 REAL, "
+            "IdPartida8 TEXT, kg8 REAL, IdPartida9 TEXT, kg9 REAL)"
+        )
+        conn.execute("CREATE TABLE DatosCalibre (IdPartida TEXT, Neto REAL, Podrido REAL, DLinea REAL, DMesa REAL, Inutil REAL, Piquera REAL, VerdeR REAL)")
+        conn.execute(
+            "INSERT INTO Partidas VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("Q1", "A1", 300, "A2", 700, "", None, "", None, "", None, "", None, "", None, "", None, "", None, "", None),
+        )
+        conn.execute(
+            "INSERT INTO Partidas VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("Q2", "A3", 250, "A4", 750, "", None, "", None, "", None, "", None, "", None, "", None, "", None, "", None),
+        )
+        conn.execute("INSERT INTO DatosCalibre VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("Q1", 1000, 100, 100, 0, 0, 0, 0))
+        conn.execute("INSERT INTO DatosCalibre VALUES (?, ?, ?, ?, ?, ?, ?, ?)", ("Q2", 1000, 50, 150, 0, 0, 0, 0))
+
+    repo = PlanningRepository(base_dir=tmp_path)
+    llamadas_bulk = 0
+    original_bulk = repo._get_loteado_aprovechamiento_por_boleta_bulk
+
+    def wrapped_loteado_bulk(*args, **kwargs):
+        nonlocal llamadas_bulk
+        llamadas_bulk += 1
+        return original_bulk(*args, **kwargs)
+
+    def forbidden_single(*args, **kwargs):
+        raise AssertionError("la ruta principal no debe consultar loteado boleta a boleta")
+
+    monkeypatch.setattr(repo, "_get_loteado_aprovechamiento_por_boleta_bulk", wrapped_loteado_bulk)
+    monkeypatch.setattr(repo, "_get_loteado_aprovechamiento_por_boleta", forbidden_single)
+
+    rows, _ = repo._get_campo_disponibilidad_aprovechamiento(_stock("B1", 1000) + _stock("B2", 1000), {})
+
+    assert llamadas_bulk == 1
+    por_boleta_calibre = {(r["Boleta"], r["Calibre"]): r for r in rows}
+    assert por_boleta_calibre[("B1", "CAL 1")]["% aprovechamiento"] == 24.0
+    assert por_boleta_calibre[("B1", "CAL 2")]["% aprovechamiento"] == 56.0
+    assert por_boleta_calibre[("B2", "CAL 3")]["% aprovechamiento"] == 20.0
+    assert por_boleta_calibre[("B2", "CAL 4")]["% aprovechamiento"] == 60.0
+    assert {r["Comercial %"] for r in rows if r["Boleta"] == "B1"} == {80.0}
+    assert {r["Comercial %"] for r in rows if r["Boleta"] == "B2"} == {80.0}
+    assert {r["Destrío %"] for r in rows if r["Boleta"] == "B1"} == {10.0}
+    assert {r["Industria %"] for r in rows if r["Boleta"] == "B2"} == {15.0}
