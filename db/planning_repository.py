@@ -1039,15 +1039,28 @@ class PlanningRepository:
                 kg_campo_por_boleta[boleta] += float(row.get("Kg campo", 0) or 0)
                 stock_por_boleta[boleta].append(row)
         aprovechamiento_cache: dict[str, list[dict[str, Any]]] = {}
+        boletas_sin_pesosfres: list[str] = []
         for boleta in boletas_unicas:
             pf_rows = self._get_pesosfres_aprovechamiento_por_boleta(boleta, filters)
             if pf_rows:
                 aprovechamiento_cache[boleta] = pf_rows
                 logger.debug("APROVECHAMIENTO Fuente final boleta=%s fuente=REAL_PESOSFRES", boleta)
                 continue
+            boletas_sin_pesosfres.append(boleta)
+
+        loteado_total_start = time.perf_counter()
+        lectura_loteado_start = time.perf_counter()
+        boleta_to_id_lotes = {
+            boleta: {str(v or "").strip() for v in albaranes_por_boleta.get(boleta, []) if str(v or "").strip()}
+            for boleta in boletas_sin_pesosfres
+        }
+        boleta_to_id_lotes = {boleta: ids for boleta, ids in boleta_to_id_lotes.items() if ids}
+        logger.info("[PERF LoteadoBulk] lectura_loteado=%.2fs", time.perf_counter() - lectura_loteado_start)
+        calidad_bulk = self._get_loteado_calidad_pcts_por_boleta_bulk(boleta_to_id_lotes)
+        for boleta in boletas_sin_pesosfres:
             loteado_filters = dict(filters or {})
             loteado_filters["_kg_campo_boleta"] = kg_campo_por_boleta.get(boleta, 0.0)
-            loteado_rows = self._get_loteado_aprovechamiento_por_boleta(boleta, albaranes_por_boleta.get(boleta, []), loteado_filters)
+            loteado_rows = self._get_loteado_aprovechamiento_por_boleta(boleta, albaranes_por_boleta.get(boleta, []), loteado_filters, calidad_pcts=calidad_bulk.get(boleta, {}))
             if loteado_rows:
                 aprovechamiento_cache[boleta] = loteado_rows
                 logger.debug("APROVECHAMIENTO Fuente final boleta=%s fuente=LOTEADO", boleta)
@@ -1068,6 +1081,7 @@ class PlanningRepository:
             else:
                 aprovechamiento_cache[boleta] = []
                 logger.debug("APROVECHAMIENTO Fuente final boleta=%s fuente=SIN_APROVECHAMIENTO", boleta)
+        logger.info("[PERF AprovechamientoLoteadoTotal] tiempo=%.2fs", time.perf_counter() - loteado_total_start)
 
         out: list[dict[str, Any]] = []
         sin_datos = 0
@@ -1344,17 +1358,36 @@ class PlanningRepository:
         return out
 
     def _get_loteado_calidad_pcts_por_id_lotes(self, id_lotes: list[str]) -> dict[str, float] | None:
+        bulk = self._get_loteado_calidad_pcts_por_boleta_bulk({"_single": set(id_lotes)})
+        return bulk.get("_single")
+
+    def _get_loteado_calidad_pcts_por_boleta_bulk(self, boleta_to_id_lotes: dict[str, set[str]]) -> dict[str, dict]:
+        start = time.perf_counter()
         calidad_path = self._db_path(DB_CALIDAD)
-        ids_lote = {str(v or "").strip() for v in id_lotes if str(v or "").strip()}
-        if not ids_lote or not calidad_path.exists():
-            return None
+        normalized = {
+            str(boleta or "").strip(): {str(v or "").strip() for v in ids if str(v or "").strip()}
+            for boleta, ids in (boleta_to_id_lotes or {}).items()
+            if str(boleta or "").strip()
+        }
+        normalized = {boleta: ids for boleta, ids in normalized.items() if ids}
+        id_to_boletas: dict[str, set[str]] = defaultdict(set)
+        for boleta, ids in normalized.items():
+            for id_lote in ids:
+                id_to_boletas[id_lote].add(boleta)
+        if not id_to_boletas or not calidad_path.exists():
+            logger.info("[PERF CalidadBulk] boletas=%s id_lotes=%s partidas_principales=%s tiempo=%.2fs", len(normalized), len(id_to_boletas), 0, time.perf_counter() - start)
+            return {}
+        total_peso: dict[str, float] = defaultdict(float)
+        destrio_pond: dict[str, float] = defaultdict(float)
+        industria_pond: dict[str, float] = defaultdict(float)
+        partidas_principales: dict[str, set[str]] = defaultdict(set)
         try:
             with sqlite3.connect(calidad_path) as conn:
                 conn.row_factory = sqlite3.Row
                 dc_table = self._find_table(conn, ["DatosCalibre", "datoscalibre"])
                 p_table = self._find_table(conn, ["Partidas", "partidas"])
                 if not dc_table or not p_table:
-                    return None
+                    return {}
                 dc_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{dc_table}")').fetchall()]
                 p_cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{p_table}")').fetchall()]
                 id_dc = self._find_column(dc_cols, ["IdPartida"])
@@ -1363,12 +1396,8 @@ class PlanningRepository:
                 industria_cols = [self._find_column(dc_cols, [name]) for name in ("DLinea", "DMesa", "Inutil", "Piquera", "VerdeR")]
                 idp_col = self._find_column(p_cols, ["IdPartidaP"])
                 if not id_dc or not neto_col or not podrido_col or not idp_col:
-                    return None
-
-                total_peso = 0.0
-                destrio_pond = 0.0
-                industria_pond = 0.0
-                partidas_principales: set[str] = set()
+                    return {}
+                ids_lote = set(id_to_boletas)
                 for idx in range(10):
                     inc_col = self._find_column(p_cols, [f"IdPartida{idx}"])
                     kg_col = self._find_column(p_cols, [f"kg{idx}", f"Kg{idx}", f"KG{idx}"])
@@ -1382,7 +1411,8 @@ class PlanningRepository:
                         f'WHERE TRIM(CAST(p."{inc_col}" AS TEXT)) <> ""'
                     )
                     for row in conn.execute(sql).fetchall():
-                        if str(row["Incluida"] or "").strip() not in ids_lote:
+                        incluida = str(row["Incluida"] or "").strip()
+                        if incluida not in ids_lote:
                             continue
                         neto = float(row[neto_col] or 0)
                         if neto <= 0:
@@ -1393,25 +1423,27 @@ class PlanningRepository:
                         destrio_pct = float(row[podrido_col] or 0) / neto * 100
                         industria = sum(float(row[c] or 0) for c in industria_cols if c)
                         industria_pct = industria / neto * 100
-                        total_peso += peso
-                        destrio_pond += destrio_pct * peso
-                        industria_pond += industria_pct * peso
-                        partidas_principales.add(str(row["IdPartidaP"] or "").strip())
-                if total_peso <= 0:
-                    return None
-                destrio_pct = round(destrio_pond / total_peso, 4)
-                industria_pct = round(industria_pond / total_peso, 4)
-                return {
-                    "Destrío %": destrio_pct,
-                    "Industria %": industria_pct,
-                    "Comercial %": round(max(0.0, 100.0 - destrio_pct - industria_pct), 4),
-                    "partidas_principales": len(partidas_principales),
-                }
+                        partida_principal = str(row["IdPartidaP"] or "").strip()
+                        for boleta in id_to_boletas[incluida]:
+                            total_peso[boleta] += peso
+                            destrio_pond[boleta] += destrio_pct * peso
+                            industria_pond[boleta] += industria_pct * peso
+                            if partida_principal:
+                                partidas_principales[boleta].add(partida_principal)
         except Exception as exc:
-            logger.warning("No se pudo consultar calidad de loteado: %s", exc)
-        return None
+            logger.warning("No se pudo consultar calidad bulk de loteado: %s", exc)
+            return {}
+        out: dict[str, dict] = {}
+        for boleta, peso in total_peso.items():
+            if peso <= 0:
+                continue
+            destrio_pct = round(destrio_pond[boleta] / peso, 4)
+            industria_pct = round(industria_pond[boleta] / peso, 4)
+            out[boleta] = {"Destrío %": destrio_pct, "Industria %": industria_pct, "Comercial %": round(max(0.0, 100.0 - destrio_pct - industria_pct), 4), "partidas_principales": len(partidas_principales.get(boleta, set()))}
+        logger.info("[PERF CalidadBulk] boletas=%s id_lotes=%s partidas_principales=%s tiempo=%.2fs", len(normalized), len(id_to_boletas), sum(len(v) for v in partidas_principales.values()), time.perf_counter() - start)
+        return out
 
-    def _get_loteado_aprovechamiento_por_boleta(self, boleta: str, albaranes_boleta: list[str], filters: dict) -> list[dict[str, Any]]:
+    def _get_loteado_aprovechamiento_por_boleta(self, boleta: str, albaranes_boleta: list[str], filters: dict, calidad_pcts: dict[str, float] | None = None) -> list[dict[str, Any]]:
         start = time.perf_counter()
         if not boleta or not albaranes_boleta or not self.db_loteado.exists():
             logger.debug("APROVECHAMIENTO Loteado boleta=%s albaranes=%s filas_lote=0 tiempo=%.2fs", boleta, len(albaranes_boleta or []), time.perf_counter() - start)
@@ -1476,7 +1508,8 @@ class PlanningRepository:
         logger.debug("APROVECHAMIENTO Loteado boleta=%s albaranes=%s filas_lote=%s tiempo=%.2fs", boleta, len(albaranes_boleta), len(lote_rows), elapsed)
         if total <= 0:
             return []
-        calidad_pcts = self._get_loteado_calidad_pcts_por_id_lotes([key[1] for key in seen_rows])
+        if calidad_pcts is None:
+            calidad_pcts = self._get_loteado_calidad_pcts_por_id_lotes([key[1] for key in seen_rows])
         if calidad_pcts:
             destrio_pct = float(calidad_pcts["Destrío %"])
             industria_pct = float(calidad_pcts["Industria %"])
