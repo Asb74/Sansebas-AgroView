@@ -13,13 +13,31 @@ try:
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import cm
-    from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import Flowable, PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
     REPORTLAB_AVAILABLE = True
 except ModuleNotFoundError:  # pragma: no cover - fallback para entornos sin dependencias instaladas
     REPORTLAB_AVAILABLE = False
 
 
 logger = logging.getLogger(__name__)
+
+
+if REPORTLAB_AVAILABLE:
+    class PdfBookmark(Flowable):
+        def __init__(self, key: str, title: str | None = None, level: int = 0) -> None:
+            super().__init__()
+            self.key = key
+            self.title = title
+            self.level = level
+            self.width = 0
+            self.height = 0
+
+        def draw(self) -> None:
+            self.canv.bookmarkPage(self.key)
+            if self.title:
+                self.canv.addOutlineEntry(self.title, self.key, level=self.level, closed=False)
+else:  # pragma: no cover
+    PdfBookmark = None
 
 
 class CommercialPdfReportService:
@@ -91,6 +109,7 @@ class CommercialPdfReportService:
         pendientes = self._filter_pending_rows(list(pedidos_pendientes_rows or []), selected_cultivos)
         previstos = list(pedidos_previstos_rows or [])
         story: list[Any] = []
+        self._add_index(story)
         self._add_header(story, active_filters, generated_at or datetime.now())
         self._add_summary(story, campo, almacen, pendientes, previstos)
         self._add_stock_campo(story, campo)
@@ -122,6 +141,20 @@ class CommercialPdfReportService:
         except Exception:
             return "0,0 t"
 
+    def _format_toneladas_cifra(self, value: Any) -> str:
+        try:
+            return f"{float(value or 0) / 1000:.1f}".replace(".", ",")
+        except Exception:
+            return "0,0"
+
+    def _format_pct_1(self, value: Any, *, blank: str = "-") -> str:
+        if value is None:
+            return blank
+        try:
+            return f"{float(value):.1f}".replace(".", ",")
+        except Exception:
+            return blank
+
     def _sum(self, rows: Iterable[dict], field: str) -> float:
         total = 0.0
         for r in rows:
@@ -145,6 +178,29 @@ class CommercialPdfReportService:
             filtered.append(row)
         return filtered
 
+    def _add_index(self, story: list) -> None:
+        story.append(PdfBookmark("indice", "ÍNDICE"))
+        story.append(Paragraph('<a name="indice"/>ÍNDICE', self._title))
+        sections = [
+            ("1. Resumen ejecutivo", "resumen_ejecutivo"),
+            ("2. Stock campo", "stock_campo"),
+            ("3. Previsión de recolección", "prevision_recoleccion"),
+            ("4. Stock almacén", "stock_almacen"),
+            ("5. Pedidos pendientes", "pedidos_pendientes"),
+            ("6. Balance comercial", "balance_comercial"),
+            ("7. Aprovechamiento estimado", "aprovechamiento_estimado"),
+            ("8. Aprovechamiento de volcado", "aprovechamiento_volcado"),
+            ("9. Capacidad productiva", "capacidad_productiva"),
+        ]
+        for label, anchor in sections:
+            story.append(Paragraph(f'<link href="#{anchor}" color="blue">{label}</link>', self._normal))
+            story.append(Spacer(1, 3))
+        story.append(PageBreak())
+
+    def _section_title(self, story: list, title: str, anchor: str) -> None:
+        story.append(PdfBookmark(anchor, title))
+        story.append(Paragraph(f'<a name="{anchor}"/>{title} <font size="6"><link href="#indice" color="blue">Volver al índice</link></font>', self._section))
+
     def _add_header(self, story: list, filters: dict, generated_at: datetime) -> None:
         story.append(Paragraph("INFORME OPERATIVO DIARIO", self._title))
         data = [["Fecha/hora generación", generated_at.strftime("%Y-%m-%d %H:%M")], ["Campaña", self._filter_text(filters.get("campana"))], ["Cultivo", self._filter_text(filters.get("cultivo"))], ["Empresa", self._filter_text(filters.get("empresa"))], ["Semana", self._filter_text(filters.get("semana"))], ["Variedad Coop", self._filter_text(filters.get("var_coop"))], ["Grupo varietal", self._filter_text(filters.get("grupo_varietal"))], ["Marca", self._filter_text(filters.get("marca"))], ["Fecha desde / hasta", f"{filters.get('fecha_desde') or 'TODOS'} / {filters.get('fecha_hasta') or 'TODOS'}"], ["Modo pedidos", filters.get("pedidos_modo_label") or filters.get("pedidos_modo", "TODOS")]]
@@ -156,7 +212,7 @@ class CommercialPdfReportService:
         kg_almacen = self._sum(almacen, "Kg stock")
         kg_pendientes = self._sum(pendientes, "Kg pendiente")
         kg_previstos = self._sum(previstos, "Kg estimados")
-        story.append(Paragraph("RESUMEN EJECUTIVO", self._section))
+        self._section_title(story, "RESUMEN EJECUTIVO", "resumen_ejecutivo")
         demanda_total = kg_pendientes + kg_previstos
         cobertura = ((kg_campo + kg_almacen) / demanda_total * 100) if demanda_total else 0
         estado = "VERDE" if cobertura >= 130 else "AMARILLO" if cobertura >= 100 else "ROJO"
@@ -219,7 +275,7 @@ class CommercialPdfReportService:
         story.append(Spacer(1, 6))
 
     def _add_stock_campo(self, story: list, rows: list[dict]) -> None:
-        story.append(Paragraph("STOCK CAMPO", self._section))
+        self._section_title(story, "STOCK CAMPO", "stock_campo")
         if not rows:
             story.append(Paragraph("Sin datos para los filtros actuales.", self._normal)); story.append(PageBreak()); return
         columns = ["Fecha carga", "Semana", "Socio", "Variedad", "Grupo varietal", "Boleta", "Plataforma", "Empresa", "Color / restricciones", "Kg campo"]
@@ -282,7 +338,7 @@ class CommercialPdfReportService:
         return detail_date
 
     def _add_prevision_recoleccion(self, story: list, rows: list[dict], filters: dict[str, Any] | None = None) -> None:
-        story.append(Paragraph("PREVISIÓN DE RECOLECCIÓN", self._section))
+        self._section_title(story, "PREVISIÓN DE RECOLECCIÓN", "prevision_recoleccion")
         if not rows:
             story.append(Paragraph("Sin previsión de recolección desde hoy para los filtros actuales.", self._normal))
             story.append(PageBreak())
@@ -406,7 +462,7 @@ class CommercialPdfReportService:
         return any(str(self._value(row, column) or "").strip() for row in rows)
 
     def _add_stock_almacen(self, story: list, rows: list[dict]) -> None:
-        story.append(Paragraph("STOCK ALMACÉN RESUMIDO", self._section))
+        self._section_title(story, "STOCK ALMACÉN RESUMIDO", "stock_almacen")
         if not rows:
             story.append(Paragraph("Sin datos para los filtros actuales.", self._normal)); story.append(PageBreak()); return
         keys = ["Grupo varietal", "Marca", "Confección", "Calibre", "Categoría"]
@@ -442,7 +498,8 @@ class CommercialPdfReportService:
         story.append(PageBreak())
 
     def _add_pedidos(self, story: list, title: str, rows: list[dict], *, kg_field: str, confeccion_field: str, previsto: bool) -> None:
-        story.append(Paragraph(title, self._section))
+        anchor = "pedidos_pendientes" if not previsto else "balance_comercial"
+        self._section_title(story, title, anchor)
         if not rows:
             msg = "Sin pedidos previstos para los filtros actuales." if previsto else "No hay pedidos pendientes para el cultivo seleccionado."
             story.append(Paragraph(msg, self._normal)); story.append(PageBreak()); return
@@ -531,7 +588,7 @@ class CommercialPdfReportService:
         story.append(Paragraph("Matriz operativa por semana, fecha, cliente y grupo varietal", self._normal)); story.append(self._table(data))
 
     def _add_aprovechamientos(self, story: list, rows: list[dict]) -> None:
-        story.append(Paragraph("APROVECHAMIENTO ESTIMADO", self._section))
+        self._section_title(story, "APROVECHAMIENTO ESTIMADO", "aprovechamiento_estimado")
         if not rows:
             story.append(Paragraph("Sin stock campo para analizar aprovechamientos.", self._normal)); story.append(PageBreak()); return
         total = self._sum(rows, "Kg campo")
@@ -557,11 +614,11 @@ class CommercialPdfReportService:
         if not stock_rows:
             story.append(Paragraph("Sin stock campo para detallar aprovechamientos.", self._normal)); story.append(PageBreak()); return
 
-        cal_cols = [f"T CAL {i}" for i in range(11)]
+        cal_cols = [f"CAL {i} %" for i in range(11)]
         columns = [
             "IdPartida", "Boleta", "IdSocio", "Nombre socio", "Fecha carga", "T entregadas",
-            "Origen", "Destrío %", "Industria %",
-        ] + cal_cols + ["T estimadas"]
+            "T comerciales", "Origen", "Destrío %", "Industria %",
+        ] + cal_cols + ["% comercial total"]
         groups: dict[str, list[dict[str, Any]]] = {}
         total_general = self._empty_aprovechamiento_totals()
         seen: set[tuple[str, str, str, str]] = set()
@@ -582,7 +639,6 @@ class CommercialPdfReportService:
 
         data: list[list[Any]] = [columns]
         styles: list[tuple[int, str]] = []
-
         for grupo in sorted(groups, key=lambda g: g.upper()):
             details = groups[grupo]
             data.append([f"GRUPO VARIETAL: {grupo}"] + [""] * (len(columns) - 1))
@@ -594,17 +650,16 @@ class CommercialPdfReportService:
                 styles.append((len(data) - 1, detail["origen"]))
             data.append(self._aprovechamiento_totals_row(f"SUBTOTAL {grupo}", group_totals, columns))
             styles.append((len(data) - 1, "SUBTOTAL_APROVECHAMIENTO"))
-
         data.append(self._aprovechamiento_totals_row("TOTAL GENERAL", total_general, columns))
         styles.append((len(data) - 1, "TOTAL_APROVECHAMIENTO"))
         story.append(self._table(data, row_styles=styles, col_widths=[
-            1.4*cm, 1.2*cm, 1.2*cm, 2.3*cm, 1.6*cm, 1.6*cm, 2.0*cm, 1.2*cm, 1.2*cm,
-            *([0.9*cm] * 11), 1.8*cm,
+            1.25*cm, 1.05*cm, 1.05*cm, 2.0*cm, 1.4*cm, 1.25*cm, 1.25*cm, 1.7*cm, 1.0*cm, 1.0*cm,
+            *([0.72*cm] * 11), 1.15*cm,
         ]))
         story.append(PageBreak())
 
     def _empty_aprovechamiento_totals(self) -> dict[str, Any]:
-        return {"partidas": 0, "kg_entregado": 0.0, "kg_estimado": 0.0, "calibres": {str(i): 0.0 for i in range(11)}}
+        return {"partidas": 0, "kg_entregado": 0.0, "kg_estimado": 0.0, "calibres": {str(i): 0.0 for i in range(11)}, "destrio_kg": 0.0, "industria_kg": 0.0}
 
     def _accumulate_aprovechamiento_totals(self, totals: dict[str, Any], detail: dict[str, Any]) -> None:
         totals["partidas"] += 1
@@ -612,6 +667,10 @@ class CommercialPdfReportService:
         totals["kg_estimado"] += detail["kg_estimado"]
         for cal, kg in detail["kg_by_cal"].items():
             totals["calibres"][cal] += kg
+        if detail.get("destrio_pct") is not None:
+            totals["destrio_kg"] += detail["kg_entregado"] * detail["destrio_pct"] / 100
+        if detail.get("industria_pct") is not None:
+            totals["industria_kg"] += detail["kg_entregado"] * detail["industria_pct"] / 100
 
     def _aprovechamiento_resumen_table(self, title: str, totals: dict[str, Any]) -> Table:
         resumen = [
@@ -627,50 +686,63 @@ class CommercialPdfReportService:
             ])
         return self._table(resumen, row_styles=[(0, "SUBTOTAL_APROVECHAMIENTO")], col_widths=[5*cm, 4*cm, 5*cm, 4*cm])
 
+    def _weighted_pct(self, kg: float, total_kg: float) -> float | None:
+        return (kg / total_kg * 100) if total_kg else None
+
     def _aprovechamiento_totals_row(self, label: str, totals: dict[str, Any], columns: list[str]) -> list[str]:
         row = [""] * len(columns)
         row[0] = label
-        row[1] = f'{totals["partidas"]} partidas'
-        row[5] = self._format_toneladas(totals["kg_entregado"])
+        row[1] = str(totals["partidas"])
+        row[5] = self._format_toneladas_cifra(totals["kg_entregado"])
+        row[6] = self._format_toneladas_cifra(totals["kg_estimado"])
+        row[8] = self._format_pct_1(self._weighted_pct(totals.get("destrio_kg", 0.0), totals["kg_entregado"]))
+        row[9] = self._format_pct_1(self._weighted_pct(totals.get("industria_kg", 0.0), totals["kg_entregado"]))
         for i in range(11):
-            row[columns.index(f"T CAL {i}")] = self._format_toneladas(totals["calibres"][str(i)])
-        row[columns.index("T estimadas")] = self._format_toneladas(totals["kg_estimado"])
+            row[columns.index(f"CAL {i} %")] = self._format_pct_1(self._weighted_pct(totals["calibres"][str(i)], totals["kg_entregado"]), blank="0,0")
+        row[columns.index("% comercial total")] = self._format_pct_1(self._weighted_pct(totals["kg_estimado"], totals["kg_entregado"]), blank="0,0")
         return row
+
+    def _row_float(self, row: dict, *fields: str) -> float | None:
+        for field in fields:
+            if field in row and str(row.get(field) or "").strip() != "":
+                try:
+                    return float(str(row.get(field)).replace(",", "."))
+                except Exception:
+                    pass
+        return None
+
+    def _aprovechamiento_pct_from_rows(self, rows: list[dict], pct_fields: tuple[str, ...], kg_fields: tuple[str, ...], denominator_fields: tuple[str, ...], fallback_kg: float) -> float | None:
+        vals = [self._row_float(r, *pct_fields) for r in rows]
+        vals = [v for v in vals if v is not None]
+        if vals:
+            return sum(vals) / len(vals)
+        num = sum((self._row_float(r, *kg_fields) or 0.0) for r in rows)
+        den = sum((self._row_float(r, *denominator_fields) or 0.0) for r in rows) or fallback_kg
+        return (num / den * 100) if num and den else None
 
     def _aprovechamiento_partida_detail(self, partida: dict, detalle_map: dict[str, list[dict]]) -> dict[str, Any]:
         boleta = str(self._value(partida, "Boleta") or "").strip()
         rows = list(detalle_map.get(self._detalle_partida_key(partida)) or detalle_map.get(boleta) or [])
         origen = self._aprovechamiento_origen(rows)
         kg_by_cal = {str(i): 0.0 for i in range(11)}
-        destrio_vals: list[float] = []
-        industria_vals: list[float] = []
         for row in rows:
             cal = self._pure_calibre(row.get("Calibre"))
             if cal in kg_by_cal:
                 kg_by_cal[cal] += self._sum([row], "Kg disponibles")
-            if origen == "HARVESTSYNC":
-                for src, dest in (("Destrío %", destrio_vals), ("Destrio %", destrio_vals), ("Industria %", industria_vals)):
-                    try:
-                        value = float(str(row.get(src, "")).replace(",", "."))
-                        dest.append(value)
-                    except Exception:
-                        pass
         kg_entregado = self._sum([partida], "Kg campo")
         kg_estimado = sum(kg_by_cal.values()) if rows else 0.0
-        destrio = self._num(sum(destrio_vals) / len(destrio_vals), 2) if origen == "HARVESTSYNC" and destrio_vals else "-"
-        industria = self._num(sum(industria_vals) / len(industria_vals), 2) if origen == "HARVESTSYNC" and industria_vals else "-"
+        destrio_pct = self._aprovechamiento_pct_from_rows(rows, ("Destrío %", "Destrio %"), ("Podrido",), ("NetoPartida", "Neto"), kg_entregado)
+        industria_pct = self._aprovechamiento_pct_from_rows(rows, ("Industria %",), ("Destrios", "Destríos"), ("NetoPartida", "Neto"), kg_entregado)
+        cal_pcts = [self._format_pct_1((kg_by_cal[str(i)] / kg_entregado * 100) if kg_entregado else 0.0, blank="0,0") for i in range(11)]
         row = [
             self._format_cell(self._value(partida, "IdPartida"), "IdPartida"),
             self._format_cell(self._value(partida, "Boleta"), "Boleta"),
             self._format_cell(self._value(partida, "IdSocio"), "IdSocio"),
             self._format_cell(self._value(partida, "Nombre socio") or self._value(partida, "Socio"), "Nombre socio"),
             self._format_cell(self._value(partida, "Fecha carga"), "Fecha carga"),
-            self._format_toneladas(kg_entregado),
-            origen,
-            destrio,
-            industria,
-        ] + [self._format_toneladas(kg_by_cal[str(i)]) for i in range(11)] + [self._format_toneladas(kg_estimado)]
-        return {"grupo_varietal": self._grupo_varietal_partida(partida), "origen": origen, "kg_by_cal": kg_by_cal, "kg_entregado": kg_entregado, "kg_estimado": kg_estimado, "row": row}
+            "", "", origen, self._format_pct_1(destrio_pct), self._format_pct_1(industria_pct),
+        ] + cal_pcts + [self._format_pct_1((kg_estimado / kg_entregado * 100) if kg_entregado else 0.0, blank="0,0")]
+        return {"grupo_varietal": self._grupo_varietal_partida(partida), "origen": origen, "kg_by_cal": kg_by_cal, "kg_entregado": kg_entregado, "kg_estimado": kg_estimado, "destrio_pct": destrio_pct, "industria_pct": industria_pct, "row": row}
 
     def _grupo_varietal_partida(self, row: dict) -> str:
         grupo = self._value(row, "Grupo varietal") or self._value(row, "GrupoVarietal") or self._value(row, "grupo_varietal")
@@ -704,7 +776,7 @@ class CommercialPdfReportService:
         return text if text.isdigit() and 0 <= int(text) <= 10 else ""
 
     def _add_aprovechamiento_volcado(self, story: list, volcado: dict[str, Any]) -> None:
-        story.append(Paragraph("APROVECHAMIENTO DE VOLCADO", self._section))
+        self._section_title(story, "APROVECHAMIENTO DE VOLCADO", "aprovechamiento_volcado")
         story.append(Paragraph(f"Periodo de volcado analizado: {volcado.get('periodo_texto') or 'Sin periodo disponible'}", self._normal))
         rows = list(volcado.get("rows") or [])
         summary = volcado.get("summary") or {}
@@ -827,7 +899,7 @@ class CommercialPdfReportService:
         story.append(PageBreak())
 
     def _add_capacidad(self, story: list) -> None:
-        story.append(Paragraph("CAPACIDAD PRODUCTIVA", self._section))
+        self._section_title(story, "CAPACIDAD PRODUCTIVA", "capacidad_productiva")
         story.append(Paragraph("Capacidad productiva no incluida en esta versión del informe.", self._normal))
         story.append(PageBreak())
 

@@ -104,7 +104,7 @@ def test_pedidos_incluye_mix_timeline_y_matriz(monkeypatch, tmp_path):
     assert any(t and "BLANCA SIN SEMILLAS Palets" in t[0] and "TOTAL Pendiente" in t[0] for t in captured)
 
 @pytest.mark.skipif(not REPORTLAB_AVAILABLE, reason="ReportLab no instalado")
-def test_aprovechamiento_detalle_partida_muestra_toneladas(monkeypatch, tmp_path):
+def test_aprovechamiento_detalle_partida_muestra_porcentajes_y_subtotales(monkeypatch, tmp_path):
     captured = []
     service = CommercialPdfReportService()
     original = service._table
@@ -140,22 +140,30 @@ def test_aprovechamiento_detalle_partida_muestra_toneladas(monkeypatch, tmp_path
     table = detalle_tables[0]
     assert "Kg entregado" not in table[0]
     assert table[0][5] == "T entregadas"
-    assert table[0][9] == "T CAL 0"
-    assert table[0][19] == "T CAL 10"
-    assert table[0][20] == "T estimadas"
+    assert table[0][6] == "T comerciales"
+    assert table[0][8] == "Destrío %"
+    assert table[0][9] == "Industria %"
+    assert table[0][10] == "CAL 0 %"
+    assert table[0][20] == "CAL 10 %"
+    assert table[0][21] == "% comercial total"
     assert table[1][0] == "GRUPO VARIETAL: SIN GRUPO VARIETAL"
-    assert table[2][5] == "437,9 t"
-    assert table[2][9] == "8,6 t"
-    assert table[2][19] == "9,2 t"
-    assert table[2][20] == "17,9 t"
+    assert table[2][5] == ""
+    assert table[2][6] == ""
+    assert table[2][8] == "5,0"
+    assert table[2][9] == "2,0"
+    assert table[2][10] == "2,0"
+    assert table[2][20] == "2,1"
+    assert table[2][21] == "4,1"
     assert table[3][0] == "SUBTOTAL SIN GRUPO VARIETAL"
-    assert table[3][1] == "1 partidas"
-    assert table[3][5] == "437,9 t"
-    assert table[3][9] == "8,6 t"
-    assert table[3][19] == "9,2 t"
-    assert table[3][20] == "17,9 t"
+    assert table[3][1] == "1"
+    assert table[3][5] == "437,9"
+    assert table[3][6] == "17,9"
+    assert table[3][8] == "5,0"
+    assert table[3][10] == "2,0"
+    assert table[3][20] == "2,1"
+    assert table[3][21] == "4,1"
     assert table[4][0] == "TOTAL GENERAL"
-    assert table[4][1] == "1 partidas"
+    assert table[4][1] == "1"
     assert not any(t and t[0] and str(t[0][0]).startswith("SUBTOTAL GRUPO VARIETAL") for t in captured)
 
 @pytest.mark.skipif(not REPORTLAB_AVAILABLE, reason="ReportLab no instalado")
