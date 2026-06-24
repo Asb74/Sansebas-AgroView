@@ -101,7 +101,8 @@ def test_pedidos_incluye_mix_timeline_y_matriz(monkeypatch, tmp_path):
     )
     assert any(t and t[0] == ["Grupo confección", "% palets", "Palets", "Kg pendiente"] for t in captured)
     assert any(t and t[0] == ["Fecha salida", "Nº pedidos", "Palets pendientes", "Kg teórico", "Kg terminado", "Kg pendiente", "% pendiente", "Barra visual"] for t in captured)
-    assert any(t and "BLANCA SIN SEMILLAS Palets" in t[0] and "TOTAL Pendiente" in t[0] for t in captured)
+    assert any(t and t[0] == ["Semana", "Fecha", "Cliente", "Pedido", "Grupo principal", "Palets total", "Kg teórico", "Kg terminado", "Kg pendiente", "Estado"] for t in captured)
+    assert not any(t and "BLANCA SIN SEMILLAS Palets" in t[0] and "TOTAL Pendiente" in t[0] for t in captured)
 
 @pytest.mark.skipif(not REPORTLAB_AVAILABLE, reason="ReportLab no instalado")
 def test_aprovechamiento_detalle_partida_muestra_porcentajes_y_subtotales(monkeypatch, tmp_path):
