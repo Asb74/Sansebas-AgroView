@@ -52,10 +52,13 @@ class CommercialPdfReportService:
     COLOR_GREY = "#E0E0E0"
 
 
-    def default_filename(self, cultivos: Sequence[Any] | None = None, now: datetime | None = None) -> str:
+    def default_filename(self, cultivos: Sequence[Any] | None = None, now: datetime | None = None, report_mode: str | None = None) -> str:
         cultivo_slug = self._cultivo_filename_slug(cultivos)
         timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M")
-        return f"Informe_comercial_{cultivo_slug}_{timestamp}.pdf"
+        if report_mode is None:
+            return f"Informe_comercial_{cultivo_slug}_{timestamp}.pdf"
+        mode = self._normalize_report_mode(report_mode)
+        return f"Informe_{mode}_{cultivo_slug}_{timestamp}.pdf"
 
     def _cultivo_filename_slug(self, cultivos: Sequence[Any] | None = None) -> str:
         valid_cultivos = [
@@ -86,9 +89,11 @@ class CommercialPdfReportService:
         aprovechamiento_volcado: dict[str, Any] | None = None,
         aprovechamiento_campo_detalle: dict[str, list[dict]] | None = None,
         generated_at: datetime | None = None,
+        report_mode: str = "operativo",
     ) -> Path:
         target = Path(target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
+        mode = self._normalize_report_mode(report_mode)
         if not REPORTLAB_AVAILABLE:
             self._generate_minimal_pdf(
                 target,
@@ -101,6 +106,7 @@ class CommercialPdfReportService:
                 aprovechamiento_volcado=aprovechamiento_volcado or {},
                 aprovechamiento_campo_detalle=aprovechamiento_campo_detalle or {},
                 generated_at=generated_at or datetime.now(),
+                report_mode=mode,
             )
             return target
         self._styles = getSampleStyleSheet()
@@ -119,6 +125,21 @@ class CommercialPdfReportService:
         selected_cultivos = self._selected_filter_values(active_filters.get("cultivo"))
         pendientes = self._filter_pending_rows(list(pedidos_pendientes_rows or []), selected_cultivos)
         previstos = list(pedidos_previstos_rows or [])
+        if mode == "direccion":
+            self._generate_direction_report(
+                target,
+                filters=active_filters,
+                campo=campo,
+                almacen=almacen,
+                prevision=prevision,
+                pendientes=pendientes,
+                previstos=previstos,
+                aprovechamiento_volcado=aprovechamiento_volcado or {},
+                aprovechamiento_campo_detalle=aprovechamiento_campo_detalle or {},
+                generated_at=generated_at or datetime.now(),
+            )
+            return target
+
         story: list[Any] = []
         self._add_index(story)
         self._add_header(story, active_filters, generated_at or datetime.now())
@@ -141,6 +162,88 @@ class CommercialPdfReportService:
         doc = SimpleDocTemplate(str(target), pagesize=landscape(A4), leftMargin=0.7*cm, rightMargin=0.7*cm, topMargin=0.7*cm, bottomMargin=0.7*cm)
         doc.build(story)
         return target
+
+
+    def _normalize_report_mode(self, report_mode: str | None) -> str:
+        mode = str(report_mode or "operativo").strip().lower()
+        if mode not in {"operativo", "direccion"}:
+            raise ValueError("report_mode debe ser 'operativo' o 'direccion'")
+        return mode
+
+    def _generate_direction_report(
+        self,
+        target: Path,
+        *,
+        filters: dict[str, Any],
+        campo: list[dict],
+        almacen: list[dict],
+        prevision: list[dict],
+        pendientes: list[dict],
+        previstos: list[dict],
+        aprovechamiento_volcado: dict[str, Any],
+        aprovechamiento_campo_detalle: dict[str, list[dict]],
+        generated_at: datetime,
+    ) -> None:
+        story: list[Any] = []
+        self._add_direction_index(story)
+        self._add_direction_cover(story, filters, campo, almacen, pendientes, previstos, generated_at)
+        self._add_direction_commercial(story, pendientes)
+        self._add_direction_production(story, pendientes, prevision)
+        self._add_direction_quality(story, campo, aprovechamiento_volcado)
+        self._add_direction_alerts_recommendations(story, campo, almacen, pendientes, previstos)
+        doc = SimpleDocTemplate(str(target), pagesize=landscape(A4), leftMargin=0.7*cm, rightMargin=0.7*cm, topMargin=0.7*cm, bottomMargin=0.7*cm)
+        doc.build(story)
+
+    def _add_direction_index(self, story: list) -> None:
+        story.append(PdfBookmark("indice", "ÍNDICE DIRECCIÓN"))
+        story.append(Paragraph('<a name="indice"/>ÍNDICE DIRECCIÓN', self._title))
+        for label, anchor in [
+            ("1. Resumen dirección", "resumen_direccion"),
+            ("2. Visión comercial", "direccion_comercial"),
+            ("3. Visión producción", "direccion_produccion"),
+            ("4. Visión calidad", "direccion_calidad"),
+            ("5. Alertas y recomendaciones", "direccion_alertas"),
+        ]:
+            story.append(Paragraph(f'<link href="#{anchor}" color="blue">{label}</link>', self._normal))
+            story.append(Spacer(1, 3))
+        story.append(Spacer(1, 10))
+
+    def _direction_metrics(self, campo: list[dict], almacen: list[dict], pendientes: list[dict], previstos: list[dict]) -> dict[str, Any]:
+        kg_campo = self._sum(campo, "Kg campo")
+        kg_almacen = self._sum(almacen, "Kg stock")
+        kg_pendientes = self._sum(pendientes, "Kg pendiente")
+        kg_previstos = self._sum(previstos, "Kg estimados")
+        demanda_total = kg_pendientes + kg_previstos
+        total_disponible = kg_campo + kg_almacen
+        cobertura = (total_disponible / demanda_total * 100) if demanda_total else None
+        today = datetime.now().date()
+        kg_hoy = self._sum([r for r in pendientes if self._safe_date(self._value(r, "Fecha salida")) and self._safe_date(self._value(r, "Fecha salida")) <= today], "Kg pendiente")
+        kg_manana = self._sum([r for r in pendientes if self._safe_date(self._value(r, "Fecha salida")) == today + timedelta(days=1)], "Kg pendiente")
+        sin_rows = [r for r in campo if self._aprovechamiento_estado_row(r) == "Sin aprovechamiento"]
+        sin_kg = self._sum(sin_rows, "Kg campo")
+        return {"kg_campo": kg_campo, "kg_almacen": kg_almacen, "kg_pendientes": kg_pendientes, "kg_previstos": kg_previstos, "demanda_total": demanda_total, "total_disponible": total_disponible, "cobertura": cobertura, "diferencia": total_disponible - demanda_total, "kg_hoy": kg_hoy, "kg_manana": kg_manana, "sin_kg": sin_kg, "sin_pct": (sin_kg / kg_campo * 100) if kg_campo else 0}
+
+    def _add_direction_cover(self, story: list, filters: dict, campo: list[dict], almacen: list[dict], pendientes: list[dict], previstos: list[dict], generated_at: datetime) -> None:
+        self._section_title(story, "SANSEBAS AGROVIEW - INFORME DIRECCIÓN", "resumen_direccion")
+        metrics = self._direction_metrics(campo, almacen, pendientes, previstos)
+        estado = self._risk_label(metrics["cobertura"])
+        story.append(self._table([
+            ["Fecha generación", generated_at.strftime("%d/%m/%Y %H:%M"), "Cultivo", self._filter_text(filters.get("cultivo"))],
+            ["Campaña", self._filter_text(filters.get("campana")), "Modo pedidos", filters.get("pedidos_modo_label") or filters.get("pedidos_modo", "TODOS")],
+            ["Estado general", estado, "Empresa", self._filter_text(filters.get("empresa"))],
+        ], repeat=0, header=False, col_widths=[4*cm, 9*cm, 4*cm, 9*cm]))
+        story.append(Spacer(1, 8))
+        self._add_kpi_cards(story, [
+            {"label": "STOCK TOTAL DISPONIBLE", "value": self._format_t(metrics["total_disponible"]), "unit": self._format_kg(metrics["total_disponible"])},
+            {"label": "PEDIDOS PENDIENTES", "value": self._format_t(metrics["kg_pendientes"]), "unit": self._format_kg(metrics["kg_pendientes"]), "status": "AMARILLO" if metrics["kg_pendientes"] else "VERDE"},
+            {"label": "COBERTURA GLOBAL", "value": self._format_pct(metrics["cobertura"]) if metrics["cobertura"] is not None else "Sin demanda", "unit": estado, "status": estado},
+            {"label": "DIFERENCIA DISP. VS DEM.", "value": self._format_t(metrics["diferencia"]), "unit": self._format_kg(metrics["diferencia"]), "status": "VERDE" if metrics["diferencia"] >= 0 else "ROJO"},
+            {"label": "KG PENDIENTES HOY", "value": self._format_t(metrics["kg_hoy"]), "unit": self._format_kg(metrics["kg_hoy"]), "status": "ROJO" if metrics["kg_hoy"] else "VERDE"},
+            {"label": "SIN APROVECHAMIENTO", "value": self._format_t(metrics["sin_kg"]), "unit": self._format_pct(metrics["sin_pct"]), "status": self._risk_label(sin_aprovechamiento_pct=metrics["sin_pct"])},
+        ], columns=3, width=8.5*cm)
+        recommendations = self._build_direction_recommendations(campo, almacen, pendientes, previstos)
+        self._add_section_summary(story, "CONCLUSIÓN OPERATIVA", recommendations[:5] or ["Sin conclusiones automáticas con los datos disponibles."])
+        story.append(PageBreak())
 
     def _p(self, value: Any, style: Any | None = None) -> Paragraph:
         return Paragraph(str(value if value is not None else ""), style or self._small)
@@ -189,6 +292,9 @@ class CommercialPdfReportService:
 
     def _format_pct_1(self, value: Any, *, blank: str = "-") -> str:
         return self._format_pct(value, blank=blank) if value is not None else blank
+
+    def _format_pct_value(self, value: Any, *, blank: str = "-") -> str:
+        return self._format_number(self._to_float(value), 1) if value is not None else blank
 
     def _format_date_es(self, value: Any) -> str:
         if isinstance(value, datetime):
@@ -1101,11 +1207,11 @@ class CommercialPdfReportService:
         row[1] = str(totals["partidas"])
         row[5] = self._format_toneladas_cifra(totals["kg_entregado"])
         row[6] = self._format_toneladas_cifra(totals["kg_estimado"])
-        row[8] = self._format_pct_1(self._weighted_pct(totals.get("destrio_kg", 0.0), totals["kg_entregado"]))
-        row[9] = self._format_pct_1(self._weighted_pct(totals.get("industria_kg", 0.0), totals["kg_entregado"]))
+        row[8] = self._format_pct_value(self._weighted_pct(totals.get("destrio_kg", 0.0), totals["kg_entregado"]))
+        row[9] = self._format_pct_value(self._weighted_pct(totals.get("industria_kg", 0.0), totals["kg_entregado"]))
         for i in range(11):
-            row[columns.index(f"CAL {i} %")] = self._format_pct_1(self._weighted_pct(totals["calibres"][str(i)], totals["kg_entregado"]), blank="0,0")
-        row[columns.index("% comercial total")] = self._format_pct_1(self._weighted_pct(totals["kg_estimado"], totals["kg_entregado"]), blank="0,0")
+            row[columns.index(f"CAL {i} %")] = self._format_pct_value(self._weighted_pct(totals["calibres"][str(i)], totals["kg_entregado"]), blank="0,0")
+        row[columns.index("% comercial total")] = self._format_pct_value(self._weighted_pct(totals["kg_estimado"], totals["kg_entregado"]), blank="0,0")
         return row
 
     def _row_float(self, row: dict, *fields: str) -> float | None:
@@ -1139,15 +1245,15 @@ class CommercialPdfReportService:
         kg_estimado = sum(kg_by_cal.values()) if rows else 0.0
         destrio_pct = self._aprovechamiento_pct_from_rows(rows, ("Destrío %", "Destrio %"), ("Podrido",), ("NetoPartida", "Neto"), kg_entregado)
         industria_pct = self._aprovechamiento_pct_from_rows(rows, ("Industria %",), ("Destrios", "Destríos"), ("NetoPartida", "Neto"), kg_entregado)
-        cal_pcts = [self._format_pct_1((kg_by_cal[str(i)] / kg_entregado * 100) if kg_entregado else 0.0, blank="0,0") for i in range(11)]
+        cal_pcts = [self._format_pct_value((kg_by_cal[str(i)] / kg_entregado * 100) if kg_entregado else 0.0, blank="0,0") for i in range(11)]
         row = [
             self._format_cell(self._value(partida, "IdPartida"), "IdPartida"),
             self._format_cell(self._value(partida, "Boleta"), "Boleta"),
             self._format_cell(self._value(partida, "IdSocio"), "IdSocio"),
             self._format_cell(self._value(partida, "Nombre socio") or self._value(partida, "Socio"), "Nombre socio"),
             self._format_cell(self._value(partida, "Fecha carga"), "Fecha carga"),
-            "", "", origen, self._format_pct_1(destrio_pct), self._format_pct_1(industria_pct),
-        ] + cal_pcts + [self._format_pct_1((kg_estimado / kg_entregado * 100) if kg_entregado else 0.0, blank="0,0")]
+            "", "", origen, self._format_pct_value(destrio_pct), self._format_pct_value(industria_pct),
+        ] + cal_pcts + [self._format_pct_value((kg_estimado / kg_entregado * 100) if kg_entregado else 0.0, blank="0,0")]
         return {"grupo_varietal": self._grupo_varietal_partida(partida), "origen": origen, "kg_by_cal": kg_by_cal, "kg_entregado": kg_entregado, "kg_estimado": kg_estimado, "destrio_pct": destrio_pct, "industria_pct": industria_pct, "row": row}
 
     def _grupo_varietal_partida(self, row: dict) -> str:
@@ -1299,6 +1405,144 @@ class CommercialPdfReportService:
         story.append(Paragraph("Detalle agenda de producción", self._normal))
         story.append(self._table(data, row_styles=styles))
         story.append(PageBreak())
+
+
+    def _build_direction_recommendations(self, campo: list[dict], almacen: list[dict], pendientes: list[dict], previstos: list[dict]) -> list[str]:
+        metrics = self._direction_metrics(campo, almacen, pendientes, previstos)
+        recommendations: list[str] = []
+        if metrics["demanda_total"]:
+            if metrics["cobertura"] is not None and metrics["cobertura"] >= 130:
+                recommendations.append("Cobertura global suficiente para la demanda actual.")
+            elif metrics["cobertura"] is not None and metrics["cobertura"] >= 100:
+                recommendations.append("Cobertura global ajustada; revisar disponibilidad por variedad y confección.")
+            else:
+                recommendations.append("Cobertura global insuficiente para la demanda actual.")
+        if metrics["kg_hoy"] > 0:
+            recommendations.append("Priorizar fabricación de pedidos con salida hoy.")
+        if metrics["sin_kg"] > 0:
+            recommendations.append("Revisar stock campo sin aprovechamiento antes del cierre de planificación.")
+        if metrics["kg_almacen"] < metrics["kg_pendientes"]:
+            recommendations.append("El almacén no cubre por sí solo la demanda pendiente; dependerá de campo y confección.")
+        elif metrics["kg_pendientes"] > 0:
+            recommendations.append("El stock de almacén cubre por sí solo los pedidos pendientes.")
+        foco = self._main_value(pendientes, "Grupo confección") or self._main_value(pendientes, "Grupo varietal")
+        if foco:
+            recommendations.append(f"Principal foco de producción: {foco}.")
+        if self._sum(previstos, "Kg estimados") > 0:
+            recommendations.append("Validar pedidos previstos porque pueden consumir disponibilidad adicional.")
+        return recommendations
+
+    def _add_direction_commercial(self, story: list, rows: list[dict]) -> None:
+        self._section_title(story, "VISIÓN COMERCIAL RESUMIDA", "direccion_comercial")
+        if not rows:
+            story.append(Paragraph("Sin pedidos pendientes para construir la visión comercial.", self._normal)); story.append(PageBreak()); return
+        total = self._sum(rows, "Kg pendiente")
+        pedidos = {str(self._value(r, "Pedido") or "").strip() for r in rows if str(self._value(r, "Pedido") or "").strip()}
+        clientes = {str(self._value(r, "Cliente") or "").strip() for r in rows if str(self._value(r, "Cliente") or "").strip()}
+        self._add_kpi_cards(story, [
+            {"label": "KG PENDIENTE", "value": self._format_t(total), "unit": self._format_kg(total), "status": "AMARILLO" if total else "VERDE"},
+            {"label": "PEDIDOS", "value": len(pedidos), "unit": "pendientes"},
+            {"label": "CLIENTES", "value": len(clientes), "unit": "con demanda"},
+            {"label": "FECHA CRÍTICA", "value": self._format_date_es(self._main_value(rows, "Fecha salida")) or "-", "unit": "por kg pendiente"},
+        ], columns=4, width=6.4*cm)
+        client_rows = [["Cliente", "Kg pendiente", "%", "Nº pedidos"]]
+        grouped_clients = self._group_sum(rows, ["Cliente"], {"Kg pendiente": "Kg pendiente"}, count_label="Nº pedidos")
+        for r in sorted(grouped_clients, key=lambda x: x["Kg pendiente"], reverse=True)[:8]:
+            client_rows.append([r.get("Cliente") or "Sin cliente", self._format_kg(r["Kg pendiente"]), self._format_pct(r["Kg pendiente"] / total * 100 if total else 0), r.get("Nº pedidos", 0)])
+        self._add_top_ranking(story, "TOP CLIENTES POR KG PENDIENTE", client_rows, [11*cm, 5*cm, 4*cm, 4*cm])
+        by_date = self._group_sum(rows, ["Fecha salida"], {"Kg pendiente": "Kg pendiente"}, count_label="Nº pedidos")
+        date_data = [["Fecha salida", "Kg pendiente", "Nº pedidos", "Semáforo"]]
+        styles=[]
+        today = datetime.now().date()
+        for r in sorted(by_date, key=lambda x: str(x.get("Fecha salida") or ""))[:10]:
+            status = self._date_status_label(r.get("Fecha salida"), today)
+            sem = "ROJO" if status == "HOY" else "AMARILLO" if status == "MAÑANA" else "VERDE"
+            date_data.append([self._format_date_es(r.get("Fecha salida")), self._format_kg(r["Kg pendiente"]), r.get("Nº pedidos", 0), sem]); styles.append((len(date_data)-1, sem))
+        story.append(Paragraph("DEMANDA POR FECHA", self._normal)); story.append(self._table(date_data, row_styles=styles, col_widths=[6*cm, 6*cm, 4*cm, 4*cm])); story.append(Spacer(1, 6))
+        risks = []
+        if any(s[1] == "ROJO" for s in styles): risks.append("Hay demanda con salida hoy pendiente de fabricación/expedición.")
+        if total > 0 and grouped_clients and sorted(grouped_clients, key=lambda x: x["Kg pendiente"], reverse=True)[0]["Kg pendiente"] / total > 0.4:
+            risks.append("Demanda concentrada en un cliente principal.")
+        self._add_section_summary(story, "RIESGOS COMERCIALES PRINCIPALES", risks or ["Sin riesgos comerciales automáticos relevantes."])
+        story.append(PageBreak())
+
+    def _add_direction_production(self, story: list, rows: list[dict], prevision: list[dict]) -> None:
+        self._section_title(story, "VISIÓN PRODUCCIÓN RESUMIDA", "direccion_produccion")
+        metrics = self._direction_metrics([], [], rows, [])
+        self._add_kpi_cards(story, [
+            {"label": "KG PENDIENTES HOY", "value": self._format_t(metrics["kg_hoy"]), "unit": self._format_kg(metrics["kg_hoy"]), "status": "ROJO" if metrics["kg_hoy"] else "VERDE"},
+            {"label": "KG PENDIENTES MAÑANA", "value": self._format_t(metrics["kg_manana"]), "unit": self._format_kg(metrics["kg_manana"]), "status": "AMARILLO" if metrics["kg_manana"] else "VERDE"},
+        ], columns=2, width=8*cm)
+        today = datetime.now().date()
+        prio = [["Fecha", "Cliente", "Pedido", "Grupo confección", "Kg pendiente", "Prioridad"]]; styles=[]
+        for r in sorted(rows, key=lambda x: (self._safe_date(self._value(x, "Fecha salida")) or date.max, -self._sum([x], "Kg pendiente")))[:10]:
+            status = self._date_status_label(self._value(r, "Fecha salida"), today)
+            sem = "ROJO" if status == "HOY" else "AMARILLO" if status == "MAÑANA" else "VERDE"
+            prio.append([self._format_date_es(self._value(r,"Fecha salida")), self._value(r,"Cliente"), self._value(r,"Pedido"), self._value(r,"Grupo confección"), self._format_kg(self._sum([r],"Kg pendiente")), sem]); styles.append((len(prio)-1, sem))
+        story.append(Paragraph("PRIORIDAD PRODUCCIÓN TOP 10", self._normal)); story.append(self._table(prio, row_styles=styles, col_widths=[3*cm, 6*cm, 4*cm, 6*cm, 4*cm, 3*cm])); story.append(Spacer(1, 6))
+        by_day: dict[str, list[dict]] = {}
+        for r in prevision:
+            by_day.setdefault(self._format_date_es(self._prevision_fecha(r) or ""), []).append(r)
+        data = [["Fecha", "Kg previstos", "Variedad principal"]]
+        for day, day_rows in list(sorted(by_day.items()))[:8]:
+            data.append([day, self._format_kg(self._sum(day_rows, "KgAprox")), self._main_value(day_rows, "Variedad", "KgAprox")])
+        story.append(Paragraph("PREVISIÓN ENTRADA CAMPO RESUMIDA", self._normal)); story.append(self._table(data if len(data)>1 else data + [["-", "0 kg", "-"]], col_widths=[5*cm, 6*cm, 10*cm])); story.append(PageBreak())
+
+    def _add_direction_quality(self, story: list, campo: list[dict], volcado: dict[str, Any]) -> None:
+        self._section_title(story, "VISIÓN CALIDAD / APROVECHAMIENTOS", "direccion_calidad")
+        if not campo:
+            story.append(Paragraph("Sin stock campo para construir la visión de calidad.", self._normal)); story.append(PageBreak()); return
+        metrics = self._direction_metrics(campo, [], [], [])
+        self._add_kpi_cards(story, [{"label": "SIN APROVECHAMIENTO", "value": self._format_t(metrics["sin_kg"]), "unit": self._format_pct(metrics["sin_pct"]), "status": self._risk_label(sin_aprovechamiento_pct=metrics["sin_pct"])}], columns=1, width=8*cm)
+        sin_rows = [r for r in campo if self._aprovechamiento_estado_row(r) == "Sin aprovechamiento"]
+        grouped = self._group_sum(sin_rows, ["Variedad"], {"Kg campo": "Kg campo"}, count_label="Nº partidas") if sin_rows else []
+        top = [["Variedad", "Kg sin aprovechamiento", "Nº partidas", "Estado"]]
+        for r in sorted(grouped, key=lambda x: x["Kg campo"], reverse=True)[:8]:
+            top.append([r.get("Variedad") or "Sin especificar", self._format_kg(r["Kg campo"]), r.get("Nº partidas",0), self._risk_label(sin_aprovechamiento_pct=metrics["sin_pct"])])
+        story.append(Paragraph("TOP VARIEDADES SIN APROVECHAMIENTO", self._normal)); story.append(self._table(top if len(top)>1 else top + [["Sin incidencias", "0 kg", 0, "VERDE"]], row_styles=[(i, row[3]) for i,row in enumerate(top[1:],1)], col_widths=[9*cm, 6*cm, 4*cm, 4*cm])); story.append(Spacer(1, 6))
+        summary = volcado.get("summary") if isinstance(volcado, dict) else None
+        volcado_text = "Aprovechamiento de volcado disponible para contraste." if summary else "Sin resumen de aprovechamiento de volcado disponible."
+        self._add_section_summary(story, "ESTADO APROVECHAMIENTO DE VOLCADO", [volcado_text])
+        story.append(PageBreak())
+
+    def _build_alert_items(self, campo: list[dict], almacen: list[dict], pendientes: list[dict], previstos: list[dict]) -> list[dict[str, Any]]:
+        today = datetime.now().date()
+        alert_items: list[dict[str, Any]] = []
+        grouped: dict[tuple[str, str, str], list[dict]] = {}
+        for r in pendientes:
+            if self._sum([r], "Kg pendiente") <= 0: continue
+            key = (str(self._value(r, "Pedido") or ""), str(self._value(r, "Cliente") or ""), str(self._value(r, "Fecha salida") or ""))
+            grouped.setdefault(key, []).append(r)
+        for (pedido, cliente, fecha), grows in grouped.items():
+            status = self._date_status_label(fecha, today)
+            if status not in {"HOY", "MAÑANA"}: continue
+            kg = self._sum(grows, "Kg pendiente")
+            nivel = "ROJO" if status == "HOY" else "AMARILLO"
+            alert_items.append({"nivel": nivel, "area": "Producción", "kg": kg, "mensaje": f"{pedido or '-'}: {self._format_kg(kg)} pendientes {'hoy' if nivel == 'ROJO' else 'mañana'}", "accion": "Priorizar fabricación" if nivel == "ROJO" else "Planificar fabricación"})
+        stock_map = {r["Grupo varietal"]: r["Kg stock"] for r in self._group_rows(almacen, ["Grupo varietal"], {"Kg stock": "Kg stock"})}
+        for d in self._group_rows(pendientes, ["Grupo varietal"], {"Kg pendiente": "Kg pendiente"}):
+            deficit = d["Kg pendiente"] - stock_map.get(d["Grupo varietal"], 0)
+            if deficit > 0: alert_items.append({"nivel": "AMARILLO", "area": "Almacén", "kg": deficit, "mensaje": f"{d['Grupo varietal'] or 'Sin grupo'}: déficit {self._format_kg(deficit)}", "accion": "Revisar campo y confección"})
+        if campo:
+            sin = [r for r in campo if self._aprovechamiento_estado_row(r) == "Sin aprovechamiento"]
+            sin_pct = self._sum(sin, "Kg campo") / self._sum(campo, "Kg campo") * 100 if self._sum(campo, "Kg campo") else 0
+            if sin_pct > 5: alert_items.append({"nivel": "ROJO" if sin_pct > 15 else "AMARILLO", "area": "Calidad", "kg": self._sum(sin, "Kg campo"), "mensaje": f"Sin aprovechamiento {self._format_pct(sin_pct)}", "accion": "Completar aprovechamientos"})
+        if self._sum(previstos, "Kg estimados") > 0:
+            alert_items.append({"nivel": "AMARILLO", "area": "Comercial", "kg": self._sum(previstos, "Kg estimados"), "mensaje": f"Pedidos previstos {self._format_kg(self._sum(previstos, 'Kg estimados'))}", "accion": "Confirmar demanda"})
+        severity = {"ROJO": 0, "AMARILLO": 1, "VERDE": 2}
+        return sorted(alert_items, key=lambda a: (severity.get(a["nivel"], 3), -a.get("kg", 0)))
+
+    def _add_direction_alerts_recommendations(self, story: list, campo: list[dict], almacen: list[dict], pendientes: list[dict], previstos: list[dict]) -> None:
+        self._section_title(story, "ALERTAS Y RECOMENDACIONES", "direccion_alertas")
+        items = self._build_alert_items(campo, almacen, pendientes, previstos)[:10]
+        alerts = [["Nivel", "Área", "Resumen", "Acción"]]
+        for a in items:
+            alerts.append([a["nivel"], a["area"], self._compact_text(a["mensaje"], 80), self._compact_text(a["accion"], 55)])
+        if len(alerts) == 1:
+            alerts.append(["VERDE", "General", "Sin alertas automáticas.", "Mantener seguimiento"])
+        story.append(self._table(alerts, row_styles=[(i, row[0]) for i, row in enumerate(alerts[1:],1)], col_widths=[2.5*cm, 3.5*cm, 13*cm, 7*cm], center_cols=[0]))
+        story.append(Spacer(1, 8))
+        self._add_section_summary(story, "RECOMENDACIONES OPERATIVAS", self._build_direction_recommendations(campo, almacen, pendientes, previstos)[:8] or ["Sin recomendaciones automáticas con los datos disponibles."])
 
     def _add_alertas(self, story: list, campo: list[dict], almacen: list[dict], pendientes: list[dict], previstos: list[dict]) -> None:
         self._section_title(story, "RIESGOS / ALERTAS", "riesgos_alertas")

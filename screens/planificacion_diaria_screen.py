@@ -184,7 +184,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Button(btns, text="Reaplicar filtros", command=lambda: self._reload_with_invalidated_cache("reaplicar_filtros", save_filters=True)).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Exportar Excel", command=self.export_excel).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="Exportar diagnóstico", command=self.export_diagnostico).pack(side="left", padx=(0, 8))
-        ttk.Button(btns, text="Informe comercial PDF", command=self.export_informe_comercial_pdf).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Exportar PDF operativo", command=lambda: self.export_informe_comercial_pdf("operativo")).pack(side="left", padx=(0, 8))
+        ttk.Button(btns, text="Exportar PDF dirección", command=lambda: self.export_informe_comercial_pdf("direccion")).pack(side="left", padx=(0, 8))
         self._btn_actualizar_planificacion = ttk.Button(btns, text="Actualizar planificación", command=self._actualizar_planificacion)
         self._btn_actualizar_planificacion.pack(side="left", padx=(0, 8))
         self._btn_actualizar_foto = ttk.Button(btns, text="Actualizar foto local", command=self._actualizar_foto_local)
@@ -1412,11 +1413,12 @@ class PlanificacionDiariaScreen(ttk.Frame):
         pedidos_previstos_rows = self._rows_from_table(self.pedidos_previstos_panel["table"]) if self.pedidos_previstos_panel else []
         return stock_campo_rows, stock_almacen_rows, prevision_recoleccion_rows, pedidos_pendientes_rows, pedidos_previstos_rows, aprovechamiento_volcado, aprovechamiento_campo_detalle
 
-    def export_informe_comercial_pdf(self) -> None:
+    def export_informe_comercial_pdf(self, report_mode: str = "operativo") -> None:
         generated_at = datetime.now()
         suggested_filename = self.commercial_pdf_service.default_filename(
             self.filter_widgets["cultivo"].get_selected(),
             now=generated_at,
+            report_mode=report_mode,
         )
         should_save = messagebox.askyesno(
             "Informe comercial PDF",
@@ -1455,6 +1457,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 aprovechamiento_volcado=aprovechamiento_volcado,
                 aprovechamiento_campo_detalle={k: [dict(r) for r in v] for k, v in aprovechamiento_campo_detalle.items()},
                 generated_at=generated_at,
+                report_mode=report_mode,
             )
             self._open_pdf_preview(path)
         except Exception as exc:
