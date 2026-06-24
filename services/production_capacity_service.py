@@ -91,12 +91,18 @@ class ProductionCapacityService:
             if int(rr.get("activo", 1) or 0) == 1:
                 resource_lines[str(rr.get("recurso_codigo", "") or "").strip()].add(str(rr.get("linea_productiva", "") or "").strip())
 
+        resource_filter = self._filter_resources_for_current_crop(resources, inputs)
+        visible_resource_codes = resource_filter["visible_codes"]
+        resources = resource_filter["resources"]
+
         rows = []
         kg_total_capacidad = 0.0
         kg_total_pedidos = 0.0
         recursos_saturados = 0
         for resource in resources:
             code = str(resource.get("codigo", "") or "").strip()
+            if code not in visible_resource_codes:
+                continue
             active = int(resource.get("activo", 0) or 0) == 1
             kg_h = float(resource.get("capacidad_kg_h", 0) or 0) * max(1, int(resource.get("numero_unidades", 1) or 1))
             lines = sorted(line for line in resource_lines.get(code, set()) if line)
@@ -131,6 +137,8 @@ class ProductionCapacityService:
                 "Observaciones": "; ".join(obs),
             })
 
+        if not resources:
+            rows.append({"Recurso": "Sin recursos compatibles configurados", "Tipo recurso": "", "Flujo / línea productiva": "", "Activo": "-", "Kg/h": 0, "Horas útiles día": round(horas_utiles, 2), "Capacidad kg/día": 0, "Capacidad útil kg/día": 0, "Kg pedidos asignables": 0, "Ocupación %": 0, "Estado": "Sin recursos compatibles configurados", "Observaciones": "No existe ningún recurso compatible con el cultivo activo"})
         if unmapped_orders:
             no_conf = [i for i in unmapped_orders if i.get("Tipo incidencia") == "No confeccionable"]
             rows.append({"Recurso": "No confeccionable" if no_conf else "Sin mapeo", "Tipo recurso": "Pedidos", "Flujo / línea productiva": "", "Activo": "-", "Kg/h": 0, "Horas útiles día": round(horas_utiles, 2), "Capacidad kg/día": 0, "Capacidad útil kg/día": 0, "Kg pedidos asignables": round(sum(float(i.get("kg", 0) or 0) for i in unmapped_orders), 2), "Ocupación %": 0, "Estado": "No confeccionable" if no_conf else "Sin mapeo", "Observaciones": f"{len(unmapped_orders)} pedido(s) sin mapeo productivo; {len(no_conf)} no confeccionable(s)" if no_conf else f"{len(unmapped_orders)} pedido(s) sin mapeo productivo"})
@@ -755,6 +763,10 @@ class ProductionCapacityService:
                 incidencias.append({"tipo": "Recurso inactivo", "motivo": f"Recurso {code} inactivo", "accion": "Activar recurso o reasignar carga"})
 
             include = True
+            compatible_crop, crop_motivo = self._resource_crop_compatibility_detail(row or {"codigo": code}, inputs)
+            if not compatible_crop:
+                incidencias.append({"tipo": "Recurso no compatible con cultivo", "motivo": f"{code}: {crop_motivo}", "accion": "Revisar maestros de recursos, flujos, compatibilidades o disponibilidad"})
+                include = False
             if str(row.get("tipo_recurso", "")).strip().lower() == "pesadora" or code.startswith("PESADORA_"):
                 if self._resource_has_compatibility_rule(code, "tipo_malla", tipo_malla, inputs):
                     compatibility_rules_found = True
@@ -794,6 +806,102 @@ class ProductionCapacityService:
                 continue
             for inc in payload.get("incidencias", []):
                 out.append({**payload["row"], "linea_productiva": line, "kg_asignados": 0.0, "_incidencias": [inc], "_solo_incidencia": True})
+        return out
+
+    def resource_is_compatible_with_current_crop(self, resource: dict, inputs: dict) -> bool:
+        compatible, _motivo = self._resource_crop_compatibility_detail(resource, inputs)
+        return compatible
+
+    def _filter_resources_for_current_crop(self, resources: list[dict], inputs: dict) -> dict:
+        cultivo = self._single_forecast_context_value(inputs.get("filters", {}), "cultivo") or str(inputs.get("cultivo_actual", "") or "").strip()
+        visible: list[dict] = []
+        hidden = 0
+        for resource in resources:
+            compatible, motivo = self._resource_crop_compatibility_detail(resource, inputs)
+            code = str(resource.get("codigo", "") or "").strip()
+            logger.info(
+                "[CAPACITY RESOURCE FILTER] cultivo=%s recurso=%s compatible=%s motivo=%s",
+                cultivo,
+                code,
+                compatible,
+                motivo,
+            )
+            if compatible:
+                visible.append(resource)
+            else:
+                hidden += 1
+        logger.info(
+            "[CAPACITY RESOURCE FILTER SUMMARY] cultivo=%s visibles=%s ocultos=%s",
+            cultivo,
+            len(visible),
+            hidden,
+        )
+        return {"resources": visible, "visible_codes": {str(r.get("codigo", "") or "").strip() for r in visible}}
+
+    def _resource_crop_compatibility_detail(self, resource: dict, inputs: dict) -> tuple[bool, str]:
+        code = str(resource.get("codigo", "") or "").strip()
+        cultivo = self._single_forecast_context_value(inputs.get("filters", {}), "cultivo") or str(inputs.get("cultivo_actual", "") or "").strip()
+        if not cultivo:
+            return True, "sin cultivo activo"
+        if not code:
+            return False, "recurso sin código"
+        if int(resource.get("activo", 0) or 0) != 1:
+            return False, "recurso inactivo"
+        availability_issue = self._resource_availability_issue(code, inputs)
+        if availability_issue:
+            return False, availability_issue.get("motivo", "recurso no disponible por contexto")
+        comp = self._resource_explicit_crop_compatibility(code, cultivo, inputs)
+        if comp is not None:
+            return comp
+        lines = self._active_resource_lines(code, inputs)
+        if not lines:
+            return False, "sin línea/flujo asociado"
+        crop_lines = self._crop_compatible_lines(cultivo, inputs)
+        compatible_lines = sorted(lines & crop_lines)
+        if not compatible_lines:
+            return False, "sin flujo productivo compatible con el cultivo activo"
+        return True, "flujo compatible: " + ", ".join(compatible_lines)
+
+    def _resource_explicit_crop_compatibility(self, recurso_codigo: str, cultivo: str, inputs: dict) -> tuple[bool, str] | None:
+        crop_keys = {"cultivo", "cultivos", "cultivo_actual", "crop", "crops"}
+        matching_key_rows = []
+        target = self._normalize_crop(cultivo)
+        for row in inputs.get("resource_compatibilities", []):
+            if str(row.get("recurso_codigo", "") or "").strip() != recurso_codigo:
+                continue
+            compatible_con = str(row.get("compatible_con", "") or "").strip().lower()
+            if compatible_con not in crop_keys:
+                continue
+            matching_key_rows.append(row)
+            values = [self._normalize_crop(v) for v in re.split(r"[,;/|]+", str(row.get("valor", "") or "")) if str(v).strip()]
+            if target in values or any(v in {"TODOS", "ALL", "GENERAL"} for v in values):
+                active = int(row.get("activo", 0) or 0) == 1
+                return active, "compatibilidad explícita activa" if active else "compatibilidad explícita inactiva"
+        if matching_key_rows:
+            return False, "sin compatibilidad explícita para el cultivo activo"
+        return None
+
+    def _active_resource_lines(self, recurso_codigo: str, inputs: dict) -> set[str]:
+        return {
+            str(row.get("linea_productiva", "") or "").strip()
+            for row in inputs.get("line_required_resources", [])
+            if str(row.get("recurso_codigo", "") or "").strip() == recurso_codigo
+            and int(row.get("activo", 1) or 0) == 1
+            and str(row.get("linea_productiva", "") or "").strip()
+        }
+
+    def _crop_compatible_lines(self, cultivo: str, inputs: dict) -> set[str]:
+        lines = {
+            str(line.get("codigo", "") or "").strip()
+            for line in inputs.get("lines", [])
+            if int(line.get("activa", 0) or 0) == 1 and str(line.get("codigo", "") or "").strip()
+        }
+        out: set[str] = set()
+        for collection in ("packaging_mapping", "base_packaging"):
+            for conf in inputs.get(collection, []):
+                line = str(conf.get("linea_productiva", "") or "").strip()
+                if line in lines and self._is_productive_config_compatible_with_crop(conf, cultivo):
+                    out.add(line)
         return out
 
     def calculate_resource_capacity_usage(self, resource_rows: list[dict], kg: float, horas_utiles_dia: float, usage_mode: str | None = None) -> list[dict]:
