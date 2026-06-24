@@ -411,8 +411,30 @@ class PlanificacionDiariaScreen(ttk.Frame):
     def _cache_set(self, key: str, value) -> None:
         self._planning_cache[key] = value
 
+    def _balance_preloaded_context(self) -> dict:
+        preloaded: dict = {}
+        cached_almacen = self._cache_get("stock_almacen")
+        if cached_almacen is not None:
+            stock_rows, detalle_rows, _warning = cached_almacen
+            preloaded["stock_almacen"] = stock_rows
+            preloaded["stock_almacen_detalle"] = detalle_rows
+        cached_pedidos = self._cache_get("pedidos_pendientes")
+        if cached_pedidos is not None:
+            pedidos_raw, _pedidos_view, _kpi = cached_pedidos
+            preloaded["pedidos_pendientes"] = pedidos_raw
+        cached_campo = self._cache_get("stock_campo")
+        if cached_campo is not None:
+            stock_campo_rows, _updated, _warning = cached_campo
+            preloaded["stock_campo"] = stock_campo_rows
+        return preloaded
+
     def load_data(self, save_filters: bool = True) -> None:
         tab_activa = self.tabs.tab(self.tabs.select(), "text")
+        perf_tab = {"Pedidos pendientes": "Pedidos", "Balance": "Balance", "Stock almacén": "StockAlmacen"}.get(tab_activa)
+        logger = logging.getLogger(__name__)
+        total_t0 = perf_counter()
+        if perf_tab:
+            logger.info("[PERF Tab.%s.Start]", perf_tab)
         payload = self._filters_payload()
         self._ensure_cache_key(payload)
         updated = None
@@ -433,12 +455,15 @@ class PlanificacionDiariaScreen(ttk.Frame):
             cached = self._cache_get("stock_almacen")
             if cached is not None:
                 self.stock_almacen_rows, self.stock_almacen_detalle_rows, almacen_warning = cached
+                logger.info("[PERF Tab.StockAlmacen.Service] tiempo=%.3fs rows=%s cache=hit", 0.0, len(self.stock_almacen_rows))
                 if almacen_warning:
                     messagebox.showwarning("Planificación diaria", almacen_warning)
             else:
                 try:
+                    service_t0 = perf_counter()
                     self.stock_almacen_rows, almacen_warning = self.service.load_stock_almacen(payload)
                     self.stock_almacen_detalle_rows = self.service.load_stock_almacen_detalle_palets(payload)
+                    logger.info("[PERF Tab.StockAlmacen.Service] tiempo=%.3fs rows=%s", perf_counter() - service_t0, len(self.stock_almacen_rows))
                     self._cache_set("stock_almacen", (self.stock_almacen_rows, self.stock_almacen_detalle_rows, almacen_warning))
                     if almacen_warning:
                         messagebox.showwarning("Planificación diaria", almacen_warning)
@@ -451,14 +476,17 @@ class PlanificacionDiariaScreen(ttk.Frame):
             cached = self._cache_get("pedidos_pendientes")
             if cached is not None:
                 self.pedidos_pendientes_rows_raw, self.pedidos_pendientes_rows, pedidos_kpi = cached
+                logger.info("[PERF Tab.Pedidos.Service] tiempo=%.3fs rows=%s cache=hit", 0.0, len(self.pedidos_pendientes_rows))
                 self._refresh_pedidos_local_filter_options(self.pedidos_pendientes_rows_raw)
             else:
                 modo_pedidos = self.pedidos_modo_var.get()
                 try:
+                    service_t0 = perf_counter()
                     pedidos_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, modo_pedidos)
                     self.pedidos_pendientes_rows_raw = [dict(r) for r in pedidos_rows]
                     self._refresh_pedidos_local_filter_options(pedidos_rows)
                     self.pedidos_pendientes_rows, pedidos_kpi = self._apply_pedidos_local_filters(pedidos_rows, pedidos_kpi)
+                    logger.info("[PERF Tab.Pedidos.Service] tiempo=%.3fs rows=%s", perf_counter() - service_t0, len(self.pedidos_pendientes_rows))
                     self._cache_set("pedidos_pendientes", (self.pedidos_pendientes_rows_raw, self.pedidos_pendientes_rows, pedidos_kpi))
                 except Exception as exc:
                     self.pedidos_pendientes_rows = []
@@ -475,10 +503,14 @@ class PlanificacionDiariaScreen(ttk.Frame):
             cached = self._cache_get("balance")
             if cached is not None:
                 self.balance_rows_all, self.balance_rows = cached
+                logger.info("[PERF Tab.Balance.Service] tiempo=%.3fs rows=%s cache=hit", 0.0, len(self.balance_rows))
             else:
                 try:
-                    self.balance_rows_all = self.service.load_balance_planificacion(payload, policy=self._build_sim_policy())
+                    service_t0 = perf_counter()
+                    preloaded = self._balance_preloaded_context()
+                    self.balance_rows_all = self.service.load_balance_planificacion(payload, policy=self._build_sim_policy(), preloaded=preloaded)
                     self.balance_rows = self._build_balance_view_rows(self.balance_rows_all)
+                    logger.info("[PERF Tab.Balance.Service] tiempo=%.3fs rows=%s", perf_counter() - service_t0, len(self.balance_rows))
                     self._cache_set("balance", (self.balance_rows_all, self.balance_rows))
                 except Exception as exc:
                     self.balance_rows_all = []
@@ -510,9 +542,26 @@ class PlanificacionDiariaScreen(ttk.Frame):
                     self.last_capacity_payload = None
                     messagebox.showwarning("Capacidad productiva", f"No se pudo calcular capacidad productiva: {exc}")
         self.campo_table.set_rows(self.stock_campo_rows)
-        self.almacen_table.set_rows(self.stock_almacen_rows)
-        self.pedidos_table.set_rows(self.pedidos_pendientes_rows)
-        self.balance_table.set_rows(self.balance_rows)
+        render_t0 = perf_counter()
+        if tab_activa == "Stock almacén":
+            self.almacen_table.set_rows_profiled(self.stock_almacen_rows, "StockAlmacen")
+            logger.info("[PERF Tab.StockAlmacen.Render] tiempo=%.3fs rows=%s", perf_counter() - render_t0, len(self.stock_almacen_rows))
+        else:
+            self.almacen_table.set_rows(self.stock_almacen_rows)
+        render_t0 = perf_counter()
+        if tab_activa == "Pedidos pendientes":
+            self.pedidos_table.set_rows_profiled(self.pedidos_pendientes_rows, "Pedidos")
+            logger.info("[PERF Tab.Pedidos.Render] tiempo=%.3fs rows=%s", perf_counter() - render_t0, len(self.pedidos_pendientes_rows))
+        else:
+            self.pedidos_table.set_rows(self.pedidos_pendientes_rows)
+        render_t0 = perf_counter()
+        if tab_activa == "Balance":
+            self.balance_table.set_rows_profiled(self.balance_rows, "Balance")
+            logger.info("[PERF Tab.Balance.Render] tiempo=%.3fs rows=%s", perf_counter() - render_t0, len(self.balance_rows))
+        else:
+            self.balance_table.set_rows(self.balance_rows)
+        if perf_tab:
+            logger.info("[PERF Tab.%s.Total] tiempo=%.3fs", perf_tab, perf_counter() - total_t0)
         self._update_kpis(updated, pedidos_kpi)
         if update_warning:
             messagebox.showwarning("Planificación diaria", "No se pudo leer un archivo auxiliar de actualización. Se continuará sin ese dato.")
