@@ -2740,10 +2740,14 @@ class PlanningRepository:
         return data, last_update, update_warning
 
     def get_stock_almacen(self, filters: dict) -> tuple[list[dict], str | None]:
+        t0_total = time.perf_counter()
         path = self.db_loteado
         logger.debug("BD loteado usada: %s", path)
         if not path.exists():
             logger.warning("No existe la base de loteado: %s", path)
+            logger.info("[PERF Repo.StockAlmacen.Query] tiempo=%.3fs rows=%s", 0.0, 0)
+            logger.info("[PERF Repo.StockAlmacen.Format] tiempo=%.3fs", 0.0)
+            logger.info("[PERF Repo.StockAlmacen.Total] tiempo=%.3fs", time.perf_counter() - t0_total)
             return [], None
         with sqlite3.connect(path) as conn:
             conn.row_factory = sqlite3.Row
@@ -2817,8 +2821,11 @@ class PlanningRepository:
                 GROUP BY ldo.CULTIVO, ldo.""" + f'"{camp_col}"' + """, l.Variedad, l.Calibre,
                          l.Lote, mc.MARCA, l.IdConfeccion, l.Confeccion, mv.GRUPO, mv.SUBGRUPO
             """
+            query_t0 = time.perf_counter()
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+            logger.info("[PERF Repo.StockAlmacen.Query] tiempo=%.3fs rows=%s", time.perf_counter() - query_t0, len(rows))
 
+        format_t0 = time.perf_counter()
         data: list[dict] = []
         for r in rows:
             data.append(
@@ -2830,6 +2837,8 @@ class PlanningRepository:
                     "Agrupado": "Sí" if self._is_calibre_agrupado(r.get("Calibre", "")) else "No",
                 }
             )
+        logger.info("[PERF Repo.StockAlmacen.Format] tiempo=%.3fs", time.perf_counter() - format_t0)
+        logger.info("[PERF Repo.StockAlmacen.Total] tiempo=%.3fs", time.perf_counter() - t0_total)
         return data, None
 
     def get_stock_almacen_detalle_palets(self, filters: dict) -> list[dict]:
@@ -2909,6 +2918,10 @@ class PlanningRepository:
         kpi_vacio = {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Kg terminado/completo total": 0.0, "Merma kg total": 0.0, "% merma total": 0.0, "Nº pedidos": 0, "Nº pedidos pendientes": 0, "Nº pedidos terminados": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0, "Nº líneas sin confección estimadas": 0}
         if not pedidos_path.exists():
             logger.warning("No existe DBPedidos.sqlite en la ruta esperada")
+            logger.info("[PERF Repo.Pedidos.Query] tiempo=%.3fs rows=%s", 0.0, 0)
+            logger.info("[PERF Repo.Pedidos.Enrich] tiempo=%.3fs", 0.0)
+            logger.info("[PERF Repo.Pedidos.KPI] tiempo=%.3fs", 0.0)
+            logger.info("[PERF Repo.Pedidos.Total] tiempo=%.3fs", time.perf_counter() - t0_total)
             return [], kpi_vacio
 
         with sqlite3.connect(pedidos_path) as conn:
@@ -3147,7 +3160,10 @@ class PlanningRepository:
                          p."Linea" ASC
             """
             logger.debug("get_pedidos_pendientes: después de pedidos_filtrados (query construida)")
+            query_t0 = time.perf_counter()
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+            logger.info("[PERF Repo.Pedidos.Query] tiempo=%.3fs rows=%s", time.perf_counter() - query_t0, len(rows))
+            enrich_t0 = time.perf_counter()
             mconfecciones = self.cargar_mconfecciones(conn)
             rows = [
                 self._normalizar_pedido_pendiente_operativo(
@@ -3165,13 +3181,17 @@ class PlanningRepository:
                     and str(r.get("Grupo confección", "")).strip() != "DESCONOCIDO"
                 ),
             )
+            logger.info("[PERF Repo.Pedidos.Enrich] tiempo=%.3fs", time.perf_counter() - enrich_t0)
             logger.debug("get_pedidos_pendientes: después de query final (%s filas)", len(rows))
             logger.debug("get_pedidos_pendientes: tiempo total %.3fs", time.perf_counter() - t0_total)
             logger.debug("Pedidos pendientes finales: %s", len(rows))
             if not rows:
                 logger.warning("No se encontraron pedidos pendientes con los filtros aplicados.")
+                logger.info("[PERF Repo.Pedidos.KPI] tiempo=%.3fs", 0.0)
+                logger.info("[PERF Repo.Pedidos.Total] tiempo=%.3fs", time.perf_counter() - t0_total)
                 return [], kpi_vacio
 
+        kpi_t0 = time.perf_counter()
         pedidos_unicos = {str(r.get("IdPedidoLora") or "").strip() for r in rows if str(r.get("IdPedidoLora") or "").strip()}
         kpi = {
             "Kg pedido teórico total": sum(float(r.get("Kg pedido teórico", 0) or 0) for r in rows),
@@ -3189,6 +3209,8 @@ class PlanningRepository:
         }
         pedido_total = float(kpi.get("Kg pedido teórico total", 0) or 0)
         kpi["% merma total"] = round((float(kpi.get("Merma kg total", 0) or 0) / pedido_total) * 100, 2) if pedido_total > 0 else 0.0
+        logger.info("[PERF Repo.Pedidos.KPI] tiempo=%.3fs", time.perf_counter() - kpi_t0)
+        logger.info("[PERF Repo.Pedidos.Total] tiempo=%.3fs", time.perf_counter() - t0_total)
         return rows, kpi
 
 
@@ -3239,11 +3261,29 @@ class PlanningRepository:
         return row
 
 
-    def get_balance_planificacion(self, filters: dict, policy: dict | None = None) -> list[dict]:
+    def get_balance_planificacion(self, filters: dict, policy: dict | None = None, preloaded: dict | None = None) -> list[dict]:
+        total_t0 = time.perf_counter()
         policy_cfg = self._merge_policy(policy)
-        detalle_rows = self.get_stock_almacen_detalle_palets(filters)
-        pedidos_rows, _ = self.get_pedidos_pendientes(filters, modo_pedidos=str(filters.get("pedidos_modo") or "10_dias"))
-        stock_campo_rows, _, _ = self.get_stock_campo(filters)
+        preloaded = preloaded or {}
+        t0 = time.perf_counter()
+        if "stock_almacen_detalle" in preloaded:
+            detalle_rows = preloaded["stock_almacen_detalle"]
+        else:
+            detalle_rows = self.get_stock_almacen_detalle_palets(filters)
+        logger.info("[PERF Repo.Balance.StockAlmacen] tiempo=%.3fs rows=%s", time.perf_counter() - t0, len(detalle_rows))
+        t0 = time.perf_counter()
+        if "pedidos_pendientes" in preloaded:
+            pedidos_rows = preloaded["pedidos_pendientes"]
+        else:
+            pedidos_rows, _ = self.get_pedidos_pendientes(filters, modo_pedidos=str(filters.get("pedidos_modo") or "10_dias"))
+        logger.info("[PERF Repo.Balance.Pedidos] tiempo=%.3fs rows=%s", time.perf_counter() - t0, len(pedidos_rows))
+        t0 = time.perf_counter()
+        if "stock_campo" in preloaded:
+            stock_campo_rows = preloaded["stock_campo"]
+        else:
+            stock_campo_rows, _, _ = self.get_stock_campo(filters)
+        logger.info("[PERF Repo.Balance.StockCampo] tiempo=%.3fs rows=%s", time.perf_counter() - t0, len(stock_campo_rows))
+        aprovechamiento_t0 = time.perf_counter()
         mconfecciones: dict[str, dict[str, Any]] = {}
         try:
             with sqlite3.connect(self._db_path(DB_PEDIDOS).as_posix()) as conn_ped:
@@ -3299,6 +3339,7 @@ class PlanningRepository:
             )
             campo_map[key] = campo_map.get(key, 0.0) + float(row.get("Kg campo", 0) or 0)
         campo_real_rows, campo_sin_datos = (self._get_campo_disponibilidad_aprovechamiento(stock_campo_rows, filters) if policy_cfg["usar_entrada_estimada"] else ([], 0))
+        logger.info("[PERF Repo.Balance.Aprovechamiento] tiempo=%.3fs rows=%s", time.perf_counter() - aprovechamiento_t0, len(campo_real_rows))
         campo_tiene_desglose = bool(campo_real_rows)
         for c_row in campo_real_rows:
             c_key = (
@@ -3335,6 +3376,7 @@ class PlanningRepository:
             "BALANCE TEST calibres CAL 1/2 vs 0/1/2/3 = %s",
             self.comparar_calibres("CAL 1/2", "0/1/2/3", calibre_map=calibre_map),
         )
+        cobertura_t0 = time.perf_counter()
         data: list[dict] = []
         for key in sorted(keys, key=lambda k: tuple(str(x) for x in k)):
             cultivo, campana, grupo, variedad, calibre, categoria, marca, id_confeccion, confe = key
@@ -3549,6 +3591,8 @@ class PlanningRepository:
                 tuple(str(r.get(k, "")) for k in ("Cultivo", "Campaña", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "IdConfeccion", "Confección")),
             )
         )
+        logger.info("[PERF Repo.Balance.Cobertura] tiempo=%.3fs", time.perf_counter() - cobertura_t0)
+        logger.info("[PERF Repo.Balance.Total] tiempo=%.3fs", time.perf_counter() - total_t0)
         return data
 
     def _build_detalle_simulacion_index(self, detalle_rows: list[dict], calibre_map: dict[str, str] | None = None) -> dict[str, Any]:

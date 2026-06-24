@@ -1,3 +1,5 @@
+import logging
+import time
 import tkinter as tk
 from tkinter import ttk
 
@@ -32,10 +34,18 @@ class DataTable(ttk.Frame):
         self.tree.tag_configure("tag_orange", foreground="#e65100")
 
     def set_rows(self, rows: list[dict]) -> None:
+        self.set_rows_profiled(rows)
+
+    def set_rows_profiled(self, rows: list[dict], perf_name: str | None = None) -> None:
+        logger = logging.getLogger(__name__)
+        total_t0 = time.perf_counter()
+        delete_t0 = time.perf_counter()
         children = self.tree.get_children()
         if children:
             self.tree.delete(*children)
+        delete_secs = time.perf_counter() - delete_t0
 
+        tag_t0 = time.perf_counter()
         prepared_rows = []
         for row in rows:
             values = [row.get(col, "") for col in self.columns]
@@ -45,6 +55,20 @@ class DataTable(ttk.Frame):
             elif not isinstance(tags, (tuple, list)):
                 tags = ()
             prepared_rows.append((values, tuple(tags)))
+        tag_secs = time.perf_counter() - tag_t0
 
+        insert_t0 = time.perf_counter()
         for values, tags in prepared_rows:
             self.tree.insert("", "end", values=values, tags=tags)
+        insert_secs = time.perf_counter() - insert_t0
+
+        autowidth_t0 = time.perf_counter()
+        # No hay autosize dinámico en esta tabla; se mide para distinguirlo del insert.
+        autowidth_secs = time.perf_counter() - autowidth_t0
+        total_secs = time.perf_counter() - total_t0
+        if perf_name:
+            logger.info("[PERF Tab.%s.Render.Delete] tiempo=%.3fs rows=%s", perf_name, delete_secs, len(rows))
+            logger.info("[PERF Tab.%s.Render.Insert] tiempo=%.3fs rows=%s", perf_name, insert_secs, len(rows))
+            logger.info("[PERF Tab.%s.Render.AutoWidth] tiempo=%.3fs rows=%s", perf_name, autowidth_secs, len(rows))
+            logger.info("[PERF Tab.%s.Render.Tags] tiempo=%.3fs rows=%s", perf_name, tag_secs, len(rows))
+            logger.info("[PERF Tab.%s.Render.Total] tiempo=%.3fs rows=%s", perf_name, total_secs, len(rows))
