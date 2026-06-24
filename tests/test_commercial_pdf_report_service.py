@@ -265,3 +265,40 @@ def test_prevision_recoleccion_detalle_solo_dia_operativo(monkeypatch, tmp_path)
     assert len(detail_tables) == 1
     assert any(row[2] == "B19" for row in detail_tables[0][1:])
     assert not any(len(row) > 2 and row[2] == "B18" for row in detail_tables[0][1:])
+
+@pytest.mark.skipif(not REPORTLAB_AVAILABLE, reason="ReportLab no instalado")
+def test_generate_pdf_direccion_usa_flujo_reducido(monkeypatch, tmp_path):
+    called = []
+    service = CommercialPdfReportService()
+
+    def mark(name):
+        def _wrapper(story, *args, **kwargs):
+            called.append(name)
+        return _wrapper
+
+    monkeypatch.setattr(service, "_add_stock_campo", mark("stock_campo"))
+    monkeypatch.setattr(service, "_add_stock_almacen", mark("stock_almacen"))
+    monkeypatch.setattr(service, "_add_pedidos", mark("pedidos"))
+
+    path = service.generate(
+        tmp_path / "direccion.pdf",
+        filters={"cultivo": ["SANDIA"], "campana": ["2026"]},
+        stock_campo_rows=[{"Variedad": "V1", "Kg campo": 1000, "Estado aprovechamiento": "Sin aprovechamiento"}],
+        stock_almacen_rows=[{"Grupo varietal": "G1", "Kg stock": 200}],
+        pedidos_pendientes_rows=[{"Fecha salida": "2026-06-24", "Cliente": "C1", "IdPedidoLora": "P1", "Grupo confección": "ENCAJADO", "Grupo varietal": "G1", "Kg pendiente": 500}],
+        report_mode="direccion",
+    )
+
+    _assert_pdf(path)
+    assert called == []
+
+
+def test_default_filename_mantiene_comercial_y_permite_modos():
+    from datetime import datetime
+
+    service = CommercialPdfReportService()
+    now = datetime(2026, 6, 24, 15, 30)
+
+    assert service.default_filename(["SANDIA"], now=now) == "Informe_comercial_SANDIA_20260624_1530.pdf"
+    assert service.default_filename(["SANDIA"], now=now, report_mode="operativo") == "Informe_operativo_SANDIA_20260624_1530.pdf"
+    assert service.default_filename(["SANDIA"], now=now, report_mode="direccion") == "Informe_direccion_SANDIA_20260624_1530.pdf"
