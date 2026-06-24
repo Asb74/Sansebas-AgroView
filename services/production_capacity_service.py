@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from math import ceil
 import logging
+from time import perf_counter
 import re
 import unicodedata
 
@@ -25,6 +26,141 @@ class ProductionCapacityService:
     def __init__(self) -> None:
         self.planning = PlanningService()
         self.prod_repo = ProductionSettingsRepository()
+
+
+    def load_capacity_config(self) -> dict:
+        return self.prod_repo.get_general_settings()
+
+    def load_physical_resources(self) -> list[dict]:
+        return self.prod_repo.get_physical_resources()
+
+    def load_productive_mapping(self) -> dict:
+        return {
+            "packaging_mapping": self.prod_repo.get_packaging_mapping(False),
+            "base_packaging": self.prod_repo.get_base_packaging(active_only=True),
+            "lines": self.prod_repo.get_lines(),
+            "line_required_resources": self.prod_repo.get_line_required_resources(active_only=True),
+            "semaphore_rules": self.prod_repo.get_semaphore_rules(),
+        }
+
+    def build_resource_capacity_summary(self, filters: dict, modo_pedidos: str = "10_dias", preloaded_orders: list[dict] | None = None) -> dict:
+        total_t0 = perf_counter()
+        cfg_t0 = perf_counter()
+        general_settings = self.load_capacity_config()
+        semaphore_rules = self.prod_repo.get_semaphore_rules()
+        logger.info("[PERF Capacidad.Fase1.LoadConfig] tiempo=%.3fs", perf_counter() - cfg_t0)
+
+        res_t0 = perf_counter()
+        resources = self.load_physical_resources()
+        required_resources = self.prod_repo.get_line_required_resources(active_only=True)
+        logger.info("[PERF Capacidad.Fase1.Resources] tiempo=%.3fs rows=%s", perf_counter() - res_t0, len(resources))
+
+        pedidos_t0 = perf_counter()
+        pedidos = [dict(r) for r in preloaded_orders] if preloaded_orders is not None else self.planning.load_pedidos_pendientes(filters, modo_pedidos)[0]
+        logger.info("[PERF Capacidad.Fase1.Pedidos] tiempo=%.3fs rows=%s cache=%s", perf_counter() - pedidos_t0, len(pedidos), "hit" if preloaded_orders is not None else "miss")
+
+        map_t0 = perf_counter()
+        inputs = {
+            "pedidos_reales": pedidos,
+            "pedidos_previstos": [],
+            "packaging_mapping": self.prod_repo.get_packaging_mapping(False),
+            "base_packaging": self.prod_repo.get_base_packaging(active_only=True),
+            "lines": self.prod_repo.get_lines(),
+            "caliber_factors": [],
+            "physical_resources": resources,
+            "line_required_resources": required_resources,
+            "resource_compatibilities": self.prod_repo.get_resource_compatibilities(),
+            "resource_availability": self.prod_repo.get_resource_availability(),
+            "resource_feeds": self.prod_repo.get_resource_feeds(),
+            "semaphore_rules": semaphore_rules,
+            "general_settings": general_settings,
+        }
+        mapped, incidencias = self._map_orders_to_lines_fase1(pedidos, inputs)
+        kg_by_line: dict[str, float] = defaultdict(float)
+        for row in mapped:
+            kg_by_line[str(row.get("linea", "") or "").strip()] += float(row.get("kg", 0) or 0)
+        unmapped_orders = [inc for inc in incidencias if inc.get("Tipo incidencia") == "Sin mapeo"]
+        logger.info("[PERF Capacidad.Fase1.Mapping] tiempo=%.3fs mapped=%s unmapped=%s", perf_counter() - map_t0, len(mapped), len(unmapped_orders))
+
+        horas_utiles = self._usable_hours_day({"general_settings": general_settings})
+        saturacion = float(general_settings.get("saturacion_maxima_pct", 100) or 100)
+        resource_lines: dict[str, set[str]] = defaultdict(set)
+        for rr in required_resources:
+            if int(rr.get("activo", 1) or 0) == 1:
+                resource_lines[str(rr.get("recurso_codigo", "") or "").strip()].add(str(rr.get("linea_productiva", "") or "").strip())
+
+        rows = []
+        kg_total_capacidad = 0.0
+        kg_total_pedidos = 0.0
+        recursos_saturados = 0
+        for resource in resources:
+            code = str(resource.get("codigo", "") or "").strip()
+            active = int(resource.get("activo", 0) or 0) == 1
+            kg_h = float(resource.get("capacidad_kg_h", 0) or 0) * max(1, int(resource.get("numero_unidades", 1) or 1))
+            lines = sorted(line for line in resource_lines.get(code, set()) if line)
+            kg_asignable = sum(kg_by_line.get(line, 0.0) for line in lines)
+            cap_dia = kg_h * horas_utiles if active else 0.0
+            cap_util = cap_dia * saturacion / 100.0 if active else 0.0
+            occ = kg_asignable / cap_util * 100.0 if cap_util > 0 else (100.0 if kg_asignable > 0 else 0.0)
+            obs = []
+            if not active:
+                obs.append("Recurso inactivo")
+            if kg_h <= 0:
+                obs.append("Sin kg/h")
+            if not lines:
+                obs.append("Sin línea/flujo asociado")
+            estado = self._fase1_estado(active, kg_h, cap_util, occ, semaphore_rules)
+            if estado == "Saturado":
+                recursos_saturados += 1
+            kg_total_capacidad += cap_util
+            kg_total_pedidos += kg_asignable
+            rows.append({
+                "Recurso": resource.get("nombre") or code,
+                "Tipo recurso": resource.get("tipo_recurso", ""),
+                "Flujo / línea productiva": ", ".join(lines),
+                "Activo": "Sí" if active else "No",
+                "Kg/h": round(kg_h, 2),
+                "Horas útiles día": round(horas_utiles, 2),
+                "Capacidad kg/día": round(cap_dia, 2),
+                "Capacidad útil kg/día": round(cap_util, 2),
+                "Kg pedidos asignables": round(kg_asignable, 2),
+                "Ocupación %": round(occ, 2),
+                "Estado": estado,
+                "Observaciones": "; ".join(obs),
+            })
+
+        if unmapped_orders:
+            rows.append({"Recurso": "Sin mapeo", "Tipo recurso": "Pedidos", "Flujo / línea productiva": "", "Activo": "-", "Kg/h": 0, "Horas útiles día": round(horas_utiles, 2), "Capacidad kg/día": 0, "Capacidad útil kg/día": 0, "Kg pedidos asignables": round(sum(float(i.get("kg", 0) or 0) for i in unmapped_orders), 2), "Ocupación %": 0, "Estado": "Sin mapeo", "Observaciones": f"{len(unmapped_orders)} pedido(s) sin mapeo productivo"})
+        logger.info("[PERF Capacidad.Fase1.Total] tiempo=%.3fs", perf_counter() - total_t0)
+        return {"summary": {"horas_utiles_dia": round(horas_utiles, 2), "kg_total_pedidos": round(kg_total_pedidos, 2), "kg_total_capacidad": round(kg_total_capacidad, 2), "ocupacion_global_pct": round((kg_total_pedidos / kg_total_capacidad * 100) if kg_total_capacidad > 0 else 0, 2), "recursos_saturados": recursos_saturados, "pedidos_sin_mapeo": len(unmapped_orders)}, "resources": rows, "unmapped_orders": unmapped_orders}
+
+    def _map_orders_to_lines_fase1(self, pedidos: list[dict], inputs: dict) -> tuple[list[dict], list[dict]]:
+        mapping = {str(r.get("codigo_mconfeccion", "")).strip(): r for r in inputs.get("packaging_mapping", [])}
+        base = {str(r.get("codigo", "")).strip(): r for r in inputs.get("base_packaging", [])}
+        mapped, incidencias = [], []
+        for order in pedidos:
+            kg = float(order.get("Kg pendiente", order.get("kg_estimados", order.get("Kg", 0))) or 0)
+            if kg <= 0:
+                continue
+            conf = str(order.get("IdConfeccion", order.get("id_confeccion", "")) or "").strip()
+            prod = mapping.get(conf) or base.get(conf)
+            if not prod:
+                incidencias.append({**self._inc("Sin mapeo", order, "Pedido sin mapeo de confección productiva", "Revisar mapeo_confecciones/confecciones_base"), "kg": kg})
+                continue
+            linea = str(prod.get("linea_productiva", "") or "").strip()
+            if not linea:
+                incidencias.append({**self._inc("Sin mapeo", order, "Confección sin línea productiva", "Completar confecciones_base"), "kg": kg})
+                continue
+            mapped.append({"pedido": order, "kg": kg, "linea": linea, "familia": prod.get("familia_productiva", "")})
+        return mapped, incidencias
+
+    def _fase1_estado(self, active: bool, kg_h: float, cap_util: float, occ: float, rules: list[dict]) -> str:
+        if not active:
+            return "Sin capacidad"
+        if kg_h <= 0 or cap_util <= 0:
+            return "Sin capacidad"
+        sem = self._state(occ, rules, "General")
+        return {"Verde": "Disponible", "Amarillo": "Ajustado", "Rojo": "Saturado"}.get(sem, sem)
 
     def load_capacity_inputs(self, filters: dict, modo_pedidos: str = "10_dias") -> dict:
         pedidos_reales, _kpi = self.planning.load_pedidos_pendientes(filters, modo_pedidos)

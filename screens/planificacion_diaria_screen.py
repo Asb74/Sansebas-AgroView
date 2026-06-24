@@ -120,8 +120,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         if tab_name == "Balance":
             return self.service.load_balance_planificacion(filters, policy=self._build_sim_policy())
         if tab_name == "Capacidad productiva":
-            cap = self.capacity_service.build_capacity_simulation(filters, self.pedidos_modo_var.get())
-            return list(cap.get("family_rows", [])) + list(cap.get("line_rows", [])) + list(cap.get("incidencias", []))
+            cap = self.capacity_service.build_resource_capacity_summary(filters, self.pedidos_modo_var.get())
+            return list(cap.get("resources", [])) + list(cap.get("unmapped_orders", []))
         if tab_name == "Pedidos previstos" and self.pedidos_previstos_panel:
             refresh = self.pedidos_previstos_panel.get("refresh_rows")
             if callable(refresh):
@@ -293,18 +293,28 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Label(self.capacidad_tab, textvariable=self.kpi_capacidad, style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
         self.capacidad_subtabs = ttk.Notebook(self.capacidad_tab)
         self.capacidad_subtabs.pack(fill="both", expand=True)
+        self.capacidad_fase1_tab = ttk.Frame(self.capacidad_subtabs, padding=4)
         self.capacidad_familias_tab = ttk.Frame(self.capacidad_subtabs, padding=4)
         self.capacidad_lineas_tab = ttk.Frame(self.capacidad_subtabs, padding=4)
         self.capacidad_recursos_tab = ttk.Frame(self.capacidad_subtabs, padding=4)
         self.capacidad_personal_tab = ttk.Frame(self.capacidad_subtabs, padding=4)
         self.capacidad_bottleneck_tab = ttk.Frame(self.capacidad_subtabs, padding=4)
         self.capacidad_incidencias_tab = ttk.Frame(self.capacidad_subtabs, padding=4)
+        self.capacidad_subtabs.add(self.capacidad_fase1_tab, text="Capacidad por recursos físicos")
         self.capacidad_subtabs.add(self.capacidad_familias_tab, text="Familias")
         self.capacidad_subtabs.add(self.capacidad_lineas_tab, text="Líneas")
         self.capacidad_subtabs.add(self.capacidad_recursos_tab, text="Recursos")
         self.capacidad_subtabs.add(self.capacidad_personal_tab, text="Personal requerido")
         self.capacidad_subtabs.add(self.capacidad_bottleneck_tab, text="Cuellos de botella")
         self.capacidad_subtabs.add(self.capacidad_incidencias_tab, text="Incidencias")
+        ttk.Label(self.capacidad_fase1_tab, text="Capacidad por recursos físicos", style="KPI.TLabel").pack(anchor="w", pady=(0, 6))
+        self.capacidad_fase1_table = DataTable(self.capacidad_fase1_tab, ["Recurso", "Tipo recurso", "Flujo / línea productiva", "Activo", "Kg/h", "Horas útiles día", "Capacidad kg/día", "Capacidad útil kg/día", "Kg pedidos asignables", "Ocupación %", "Estado", "Observaciones"])
+        self.capacidad_fase1_table.pack(fill="both", expand=True)
+        self.capacidad_fase1_table.tree.tag_configure("estado_disponible", foreground="#1b5e20")
+        self.capacidad_fase1_table.tree.tag_configure("estado_ajustado", foreground="#f57f17")
+        self.capacidad_fase1_table.tree.tag_configure("estado_saturado", foreground="#b71c1c")
+        self.capacidad_fase1_table.tree.tag_configure("estado_sin_capacidad", foreground="#6d4c41")
+        self.capacidad_fase1_table.tree.tag_configure("estado_sin_mapeo", foreground="#6a1b9a")
         self.capacidad_family_table = DataTable(self.capacidad_familias_tab, ["Familia", "Kg reales", "Kg previstos", "Kg total", "Horas necesarias", "Horas disponibles", "Ocupación %", "Rendimiento medio", "Personal estimado", "Estado"])
         self.capacidad_family_table.pack(fill="both", expand=True)
         self.capacidad_line_table = DataTable(self.capacidad_lineas_tab, ["Línea productiva", "Kg", "Horas necesarias", "Horas disponibles línea", "Ocupación %", "Pedidos", "Cambios formato estimados", "Estado"])
@@ -557,12 +567,14 @@ class PlanificacionDiariaScreen(ttk.Frame):
                 self._render_capacidad(cap)
             else:
                 try:
-                    cap = self.capacity_service.build_capacity_simulation(payload, self.pedidos_modo_var.get())
+                    pedidos_rows, _pedidos_kpi = self._get_pedidos_pendientes_cached(payload, self.pedidos_modo_var.get())
+                    cap = self.capacity_service.build_resource_capacity_summary(payload, self.pedidos_modo_var.get(), preloaded_orders=pedidos_rows)
                     self.last_capacity_simulation = cap
                     self.last_capacity_payload = dict(payload)
                     self._cache_set("capacidad_productiva", cap)
                     self._render_capacidad(cap)
                 except Exception as exc:
+                    self.capacidad_fase1_table.set_rows([])
                     self.capacidad_family_table.set_rows([])
                     self.capacidad_line_table.set_rows([])
                     self.capacidad_resource_table.set_rows([])
@@ -604,16 +616,34 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self._refresh_snapshot_info_label()
 
     def _render_capacidad(self, cap: dict) -> None:
-        s = cap["summary"]
-        self.kpi_capacidad.set(
-            f"Kg reales pendientes: {s['Kg reales pendientes']:,.2f} | Kg previstos: {s['Kg previstos']:,.2f} | "
-            f"Kg total simulación: {s['Kg total simulación']:,.2f} | Horas necesarias estimadas: {s['Horas necesarias estimadas']:,.2f} | "
-            f"Horas disponibles: {s['Horas disponibles']:,.2f} | Ocupación %: {s['Ocupación %']:,.2f}% | "
-            f"Turnos equivalentes: {s.get('turnos_equivalentes', 0):,.2f} | Personal total/directo/soporte/indirecto: {s['Personal disponible total']}/{s['Personal directo disponible']}/{s['Personal soporte disponible']}/{s['Personal indirecto disponible']} | "
-            f"Personal requerido mín/ópt/estimado: {s.get('personal_minimo_flujo', 0)}/{s.get('personal_optimo_flujo', 0)}/{s.get('personal_estimado_flujo', 0)} | Déficit personal: {s.get('deficit_personal_flujo', 0)} | "
-            f"Personal min/ópt recursos: {s.get('personal_minimo_recursos', 0)}/{s.get('personal_optimo_recursos', 0)} | Cuello botella: {s.get('linea_cuello_botella_principal', '') or '-'} / {s.get('puesto_cuello_botella_principal', '') or s.get('motivo_cuello_botella', '') or 'Sin datos'} | "
-            f"Capacidad alcanzable: {s.get('capacidad_alcanzable_pct', 0):,.2f}% | Kg alcanzables: {s.get('kg_alcanzables_estimados', 0):,.0f} | Estado capacidad: {s['Estado capacidad']}"
-        )
+        render_t0 = perf_counter()
+        s = cap.get("summary", {})
+        if "resources" in cap:
+            self.kpi_capacidad.set(
+                f"Capacidad total kg/día: {s.get('kg_total_capacidad', 0):,.2f} | "
+                f"Kg pedidos asignables: {s.get('kg_total_pedidos', 0):,.2f} | "
+                f"Ocupación global: {s.get('ocupacion_global_pct', 0):,.2f}% | "
+                f"Recursos saturados: {s.get('recursos_saturados', 0)} | "
+                f"Pedidos sin mapeo: {s.get('pedidos_sin_mapeo', 0)} | "
+                f"Horas útiles día: {s.get('horas_utiles_dia', 0):,.2f}"
+            )
+            rows = []
+            for row in cap.get("resources", []):
+                item = dict(row)
+                estado = str(item.get("Estado", "") or "").lower().replace(" ", "_")
+                if estado:
+                    item["__tags__"] = (f"estado_{estado}",)
+                rows.append(item)
+            self.capacidad_fase1_table.set_rows(rows)
+            self.capacidad_family_table.set_rows([])
+            self.capacidad_line_table.set_rows([])
+            self.capacidad_resource_table.set_rows([])
+            self.capacidad_staffing_table.set_rows([])
+            self.capacidad_bottleneck_table.set_rows([])
+            self.capacidad_inc_table.set_rows(cap.get("unmapped_orders", []))
+            logging.getLogger(__name__).info("[PERF Capacidad.Fase1.Render] tiempo=%.3fs rows=%s", perf_counter() - render_t0, len(rows))
+            return
+        self.capacidad_fase1_table.set_rows([])
         self.capacidad_family_table.set_rows(cap["family_rows"])
         self.capacidad_line_table.set_rows(cap["line_rows"])
         self.capacidad_resource_table.set_rows(cap.get("resource_rows", []))
@@ -1307,7 +1337,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
     def _current_capacity_simulation(self, payload: dict) -> dict:
         if self.last_capacity_simulation is not None and self.last_capacity_payload == payload:
             return self.last_capacity_simulation
-        cap = self.capacity_service.build_capacity_simulation(payload, self.pedidos_modo_var.get())
+        pedidos_rows, _pedidos_kpi = self._get_pedidos_pendientes_cached(payload, self.pedidos_modo_var.get())
+        cap = self.capacity_service.build_resource_capacity_summary(payload, self.pedidos_modo_var.get(), preloaded_orders=pedidos_rows)
         self.last_capacity_simulation = cap
         self.last_capacity_payload = dict(payload)
         return cap
@@ -1483,14 +1514,23 @@ class PlanificacionDiariaScreen(ttk.Frame):
         if not target:
             return
 
+        if "resources" in cap:
+            capacity_sheets = [
+                ("Recursos_fisicos", cap.get("resources", []), list(self.capacidad_fase1_table.columns)),
+                ("Pedidos_sin_mapeo", cap.get("unmapped_orders", []), list(self.capacidad_inc_table.columns)),
+            ]
+        else:
+            capacity_sheets = [
+                ("Familias", cap.get("family_rows", []), list(self.capacidad_family_table.columns)),
+                ("Lineas", cap.get("line_rows", []), list(self.capacidad_line_table.columns)),
+                ("Recursos", cap.get("resource_rows", []), list(self.capacidad_resource_table.columns)),
+                ("Personal_requerido", cap.get("staffing_rows", []), list(self.capacidad_staffing_table.columns)),
+                ("Cuellos_botella", cap.get("bottleneck_rows", []), list(self.capacidad_bottleneck_table.columns)),
+                ("Incidencias", cap.get("incidencias", []), list(self.capacidad_inc_table.columns)),
+            ]
         sheets = [
             ("Resumen_KPI", self._diagnostico_resumen_rows(cap.get("summary", {})), ["KPI", "Valor"]),
-            ("Familias", cap.get("family_rows", []), list(self.capacidad_family_table.columns)),
-            ("Lineas", cap.get("line_rows", []), list(self.capacidad_line_table.columns)),
-            ("Recursos", cap.get("resource_rows", []), list(self.capacidad_resource_table.columns)),
-            ("Personal_requerido", cap.get("staffing_rows", []), list(self.capacidad_staffing_table.columns)),
-            ("Cuellos_botella", cap.get("bottleneck_rows", []), list(self.capacidad_bottleneck_table.columns)),
-            ("Incidencias", cap.get("incidencias", []), list(self.capacidad_inc_table.columns)),
+            *capacity_sheets,
             ("Pedidos_pendientes", pedidos_pendientes, list(self.pedidos_table.columns)),
             ("Pedidos_previstos", self._diagnostico_pedidos_previstos_rows(cap), ["Id previsto", "Estado", "Fecha salida", "Cliente", "Cultivo", "Campaña", "Empresa", "Grupo varietal", "Variedad", "Calibre", "Categoría", "Marca", "Confección prevista", "Grupo confección", "Perfil confección", "Kg estimados", "Palets estimados", "Familia productiva", "Línea productiva", "Observaciones"]),
             ("Aprovechamientos_estimados", self.service.get_aprovechamientos_estimados_filtrados(payload, boletas=[r.get("Boleta", "") for r in self.stock_campo_rows]), ["Id", "Boleta", "Campana", "Cultivo", "Variedad", "GrupoVarietal", "Categoria", "Calibre", "KgCampoAplicado", "Porcentaje", "KgEstimado", "Origen", "Activo", "Observaciones", "FechaCreacion", "FechaModificacion"]),
