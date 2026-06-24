@@ -75,6 +75,7 @@ CONFIG_CALIDAD_OPERATIVA = {
 _quality_service = OperationalQualityService()
 _UTILIDAD_STOCK_CONFIG_CACHE = None
 logger = logging.getLogger(__name__)
+_SIMULACION_EJECUCION_SEQ = 0
 
 _UTILIDAD_PERF = defaultdict(float)
 _UTILIDAD_COUNT = defaultdict(int)
@@ -2321,8 +2322,29 @@ def construir_panel_pedidos_previstos(
     return {"refresh_rows": refresh_rows, "table": prev_tbl}
 
 def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None, get_inventario_global_cb=None, pedidos_detalle_horizonte: list[dict] | None = None, cultivo_actual: str = "", campana_actual: str = "", empresa_actual: str = "", filters_payload: dict | None = None, mode_refresh: bool = False, sim_window: tk.Toplevel | None = None) -> None:
-    logger.info("[TRACE BOTON SIMULACION] entrando en abrir_simulacion_asignacion")
-    render_total_start = perf_counter()
+    global _SIMULACION_EJECUCION_SEQ
+    _SIMULACION_EJECUCION_SEQ += 1
+    id_ejecucion = _SIMULACION_EJECUCION_SEQ
+    sim_total_start = perf_counter()
+    render_total_start = sim_total_start
+
+    def _log_sim_trace(fase: str, start: float | None = None, **extra) -> None:
+        elapsed = perf_counter() - (start if start is not None else sim_total_start)
+        acumulado = perf_counter() - sim_total_start
+        extra_txt = " ".join(f"{key}={value}" for key, value in extra.items())
+        logger.info(
+            "[TRACE Simulacion.%s] timestamp=%s acumulado=%.3fs tiempo=%.3fs id_ejecucion=%s%s%s",
+            fase,
+            datetime.now().isoformat(timespec="milliseconds"),
+            acumulado,
+            elapsed,
+            id_ejecucion,
+            " " if extra_txt else "",
+            extra_txt,
+        )
+
+    _log_sim_trace("Start", pedidos=len(pedidos), mode_refresh=mode_refresh)
+    logger.info("[TRACE BOTON SIMULACION] entrando en abrir_simulacion_asignacion id_ejecucion=%s", id_ejecucion)
 
     def _log_render_perf(bloque: str, start: float, **extra) -> None:
         extra_txt = " ".join(f"{key}={value}" for key, value in extra.items())
@@ -2335,8 +2357,11 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         if secs > 0.5:
             logger.info("[PERF SlowBlock] nombre=%s tiempo=%.2fs", f"Asignacion.{bloque}", secs)
 
+    _log_sim_trace("Fase1", descripcion="crear_ventana_y_contenedores")
     t_crear_ventana = perf_counter()
+    t_toplevel = perf_counter()
     popup = sim_window if mode_refresh and sim_window is not None else tk.Toplevel(parent)
+    _log_render_perf("Toplevel", t_toplevel, creado=not (mode_refresh and sim_window is not None))
     if mode_refresh:
         for child in popup.winfo_children():
             child.destroy()
@@ -2399,8 +2424,10 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
 
     top = ttk.LabelFrame(popup, text="Pedidos pendientes", padding=8)
     top.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+    t_notebook = perf_counter()
     notebook = ttk.Notebook(popup)
     notebook.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+    _log_render_perf("Notebook", t_notebook, accion="crear_pack")
     resumen_tab = ttk.Frame(notebook, padding=8)
     horizonte_tab = ttk.Frame(notebook, padding=8)
     matriz_tab = ttk.Frame(notebook, padding=8)
@@ -2411,8 +2438,10 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     tecnico_tab = ttk.Frame(notebook, padding=8)
     compat_tab = ttk.Frame(notebook, padding=8)
     previstos_tab = ttk.Frame(notebook, padding=8)
+    _log_render_perf("GeneracionPestanas", t_crear_ventana, pestanas_creadas=10)
     _log_render_perf("CrearVentana", t_crear_ventana, mode_refresh=mode_refresh)
 
+    _log_sim_trace("Fase2", descripcion="cargar_pedidos_previstos")
     pedidos_previstos_payload = _cargar_pedidos_previstos()
     pedidos_previstos = list(pedidos_previstos_payload.get("pedidos", []))
     previstos_activos = []
@@ -2436,6 +2465,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             previstos_activos.append(p)
     logger.debug("Pedidos previstos incluidos en simulación: %s", len(previstos_activos))
 
+    _log_sim_trace("Fase3", descripcion="crear_columnas_y_treeviews")
     t_columnas = perf_counter()
     pedidos_cols = ["Origen demanda", "Fecha salida", "Bloque temporal", "Prioridad manual", "Prioridad total", "Motivo prioridad", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Kg potencial físico", "Kg potencial útil"]
     t_treeview = perf_counter()
@@ -2537,6 +2567,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         pedidos_detalle_horizonte = [dict(p) for p in pedidos_detalle_horizonte]
         for p in pedidos_detalle_horizonte:
             p["prioridad_manual"] = prioridades_map.get(_pedido_id_prioridad(p), int(_to_float(p.get("prioridad_manual", 0))))
+    _log_sim_trace("Fase4", t_build_rows, descripcion="preparar_datos_asignacion", pedidos_operativos=len(pedidos_operativos))
     _log_asignacion_perf(
         "Agrupaciones",
         t_agrupaciones,
@@ -2545,6 +2576,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         previstos=len(pedidos_previstos_sim),
     )
 
+    _log_sim_trace("Fase5", descripcion="simular_asignacion_global")
     t_asignacion = perf_counter()
     simulaciones, asignaciones_simuladas, _stock_simulado = simular_asignacion_global(pedidos_operativos, get_candidatos_cb, scoring=scoring)
     asignacion_secs = perf_counter() - t_asignacion
@@ -2764,6 +2796,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     _log_asignacion_perf("BuildRows", t_build_rows, rows_entrada=len(pedidos) + len(previstos_activos) + len(inventario_global_simulado), rows_salida=len(resumen_rows) + len(sobrantes_rows) + len(necesidades_rows))
     _log_asignacion_perf("Total", t_build_rows, rows_entrada=len(pedidos) + len(previstos_activos) + len(inventario_global_simulado), rows_salida=len(resumen_rows) + len(sobrantes_rows) + len(necesidades_rows))
 
+    _log_sim_trace("Fase6", descripcion="render_inicial_insertar_filas")
     t_render = perf_counter()
     t_insert_pedidos = perf_counter()
     pedidos_tbl.set_rows(resumen_rows)
@@ -2797,6 +2830,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         sorted(set(str(p.get("Fecha salida", p.get("fecha_salida", ""))) for p in pedidos_horizonte)),
         sum(_kg_pendiente_linea(p) for p in pedidos_horizonte),
     )
+    _log_sim_trace("Fase7", descripcion="calcular_horizonte_diagnostico")
     horizonte = calcular_horizonte_cobertura(
         pedidos=pedidos_horizonte,
         inventario_global=inventario_global_simulado,
@@ -2806,6 +2840,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     diagnostico = generar_diagnostico_operativo(resumen_rows, necesidades_rows, sobrantes_rows)
     acciones = generar_acciones_sugeridas(diagnostico)
 
+    _log_sim_trace("Fase8", descripcion="generar_pestanas_resumen_sobrantes_necesidades")
     horizonte_frame = ttk.LabelFrame(horizonte_tab, text="Horizonte de cobertura", padding=8)
     horizonte_frame.pack(fill="x", pady=(0, 6))
     hoy_estado = "Sin pedidos" if total_pedidos == 0 else "OK"
@@ -3082,7 +3117,10 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
 
     agrupar_sobrantes_combo.bind("<<ComboboxSelected>>", _refresh_resumen_ejecutivo)
     origen_sobrantes_combo.bind("<<ComboboxSelected>>", _refresh_resumen_ejecutivo)
+    t_render_sobrantes = perf_counter()
     _refresh_resumen_ejecutivo()
+    _log_render_perf("RenderSobrantes", t_render_sobrantes, rows_sobrantes=len(sobrantes_rows))
+    t_render_necesidades = perf_counter()
     top_necesidades = []
     for row in sorted(necesidades_rows, key=lambda r: _to_float(r.get("Kg útiles faltantes", 0)), reverse=True)[:5]:
         accion = "Recolectar/seleccionar fruta con mayor primera" if _norm_text(row.get("Calidad necesaria", "")) == "PRIMERA" else "Usar segunda disponible o estándar"
@@ -3093,7 +3131,9 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         top_nec_tbl.set_rows(top_necesidades)
     else:
         top_nec_tbl.set_rows([{"Variedad": "No hay necesidades de recolección para los pedidos incluidos en la simulación.", "Grupo varietal": "", "Calibre necesario": "", "Calidad necesaria": "", "Kg faltantes": "", "Kg campo estimados": "", "Prioridad temporal": "", "Acción sugerida": ""}])
+    _log_render_perf("RenderNecesidades", t_render_necesidades, rows_necesidades=len(necesidades_rows), rows_top_necesidades=len(top_necesidades))
 
+    t_render_asignaciones = perf_counter()
     plan_actions = []
     for need in necesidades_rows:
         kg_falt = _to_float(need.get("Kg útiles faltantes", 0))
@@ -3154,6 +3194,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     plan_actions.sort(key=lambda r: (0 if r.get("Tipo acción") == "RECOLECTAR" else 1, {"ALTA": 0, "MEDIA": 1, "BAJA": 2}.get(r.get("Prioridad", "BAJA"), 9), r.get("Fecha límite", "9999-99-99"), -_to_float(r.get("Kg afectados", 0))))
     _log_render_perf("Sorting", t_sorting, bloque="plan_actions", rows=len(plan_actions))
     plan_tbl.set_rows(plan_actions)
+    _log_render_perf("RenderAsignaciones", t_render_asignaciones, rows_asignaciones=len(plan_actions))
     plan_tbl.tree.tag_configure("accion_recolectar", background="#FFE0B2")
     plan_tbl.tree.tag_configure("accion_no_recolectar", background="#E3EDF7")
     plan_tbl.tree.tag_configure("accion_dar_salida", background="#FFF9C4")
@@ -3360,9 +3401,17 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         refresh_command=_refrescar_simulacion_previstos,
         refresh_button_text="Refrescar simulación",
     )
+    _log_sim_trace("Fase9", descripcion="panel_pedidos_previstos_y_autosize")
     t_autowidth = perf_counter()
     # No hay autosize explícito en este render; DataTable fija width=120 por columna.
+    _log_render_perf("CalculoAnchos", t_autowidth, columnas_fijas=True, width_default=120)
     _log_render_perf("AutoWidth", t_autowidth, filas_recorridas=0, autosize_explicito=False)
+    logger.info(
+        "[COUNT Render] rows_asignaciones=%s rows_sobrantes=%s rows_necesidades=%s",
+        len(plan_actions),
+        len(sobrantes_rows),
+        len(necesidades_rows),
+    )
     logger.info(
         "[PERF Render.Total] %.2fs rows_pedidos=%s rows_sobrantes=%s rows_necesidades=%s patron_insert_uno_a_uno=%s autosize_columnas=%s sort_tras_insert=%s tags_repetidos=%s redraw_continuo=%s",
         perf_counter() - render_total_start,
@@ -3375,3 +3424,4 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         "tag_configure en varios bloques",
         "no update_idletasks/update explícito detectado",
     )
+    _log_sim_trace("End", rows_asignaciones=len(plan_actions), rows_sobrantes=len(sobrantes_rows), rows_necesidades=len(necesidades_rows))
