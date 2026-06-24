@@ -117,6 +117,17 @@ class CommercialPdfReportService:
         self._section = ParagraphStyle("Section", parent=self._styles["Heading2"], fontSize=14, leading=16, spaceBefore=4, spaceAfter=7, textColor=colors.HexColor(self.COLOR_PRIMARY))
         self._title = ParagraphStyle("Title", parent=self._styles["Heading1"], fontSize=20, leading=23, alignment=TA_CENTER, textColor=colors.HexColor(self.COLOR_PRIMARY))
         self._kpi = ParagraphStyle("Kpi", parent=self._styles["Normal"], fontSize=10, leading=12, alignment=TA_CENTER)
+        self._cell_small = ParagraphStyle("CellSmall", parent=self._styles["Normal"], fontSize=7, leading=8.4, alignment=TA_LEFT)
+        self._cell_tiny = ParagraphStyle("CellTiny", parent=self._styles["Normal"], fontSize=5.2, leading=6.3, alignment=TA_LEFT)
+        self._cell_wrap = ParagraphStyle("CellWrap", parent=self._styles["Normal"], fontSize=6.5, leading=7.8, alignment=TA_LEFT)
+        self._header_small = ParagraphStyle("HeaderSmall", parent=self._cell_small, fontName="Helvetica-Bold", alignment=TA_CENTER)
+        self._header_tiny = ParagraphStyle("HeaderTiny", parent=self._cell_tiny, fontName="Helvetica-Bold", alignment=TA_CENTER)
+        self._kpi_title = ParagraphStyle("KpiTitle", parent=self._kpi, fontSize=8, leading=9.5)
+        self._kpi_value = ParagraphStyle("KpiValue", parent=self._kpi, fontSize=14, leading=16)
+        self._kpi_subtext = ParagraphStyle("KpiSubtext", parent=self._kpi, fontSize=7, leading=8.5)
+        self._alert_cell = ParagraphStyle("AlertCell", parent=self._cell_wrap, fontSize=7, leading=8.5)
+        self._current_report_mode = mode
+        self._generated_at = generated_at or datetime.now()
 
         campo = list(stock_campo_rows or [])
         almacen = list(stock_almacen_rows or [])
@@ -169,8 +180,8 @@ class CommercialPdfReportService:
         self._add_agenda(story, pendientes, selected_cultivos)
         self._add_alertas(story, campo, almacen, pendientes, previstos)
         self._add_capacidad(story)
-        doc = SimpleDocTemplate(str(target), pagesize=landscape(A4), leftMargin=0.7*cm, rightMargin=0.7*cm, topMargin=0.7*cm, bottomMargin=0.7*cm)
-        doc.build(story)
+        doc = SimpleDocTemplate(str(target), pagesize=landscape(A4), leftMargin=0.7*cm, rightMargin=0.7*cm, topMargin=0.7*cm, bottomMargin=1.0*cm)
+        doc.build(story, onFirstPage=self._draw_footer, onLaterPages=self._draw_footer)
         return target
 
 
@@ -201,8 +212,10 @@ class CommercialPdfReportService:
         self._add_direction_production(story, pendientes, prevision)
         self._add_direction_quality(story, campo, aprovechamiento_volcado)
         self._add_direction_alerts_recommendations(story, campo, almacen, pendientes, previstos)
-        doc = SimpleDocTemplate(str(target), pagesize=landscape(A4), leftMargin=0.7*cm, rightMargin=0.7*cm, topMargin=0.7*cm, bottomMargin=0.7*cm)
-        doc.build(story)
+        self._current_report_mode = "direccion"
+        self._generated_at = generated_at
+        doc = SimpleDocTemplate(str(target), pagesize=landscape(A4), leftMargin=0.7*cm, rightMargin=0.7*cm, topMargin=0.7*cm, bottomMargin=1.0*cm)
+        doc.build(story, onFirstPage=self._draw_footer, onLaterPages=self._draw_footer)
 
     def _add_direction_index(self, story: list) -> None:
         story.append(PdfBookmark("indice", "ÍNDICE DIRECCIÓN"))
@@ -256,8 +269,85 @@ class CommercialPdfReportService:
         self._add_section_summary(story, "CONCLUSIÓN OPERATIVA", recommendations[:5] or ["Sin conclusiones automáticas con los datos disponibles."])
         story.append(PageBreak())
 
+    def _short_text(self, value: Any, max_len: int = 35) -> str:
+        text = re.sub(r"\s+", " ", str(value or "").replace(" 00:00:00", "")).strip()
+        return text if len(text) <= max_len else text[: max(0, max_len - 1)].rstrip() + "…"
+
+    def _clean_client_name(self, value: Any, max_len: int | None = 35) -> str:
+        text = re.sub(r"\s+", " ", str(value or "").replace("ANECOOP//", "")).strip()
+        for suffix in (" S.L.", " SL", " S.A.", " SA"):
+            if text.upper().endswith(suffix.strip()):
+                text = text[: -len(suffix)].strip()
+        return self._short_text(text, max_len) if max_len else text
+
+    def _safe_paragraph(self, value: Any, style_name: str = "CellSmall") -> Paragraph:
+        styles = {
+            "CellSmall": getattr(self, "_cell_small", self._small),
+            "CellTiny": getattr(self, "_cell_tiny", self._small),
+            "CellWrap": getattr(self, "_cell_wrap", self._small),
+            "HeaderSmall": getattr(self, "_header_small", self._small_center),
+            "HeaderTiny": getattr(self, "_header_tiny", self._small_center),
+            "AlertCell": getattr(self, "_alert_cell", self._small),
+        }
+        return Paragraph(str(value if value is not None else ""), styles.get(style_name, self._small))
+
     def _p(self, value: Any, style: Any | None = None) -> Paragraph:
         return Paragraph(str(value if value is not None else ""), style or self._small)
+
+    def _wrap_columns(self, data: list[list[Any]], col_indexes: Sequence[int]) -> list[list[Any]]:
+        wrap_set = set(col_indexes)
+        return [[self._safe_paragraph(cell, "CellWrap") if i in wrap_set else cell for i, cell in enumerate(row)] for row in data]
+
+    def _truncate_columns(self, data: list[list[Any]], col_indexes: Sequence[int], max_len: int) -> list[list[Any]]:
+        trunc_set = set(col_indexes)
+        return [[self._short_text(cell, max_len) if i in trunc_set and row_idx > 0 else cell for i, cell in enumerate(row)] for row_idx, row in enumerate(data)]
+
+    def _right_align_numeric_columns(self, table_style: list, col_indexes: Sequence[int]) -> None:
+        for col in col_indexes:
+            table_style.append(("ALIGN", (col, 1), (col, -1), "RIGHT"))
+
+    def _center_columns(self, table_style: list, col_indexes: Sequence[int]) -> None:
+        for col in col_indexes:
+            table_style.append(("ALIGN", (col, 0), (col, -1), "CENTER"))
+
+    def _apply_common_table_style(self, table: Table, header: bool = True, zebra: bool = False) -> None:
+        style = [
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 1.5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 1.5),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]
+        if header:
+            style += [("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(self.COLOR_HEADER_BG)), ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold")]
+        if zebra:
+            for row in range(1, len(getattr(table, "_cellvalues", [])), 2):
+                style.append(("BACKGROUND", (0, row), (-1, row), colors.HexColor("#FAFBFC")))
+        table.setStyle(TableStyle(style))
+
+    def _make_table(self, data: list[list[Any]], col_widths: list[float] | None = None, repeat_rows: int = 1, style: list | None = None, font_size: float = 7) -> Table:
+        style_name = "CellTiny" if font_size <= 5.5 else "CellSmall"
+        header_name = "HeaderTiny" if font_size <= 5.5 else "HeaderSmall"
+        wrapped = [[self._safe_paragraph(c, header_name if r == 0 and repeat_rows else style_name) for c in row] for r, row in enumerate(data)]
+        table = Table(wrapped, colWidths=col_widths, repeatRows=repeat_rows)
+        self._apply_common_table_style(table, header=bool(repeat_rows), zebra=False)
+        if style:
+            table.setStyle(TableStyle(style))
+        return table
+
+    def _draw_footer(self, canvas, doc) -> None:
+        canvas.saveState()
+        canvas.setFont("Helvetica", 7)
+        y = 0.45 * cm
+        width = doc.pagesize[0]
+        mode = "Informe Dirección" if getattr(self, "_current_report_mode", "operativo") == "direccion" else "Informe Operativo"
+        generated = getattr(self, "_generated_at", None)
+        gen_text = f"Generado: {generated.strftime('%d/%m/%Y %H:%M')}" if isinstance(generated, datetime) else ""
+        canvas.drawString(doc.leftMargin, y, f"Sansebas AgroView  {gen_text}".strip())
+        canvas.drawCentredString(width / 2, y, mode)
+        canvas.drawRightString(width - doc.rightMargin, y, f"Página {doc.page}")
+        canvas.restoreState()
 
     def _to_float(self, value: Any, default: float = 0.0) -> float:
         if isinstance(value, (int, float)):
@@ -448,7 +538,10 @@ class CommercialPdfReportService:
         for i in range(0, len(cards), columns):
             chunk = cards[i:i + columns]
             rows.append([
-                Paragraph(f"<b>{card['label']}</b><br/><font size='14'><b>{card['value']}</b></font><br/><font size='7'>{card.get('unit', '')}</font>", self._kpi)
+                Paragraph(
+                    f"<b>{card['label']}</b><br/><font size='{12 if len(str(card.get('value', ''))) > 12 else 14}'><b>{card['value']}</b></font><br/><font size='7'>{card.get('unit', '')}</font>",
+                    self._kpi,
+                )
                 for card in chunk
             ] + [""] * (columns - len(chunk)))
         table = Table(rows, colWidths=[width] * columns)
@@ -456,8 +549,8 @@ class CommercialPdfReportService:
             ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor(self.COLOR_HEADER_BG)),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("TOPPADDING", (0, 0), (-1, -1), 7),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+            ("TOPPADDING", (0, 0), (-1, -1), 9),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
         ]
         for idx, card in enumerate(cards):
             row, col = divmod(idx, columns)
@@ -936,7 +1029,7 @@ class CommercialPdfReportService:
             subtotal(f"Subtotal variedad: {current['Variedad']}", self._sum(buckets["Variedad"], "Kg campo"), "variedad")
             subtotal(f"Total grupo varietal: {current['Grupo varietal']}", self._sum(buckets["Grupo varietal"], "Kg campo"), "cultivo")
         subtotal("TOTAL GENERAL STOCK CAMPO", self._sum(sorted_rows, "Kg campo"), "general")
-        story.append(self._table(data, row_styles=styles))
+        story.append(self._table(data, row_styles=styles, right_cols=[9], center_cols=[0,1,5,7], font_size=6.2))
         story.append(PageBreak())
 
 
@@ -1147,7 +1240,7 @@ class CommercialPdfReportService:
         if grouped:
             subtotal(f"Subtotal confección: {last['Confección']}", buckets["Confección"]); subtotal(f"Subtotal marca: {last['Marca']}", buckets["Marca"]); subtotal(f"Total grupo varietal: {last['Grupo varietal']}", buckets["Grupo varietal"])
         subtotal("TOTAL ALMACÉN", grouped)
-        story.append(self._table(data))
+        story.append(self._table(data, right_cols=list(range(len(data[0]) - 3, len(data[0]))), font_size=6.0))
         story.append(PageBreak())
 
     def _add_pedidos(self, story: list, title: str, rows: list[dict], *, kg_field: str, confeccion_field: str, previsto: bool) -> None:
@@ -1210,14 +1303,16 @@ class CommercialPdfReportService:
         data = [columns]
         styles = []
         for r in sorted(rows, key=lambda x: (str(self._value(x, "Fecha salida")), str(self._value(x, "Cliente")), str(self._value(x, "Pedido"))))[:120]:
-            data.append([self._format_cell(self._value(r, c), c) for c in columns])
+            data.append([self._clean_client_name(self._value(r, c), None) if c == "Cliente" else self._format_cell(self._value(r, c), c) for c in columns])
             estado = str(self._value(r, "Estado") or "").upper()
             if estado in {"TERMINADO", "COMPLETO"}:
                 styles.append((len(data) - 1, "VERDE"))
             elif str(self._value(r, "Origen cálculo") or "").upper() == "ESTIMADO_SIN_CONFECCION":
                 styles.append((len(data) - 1, "AMARILLO"))
         story.append(Paragraph("Detalle completo de líneas de pedido", self._normal))
-        story.append(self._table(data, row_styles=styles, col_widths=[1.8*cm, 4.2*cm, 2.2*cm, 1.7*cm, 2.5*cm, 2.5*cm, 1.4*cm, 1.6*cm, 1.8*cm, 3.6*cm, 2.8*cm, 1.7*cm, 2.1*cm, 2.1*cm, 2.1*cm, 2.1*cm, 1.8*cm, 4.0*cm]))
+        header_map = {"Kg pedido teórico": "Kg teórico", "Kg hecho real": "Kg hecho", "Kg pendiente": "Kg pend.", "Grupo confección": "G. conf.", "Grupo varietal": "G. varietal", "Variedad Coop": "Variedad"}
+        data[0] = [header_map.get(c, c) for c in data[0]]
+        story.append(self._table(data, row_styles=styles, col_widths=[1.7*cm, 3.2*cm, 2.0*cm, 1.4*cm, 2.2*cm, 2.2*cm, 1.2*cm, 1.4*cm, 1.6*cm, 3.1*cm, 2.3*cm, 1.5*cm, 1.9*cm, 1.8*cm, 1.8*cm, 1.8*cm, 1.6*cm, 3.2*cm], right_cols=[11,12,13,14,15], center_cols=[16], font_size=5.0))
         story.append(Spacer(1, 6))
 
     def _add_confeccion_mix(self, story: list, rows: list[dict], kg_field: str, palets_field: str) -> None:
@@ -1268,8 +1363,10 @@ class CommercialPdfReportService:
                 row += [self._format_cell(vals["Palets"], "Palets"), self._format_kg(vals["Kg teórico"]), self._format_kg(vals["Kg terminado"]), self._format_kg(vals["Kg pendiente"])]
             row += [self._format_cell(totals["Palets"], "Palets"), self._format_kg(totals["Kg teórico"]), self._format_kg(totals["Kg terminado"]), self._format_kg(totals["Kg pendiente"])]
             data.append(row)
+        if len(header) > 18:
+            story.append(Paragraph("Matriz técnica resumida; consultar exportación Excel para revisión completa.", self._normal))
         story.append(Paragraph("Detalle técnico para auditoría y revisión operativa avanzada.", self._normal))
-        story.append(Paragraph("Detalle técnico: matriz operativa por semana, fecha, cliente y grupo varietal", self._normal)); story.append(self._table(data))
+        story.append(Paragraph("Detalle técnico: matriz operativa por semana, fecha, cliente y grupo varietal", self._normal)); story.append(self._table(data, font_size=4.8))
 
     def _add_aprovechamientos(self, story: list, rows: list[dict]) -> None:
         self._section_title(story, "APROVECHAMIENTO ESTIMADO", "aprovechamiento_estimado")
@@ -1563,7 +1660,7 @@ class CommercialPdfReportService:
             {"label": "Nº PEDIDOS HOY", "value": len({self._value(r, "Pedido") for r in today_rows}), "unit": "pedidos", "status": "ROJO" if today_rows else "VERDE"},
             {"label": "Nº PEDIDOS MAÑANA", "value": len({self._value(r, "Pedido") for r in tomorrow_rows}), "unit": "pedidos", "status": "AMARILLO" if tomorrow_rows else "VERDE"},
         ], columns=5, width=5.1*cm)
-        agenda_rows = [r for r in rows if self._sum([r], "Kg pendiente") > 0 or str(self._value(r, "Estado") or "").strip().upper() not in {"TERMINADO", "COMPLETO"}]
+        agenda_rows = [r for r in rows if self._sum([r], "Kg pendiente") > 0]
         story.append(Paragraph("Agenda priorizada: se muestran líneas con pendiente > 0.", self._normal))
         grouped = self._group_sum(agenda_rows, ["Fecha salida"], {"Kg pendiente": "Kg pendiente", "Palets pendientes": "Palets pendientes"}, count_label="Nº pedidos")
         summary = [["Fecha", "Estado temporal", "Kg pendiente", "Palets pendientes", "Nº pedidos", "Principal cliente", "Principal grupo varietal"]]
@@ -1628,8 +1725,9 @@ class CommercialPdfReportService:
         client_rows = [["Cliente", "Kg pendiente", "%", "Nº pedidos"]]
         grouped_clients = self._group_sum(rows, ["Cliente"], {"Kg pendiente": "Kg pendiente"}, count_label="Nº pedidos")
         for r in sorted(grouped_clients, key=lambda x: x["Kg pendiente"], reverse=True)[:8]:
-            client_rows.append([r.get("Cliente") or "Sin cliente", self._format_kg(r["Kg pendiente"]), self._format_pct(r["Kg pendiente"] / total * 100 if total else 0), r.get("Nº pedidos", 0)])
-        self._add_bar_table(story, "TOP CLIENTES POR KG PENDIENTE", sorted(grouped_clients, key=lambda x: x["Kg pendiente"], reverse=True), "Cliente", "Kg pendiente", total=total, max_rows=8, extra_cols=["Nº pedidos"])
+            client_rows.append([self._clean_client_name(r.get("Cliente") or "Sin cliente", 30), self._format_kg(r["Kg pendiente"]), self._format_pct(r["Kg pendiente"] / total * 100 if total else 0), r.get("Nº pedidos", 0)])
+        compact_clients = [{**r, "Cliente": self._clean_client_name(r.get("Cliente") or "Sin cliente", 30)} for r in sorted(grouped_clients, key=lambda x: x["Kg pendiente"], reverse=True)]
+        self._add_bar_table(story, "TOP CLIENTES POR KG PENDIENTE", compact_clients, "Cliente", "Kg pendiente", total=total, max_rows=8, extra_cols=["Nº pedidos"])
         by_date = self._group_sum(rows, ["Fecha salida"], {"Kg pendiente": "Kg pendiente"}, count_label="Nº pedidos")
         date_data = [["Fecha salida", "Kg pendiente", "Nº pedidos", "Semáforo"]]
         styles=[]
@@ -1655,12 +1753,13 @@ class CommercialPdfReportService:
         ], columns=2, width=8*cm)
         self._add_section_summary(story, "PLAN DE ATAQUE PRODUCCIÓN", self._production_attack_lines(rows))
         today = datetime.now().date()
-        prio = [["Fecha", "Cliente", "Pedido", "Grupo confección", "Kg pendiente", "Prioridad"]]; styles=[]
+        prio = [["Fecha", "Cliente", "Pedido", "Confección", "Kg pendiente", "Prioridad"]]; styles=[]
         for r in sorted(rows, key=lambda x: (self._safe_date(self._value(x, "Fecha salida")) or date.max, -self._sum([x], "Kg pendiente")))[:10]:
             status = self._date_status_label(self._value(r, "Fecha salida"), today)
             sem = "ROJO" if status == "HOY" else "AMARILLO" if status == "MAÑANA" else "VERDE"
-            prio.append([self._format_date_es(self._value(r,"Fecha salida")), self._value(r,"Cliente"), self._value(r,"Pedido"), self._value(r,"Grupo confección"), self._format_kg(self._sum([r],"Kg pendiente")), sem]); styles.append((len(prio)-1, sem))
-        story.append(Paragraph("PRIORIDAD PRODUCCIÓN TOP 10", self._normal)); story.append(self._table(prio, row_styles=styles, col_widths=[3*cm, 6*cm, 4*cm, 6*cm, 4*cm, 3*cm])); story.append(Spacer(1, 6))
+            kg_text = f"<b>{self._format_kg(self._sum([r], 'Kg pendiente'))}</b>"
+            prio.append([self._format_date_es(self._value(r,"Fecha salida")), self._clean_client_name(self._value(r,"Cliente"), 24), self._value(r,"Pedido"), self._short_text(self._value(r,"Grupo confección"), 22), kg_text, sem]); styles.append((len(prio)-1, sem))
+        story.append(Paragraph("PRIORIDAD PRODUCCIÓN TOP 10", self._normal)); story.append(self._table(prio, row_styles=styles, col_widths=[3*cm, 5.5*cm, 3.5*cm, 5.5*cm, 4.5*cm, 3*cm])); story.append(Spacer(1, 6))
         by_day: dict[str, list[dict]] = {}
         for r in prevision:
             by_day.setdefault(self._format_date_es(self._prevision_fecha(r) or ""), []).append(r)
@@ -1675,6 +1774,18 @@ class CommercialPdfReportService:
             story.append(Paragraph("Sin stock campo para construir la visión de calidad.", self._normal)); story.append(PageBreak()); return
         metrics = self._direction_metrics(campo, [], [], [])
         self._add_kpi_cards(story, [{"label": "SIN APROVECHAMIENTO", "value": self._format_t(metrics["sin_kg"]), "unit": self._format_pct(metrics["sin_pct"]), "status": self._risk_label(sin_aprovechamiento_pct=metrics["sin_pct"])}], columns=1, width=8*cm)
+        total_campo = self._sum(campo, "Kg campo")
+        quality_labels = ["Real Loteado", "Real PesosFres", "HarvestSync", "Sin aprovechamiento"]
+        quality_rows = []
+        for label in quality_labels:
+            kg = self._sum([r for r in campo if self._aprovechamiento_estado_row(r) == label], "Kg campo")
+            quality_rows.append({
+                "Origen": label,
+                "Kg": kg,
+                "%": self._format_pct((kg / total_campo * 100) if total_campo else 0),
+                "Estado": self._risk_label(sin_aprovechamiento_pct=(kg / total_campo * 100) if total_campo else 0) if label == "Sin aprovechamiento" else ("VERDE" if kg else "GRIS"),
+            })
+        self._add_bar_table(story, "RESUMEN VISUAL DE APROVECHAMIENTO", quality_rows, "Origen", "Kg", total=total_campo or 1, max_rows=4, extra_cols=["%"], status_col="Estado")
         sin_rows = [r for r in campo if self._aprovechamiento_estado_row(r) == "Sin aprovechamiento"]
         grouped = self._group_sum(sin_rows, ["Variedad"], {"Kg campo": "Kg campo"}, count_label="Nº partidas") if sin_rows else []
         top = [["Variedad", "Kg sin aprovechamiento", "Nº partidas", "Estado"]]
@@ -1739,10 +1850,10 @@ class CommercialPdfReportService:
         items = all_items[:10]
         alerts = [["Nivel", "Área", "Resumen", "Acción"]]
         for a in items:
-            alerts.append([a["nivel"], a["area"], self._compact_text(a["mensaje"], 80), self._compact_text(a["accion"], 55)])
+            alerts.append([a["nivel"], a["area"], self._short_text(a["mensaje"], 70), self._short_text(a["accion"], 45)])
         if len(alerts) == 1:
             alerts.append(["VERDE", "General", "Sin alertas automáticas.", "Mantener seguimiento"])
-        story.append(self._table(alerts, row_styles=[(i, row[0]) for i, row in enumerate(alerts[1:],1)], col_widths=[2.5*cm, 3.5*cm, 13*cm, 7*cm], center_cols=[0]))
+        story.append(self._table(alerts, row_styles=[(i, row[0]) for i, row in enumerate(alerts[1:],1)], col_widths=[2.5*cm, 3.5*cm, 13*cm, 7*cm], center_cols=[0], font_size=7))
         story.append(Spacer(1, 8))
         self._add_section_summary(story, "RECOMENDACIONES OPERATIVAS", self._build_direction_recommendations(campo, almacen, pendientes, previstos)[:8] or ["Sin recomendaciones automáticas con los datos disponibles."])
 
@@ -1845,21 +1956,45 @@ class CommercialPdfReportService:
             return self._format_number(self._to_float(value), 0) if str(value).strip() else ""
         return str(value or "").replace(" 00:00:00", "")
 
-    def _table(self, data: list[list[Any]], repeat: int = 1, header: bool = True, col_widths: list[float] | None = None, row_styles: list[tuple[int, str]] | None = None, right_cols: Sequence[int] | None = None, center_cols: Sequence[int] | None = None) -> Table:
+    def _table(self, data: list[list[Any]], repeat: int = 1, header: bool = True, col_widths: list[float] | None = None, row_styles: list[tuple[int, str]] | None = None, right_cols: Sequence[int] | None = None, center_cols: Sequence[int] | None = None, font_size: float | None = None) -> Table:
         right_set = set(right_cols or [])
         center_set = set(center_cols or [])
+        max_cols = max((len(row) for row in data), default=0)
+        technical = max_cols > 18
+        if technical:
+            logger.warning("PDF table with %s columns detected; applying technical compact mode.", max_cols)
+        for row_idx, row in enumerate(data):
+            for col_idx, cell in enumerate(row):
+                text = str(cell or "")
+                if len(text) > 120:
+                    logger.warning("PDF extreme text length detected at row %s col %s (%s chars).", row_idx, col_idx, len(text))
+        effective_font = font_size or (5.0 if technical else 7.0)
         if data and header:
             for idx, col in enumerate(data[0]):
                 label = str(col)
+                if len(label) > 28:
+                    logger.warning("PDF long table header detected: %s", label)
                 if any(token in label for token in ("Kg", "Palets", "Cajas", "%", "Nº", "Total", "Teórico", "Terminado", "Pendiente", "Neto", "Merma", "Destrío")):
                     right_set.add(idx)
                 if any(token in label for token in ("Estado", "Semáforo", "Nivel", "Prioridad")):
                     center_set.add(idx)
         wrapped = []
-        for row in data:
-            wrapped.append([self._p(c, self._small_right if i in right_set else self._small_center if i in center_set else self._small) for i, c in enumerate(row)])
+        for row_idx, row in enumerate(data):
+            rendered = []
+            for i, c in enumerate(row):
+                if isinstance(c, Paragraph):
+                    rendered.append(c)
+                    continue
+                base = self._cell_tiny if effective_font <= 5.5 else self._cell_small
+                if i in right_set:
+                    base = ParagraphStyle(f"{base.name}Right{row_idx}_{i}", parent=base, alignment=TA_RIGHT)
+                elif i in center_set or (header and row_idx == 0):
+                    base = ParagraphStyle(f"{base.name}Center{row_idx}_{i}", parent=base, alignment=TA_CENTER)
+                rendered.append(self._p(c, base))
+            wrapped.append(rendered)
         t = Table(wrapped, repeatRows=repeat, colWidths=col_widths)
-        style = [("GRID", (0,0), (-1,-1), 0.25, colors.lightgrey), ("VALIGN", (0,0), (-1,-1), "TOP"), ("LEFTPADDING", (0,0), (-1,-1), 1.5), ("RIGHTPADDING", (0,0), (-1,-1), 1.5), ("TOPPADDING", (0,0), (-1,-1), 1.5), ("BOTTOMPADDING", (0,0), (-1,-1), 1.5)]
+        pad = 0.7 if technical else 1.7
+        style = [("GRID", (0,0), (-1,-1), 0.25, colors.lightgrey), ("VALIGN", (0,0), (-1,-1), "TOP"), ("LEFTPADDING", (0,0), (-1,-1), pad), ("RIGHTPADDING", (0,0), (-1,-1), pad), ("TOPPADDING", (0,0), (-1,-1), pad), ("BOTTOMPADDING", (0,0), (-1,-1), pad)]
         if header: style += [("BACKGROUND", (0,0), (-1,0), colors.HexColor(self.COLOR_HEADER_BG)), ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold")]
         for col in center_set:
             style.append(("ALIGN", (col, 0), (col, -1), "CENTER"))
