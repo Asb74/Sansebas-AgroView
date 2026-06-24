@@ -116,7 +116,7 @@ class BOAComercialScreen(ttk.Frame):
     def _build_tabs(self) -> None:
         self.tabs = ttk.Notebook(self.content)
         self.tabs.grid(row=0, column=0, sticky="nsew")
-        self.tabs.bind("<<NotebookTabChanged>>", lambda _e: self.refresh_current())
+        self.tabs.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self.resumen_tab = BOAResumenScreen(self.tabs, service=self.service, get_filters=self.get_filters)
         self.clientes_tab = BOAClientesScreen(self.tabs, service=self.service, get_filters=self.get_filters)
@@ -191,6 +191,11 @@ class BOAComercialScreen(ttk.Frame):
 
     def reapply_filters(self) -> None:
         self.service.clear_cache()
+        self.refresh_current()
+
+    def _on_tab_changed(self, _event=None) -> None:
+        tab_activa = self.tabs.tab(self.tabs.select(), "text") if hasattr(self, "tabs") else ""
+        logging.getLogger(__name__).info("[TRACE NotebookTabChanged] screen=BOAComercial tab=%s", tab_activa)
         self.refresh_current()
 
     def refresh_current(self) -> None:
