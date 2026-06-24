@@ -73,6 +73,7 @@ CONFIG_CALIDAD_OPERATIVA = {
     "DESCONOCIDO": {"primera_pct": 0.80, "segunda_pct": 0.20, "destrio_fallback_pct": 0.10, "usar_destrio_historico": False, "industria_recuperable_pct": 0.80},
 }
 _quality_service = OperationalQualityService()
+_UTILIDAD_STOCK_CONFIG_CACHE = None
 logger = logging.getLogger(__name__)
 
 _UTILIDAD_PERF = defaultdict(float)
@@ -732,6 +733,43 @@ def _canonicalizar_origen(origen: str) -> str:
     return origen_norm
 
 
+def cargar_config_utilidad_stock_cacheada() -> dict:
+    global _UTILIDAD_STOCK_CONFIG_CACHE
+    if _UTILIDAD_STOCK_CONFIG_CACHE is not None:
+        logger.debug("[PERF UtilidadConfigCache.Hit] rows=%s", len(_UTILIDAD_STOCK_CONFIG_CACHE))
+        return _UTILIDAD_STOCK_CONFIG_CACHE
+
+    inicio = perf_counter()
+    rows = []
+    try:
+        _quality_service.ensure_defaults()
+        rows = _quality_service.get_settings()
+        _UTILIDAD_STOCK_CONFIG_CACHE = {
+            str(r.get("Origen")): {
+                "primera_pct": float(r.get("PrimeraPct", 0)),
+                "segunda_pct": float(r.get("SegundaPct", 0)),
+                "destrio_fallback_pct": float(r.get("DestrioFallbackPct", 0)),
+                "usar_destrio_historico": bool(int(r.get("UsarDestrioHistorico", 0))),
+                "industria_recuperable_pct": float(r.get("IndustriaRecuperablePct", 0)),
+            }
+            for r in rows
+        }
+    except Exception:
+        _UTILIDAD_STOCK_CONFIG_CACHE = {}
+
+    logger.info(
+        "[PERF UtilidadConfigCache.Load] tiempo=%.4fs rows=%s",
+        perf_counter() - inicio,
+        len(rows),
+    )
+    return _UTILIDAD_STOCK_CONFIG_CACHE
+
+
+def invalidar_cache_utilidad_stock() -> None:
+    global _UTILIDAD_STOCK_CONFIG_CACHE
+    _UTILIDAD_STOCK_CONFIG_CACHE = None
+
+
 def obtener_config_utilidad_stock(perfil_stock: str, candidato: dict | None = None) -> dict:
     _ = candidato  # reservado para futuras reglas dinámicas
     perfil = _canonicalizar_origen(perfil_stock or "")
@@ -741,21 +779,11 @@ def obtener_config_utilidad_stock(perfil_stock: str, candidato: dict | None = No
         perfil = "ALMACEN_COMERCIAL"
     elif perfil == "PRECALIBRADO":
         perfil = "ALMACEN_INDUSTRIAL"
-    try:
-        _quality_service.ensure_defaults()
-        rows = _quality_service.get_settings()
-        db_cfg = {str(r.get("Origen")): {
-            "primera_pct": float(r.get("PrimeraPct", 0)),
-            "segunda_pct": float(r.get("SegundaPct", 0)),
-            "destrio_fallback_pct": float(r.get("DestrioFallbackPct", 0)),
-            "usar_destrio_historico": bool(int(r.get("UsarDestrioHistorico", 0))),
-            "industria_recuperable_pct": float(r.get("IndustriaRecuperablePct", 0)),
-        } for r in rows}
-        cfg = db_cfg.get(perfil, db_cfg.get("DESCONOCIDO"))
-        if cfg:
-            return dict(cfg)
-    except Exception:
-        pass
+
+    db_cfg = cargar_config_utilidad_stock_cacheada()
+    cfg = db_cfg.get(perfil, db_cfg.get("DESCONOCIDO"))
+    if cfg:
+        return dict(cfg)
     return dict(CONFIG_CALIDAD_OPERATIVA.get(perfil, CONFIG_CALIDAD_OPERATIVA["DESCONOCIDO"]))
 
 
