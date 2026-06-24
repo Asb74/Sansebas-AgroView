@@ -74,12 +74,14 @@ class ProductionCapacityService:
             "resource_feeds": self.prod_repo.get_resource_feeds(),
             "semaphore_rules": semaphore_rules,
             "general_settings": general_settings,
+            "filters": filters,
+            "cultivo_actual": self._single_forecast_context_value(filters, "cultivo"),
         }
         mapped, incidencias = self._map_orders_to_lines_fase1(pedidos, inputs)
         kg_by_line: dict[str, float] = defaultdict(float)
         for row in mapped:
             kg_by_line[str(row.get("linea", "") or "").strip()] += float(row.get("kg", 0) or 0)
-        unmapped_orders = [inc for inc in incidencias if inc.get("Tipo incidencia") == "Sin mapeo"]
+        unmapped_orders = [inc for inc in incidencias if inc.get("Tipo incidencia") in {"Sin mapeo", "No confeccionable"}]
         logger.info("[PERF Capacidad.Fase1.Mapping] tiempo=%.3fs mapped=%s unmapped=%s", perf_counter() - map_t0, len(mapped), len(unmapped_orders))
 
         horas_utiles = self._usable_hours_day({"general_settings": general_settings})
@@ -130,9 +132,11 @@ class ProductionCapacityService:
             })
 
         if unmapped_orders:
-            rows.append({"Recurso": "Sin mapeo", "Tipo recurso": "Pedidos", "Flujo / línea productiva": "", "Activo": "-", "Kg/h": 0, "Horas útiles día": round(horas_utiles, 2), "Capacidad kg/día": 0, "Capacidad útil kg/día": 0, "Kg pedidos asignables": round(sum(float(i.get("kg", 0) or 0) for i in unmapped_orders), 2), "Ocupación %": 0, "Estado": "Sin mapeo", "Observaciones": f"{len(unmapped_orders)} pedido(s) sin mapeo productivo"})
+            no_conf = [i for i in unmapped_orders if i.get("Tipo incidencia") == "No confeccionable"]
+            rows.append({"Recurso": "No confeccionable" if no_conf else "Sin mapeo", "Tipo recurso": "Pedidos", "Flujo / línea productiva": "", "Activo": "-", "Kg/h": 0, "Horas útiles día": round(horas_utiles, 2), "Capacidad kg/día": 0, "Capacidad útil kg/día": 0, "Kg pedidos asignables": round(sum(float(i.get("kg", 0) or 0) for i in unmapped_orders), 2), "Ocupación %": 0, "Estado": "No confeccionable" if no_conf else "Sin mapeo", "Observaciones": f"{len(unmapped_orders)} pedido(s) sin mapeo productivo; {len(no_conf)} no confeccionable(s)" if no_conf else f"{len(unmapped_orders)} pedido(s) sin mapeo productivo"})
         logger.info("[PERF Capacidad.Fase1.Total] tiempo=%.3fs", perf_counter() - total_t0)
-        return {"summary": {"horas_utiles_dia": round(horas_utiles, 2), "kg_total_pedidos": round(kg_total_pedidos, 2), "kg_total_capacidad": round(kg_total_capacidad, 2), "ocupacion_global_pct": round((kg_total_pedidos / kg_total_capacidad * 100) if kg_total_capacidad > 0 else 0, 2), "recursos_saturados": recursos_saturados, "pedidos_sin_mapeo": len(unmapped_orders)}, "resources": rows, "unmapped_orders": unmapped_orders}
+        no_conf_orders = [inc for inc in unmapped_orders if inc.get("Tipo incidencia") == "No confeccionable"]
+        return {"summary": {"horas_utiles_dia": round(horas_utiles, 2), "kg_total_pedidos": round(kg_total_pedidos, 2), "kg_total_capacidad": round(kg_total_capacidad, 2), "ocupacion_global_pct": round((kg_total_pedidos / kg_total_capacidad * 100) if kg_total_capacidad > 0 else 0, 2), "recursos_saturados": recursos_saturados, "pedidos_sin_mapeo": len(unmapped_orders), "pedidos_no_confeccionables": len(no_conf_orders), "kg_no_confeccionables": round(sum(float(i.get("kg", 0) or 0) for i in no_conf_orders), 2)}, "resources": rows, "unmapped_orders": unmapped_orders}
 
     def _map_orders_to_lines_fase1(self, pedidos: list[dict], inputs: dict) -> tuple[list[dict], list[dict]]:
         mapping = {str(r.get("codigo_mconfeccion", "")).strip(): r for r in inputs.get("packaging_mapping", [])}
@@ -143,11 +147,32 @@ class ProductionCapacityService:
             if kg <= 0:
                 continue
             conf = str(order.get("IdConfeccion", order.get("id_confeccion", "")) or "").strip()
+            cultivo = self._order_crop(order, inputs)
             prod = mapping.get(conf) or base.get(conf)
-            if not prod:
-                incidencias.append({**self._inc("Sin mapeo", order, "Pedido sin mapeo de confección productiva", "Revisar mapeo_confecciones/confecciones_base"), "kg": kg})
+            compatible = self._is_productive_config_compatible_with_crop(prod, cultivo) if prod else False
+            linea_resuelta = str((prod or {}).get("linea_productiva", "") or "").strip()
+            logger.info(
+                "[CAPACIDAD MAPEO] pedido=%s cultivo=%s confeccion=%s linea_resuelta=%s compatible=%s resultado=%s",
+                order.get("IdPedidoLora", order.get("id_previsto", "")),
+                cultivo,
+                conf,
+                linea_resuelta,
+                compatible,
+                "mapeado" if prod and compatible else "sin_mapeo",
+            )
+            if prod and not compatible:
+                if self._is_sandia_crop(cultivo):
+                    incidencias.append({**self._not_confeccionable_inc(order, cultivo, kg), "kg": kg})
+                else:
+                    incidencias.append({**self._inc("Sin mapeo", order, f"Confección incompatible con cultivo {cultivo or 'VACÍO'}", "Revisar mapeo_confecciones/confecciones_base"), "kg": kg})
                 continue
-            linea = str(prod.get("linea_productiva", "") or "").strip()
+            if not prod:
+                if self._is_sandia_crop(cultivo):
+                    incidencias.append({**self._not_confeccionable_inc(order, cultivo, kg), "kg": kg})
+                else:
+                    incidencias.append({**self._inc("Sin mapeo", order, "Pedido sin mapeo de confección productiva", "Revisar mapeo_confecciones/confecciones_base"), "kg": kg})
+                continue
+            linea = linea_resuelta
             if not linea:
                 incidencias.append({**self._inc("Sin mapeo", order, "Confección sin línea productiva", "Completar confecciones_base"), "kg": kg})
                 continue
@@ -240,6 +265,8 @@ class ProductionCapacityService:
         base_packaging = {str(r.get("codigo", "")).strip(): r for r in inputs.get("base_packaging", [])}
         out: list[dict] = []
         incidencias: list[dict] = []
+        no_confeccionable_count = 0
+        no_confeccionable_kg = 0.0
 
         for tipo, rows in (("Real", pedidos_reales), ("Previsto", pedidos_previstos)):
             for order in rows:
@@ -268,20 +295,60 @@ class ProductionCapacityService:
                             incidencias.append(self._inc("Confección base inexistente", order, f"No existe confección base {codigo_base}", "Revisar pedido previsto o maestro"))
                             continue
 
+                cultivo = self._order_crop(order, inputs)
+                conf = ""
                 if productive_conf is None:
                     conf = str(order.get("IdConfeccion", order.get("id_confeccion", ""))).strip()
                     if conf:
                         productive_conf = mapping.get(conf)
 
-                if not productive_conf:
+                if productive_conf and not self._is_productive_config_compatible_with_crop(productive_conf, cultivo):
+                    linea_resuelta = str(productive_conf.get("linea_productiva", "") or "").strip()
+                    logger.info(
+                        "[CAPACIDAD MAPEO] pedido=%s cultivo=%s confeccion=%s linea_resuelta=%s compatible=%s resultado=%s",
+                        order.get("IdPedidoLora", order.get("id_previsto", "")),
+                        cultivo,
+                        conf or order.get("codigo_base_packaging", ""),
+                        linea_resuelta,
+                        False,
+                        "no_confeccionable" if self._is_sandia_crop(cultivo) else "sin_mapeo",
+                    )
+                    if self._is_sandia_crop(cultivo):
+                        incidencias.append(self._not_confeccionable_inc(order, cultivo, kg))
+                        no_confeccionable_count += 1
+                        no_confeccionable_kg += kg
+                    else:
+                        incidencias.append(self._inc("Sin confección productiva", order, f"Confección incompatible con cultivo {cultivo or 'VACÍO'}", "Crear/revisar mapeo compatible con el cultivo"))
+                    productive_conf = None
+                    if self._is_sandia_crop(cultivo):
+                        continue
+
+                if not productive_conf and not self._is_sandia_crop(cultivo):
                     productive_conf = self._fallback_packaging(order, inputs.get("base_packaging", []))
+                    if productive_conf and not self._is_productive_config_compatible_with_crop(productive_conf, cultivo):
+                        productive_conf = None
                     fallback_used = productive_conf is not None
                     if fallback_used:
                         incidencias.append(self._inc("Fallback confección", order, "Pedido con fallback aproximado grupo/perfil", "Revisar mapeo productivo para eliminar aproximación"))
 
                 if not productive_conf:
-                    incidencias.append(self._inc("Sin confección productiva", order, "No existe confección productiva resoluble", "Crear/revisar mapeo o confección base"))
+                    if self._is_sandia_crop(cultivo):
+                        incidencias.append(self._not_confeccionable_inc(order, cultivo, kg))
+                        no_confeccionable_count += 1
+                        no_confeccionable_kg += kg
+                    else:
+                        incidencias.append(self._inc("Sin confección productiva", order, "No existe confección productiva resoluble", "Crear/revisar mapeo o confección base"))
                     continue
+
+                logger.info(
+                    "[CAPACIDAD MAPEO] pedido=%s cultivo=%s confeccion=%s linea_resuelta=%s compatible=%s resultado=%s",
+                    order.get("IdPedidoLora", order.get("id_previsto", "")),
+                    cultivo,
+                    conf or order.get("codigo_base_packaging", ""),
+                    str(productive_conf.get("linea_productiva", "") or "").strip(),
+                    True,
+                    "mapeado",
+                )
 
                 familia = str(productive_conf.get("familia_productiva", "Otros") or "Otros")
                 if familia == "Otro":
@@ -370,6 +437,8 @@ class ProductionCapacityService:
                     "subtipo_productivo": subtipo_productivo,
                     "fallback_used": fallback_used,
                 })
+        inputs["pedidos_no_confeccionables"] = no_confeccionable_count
+        inputs["kg_no_confeccionables"] = no_confeccionable_kg
         return out, incidencias
 
     def calculate_family_capacity(self, mapped: list[dict], inputs: dict, staffing_rows: list[dict] | None = None) -> list[dict]:
@@ -938,7 +1007,7 @@ class ProductionCapacityService:
         occ = horas / hdisp * 100 if hdisp > 0 else 0
         turnos_equivalentes = horas / hdisp if hdisp > 0 else 0
         per = inputs["personnel"]
-        return {"Kg reales pendientes": round(kg_real, 2), "Kg previstos": round(kg_prev, 2), "Kg total simulación": round(kg_real + kg_prev, 2), "Horas necesarias estimadas": round(horas, 2), "Horas disponibles": round(hdisp, 2), "Ocupación %": round(occ, 2), "jornadas_equivalentes": round(turnos_equivalentes, 2), "turnos_equivalentes": round(turnos_equivalentes, 2), "Personal disponible total": int(per.get("personal_total", 0) or 0), "Personal directo disponible": int(per.get("personal_directo", 0) or 0), "Personal soporte disponible": int(per.get("personal_soporte", 0) or 0), "Personal indirecto disponible": int(per.get("personal_indirecto", 0) or 0), "Estado capacidad": self._state(occ, inputs["semaphore_rules"], "General")}
+        return {"Kg reales pendientes": round(kg_real, 2), "Kg previstos": round(kg_prev, 2), "Kg total simulación": round(kg_real + kg_prev, 2), "Horas necesarias estimadas": round(horas, 2), "Horas disponibles": round(hdisp, 2), "Ocupación %": round(occ, 2), "jornadas_equivalentes": round(turnos_equivalentes, 2), "turnos_equivalentes": round(turnos_equivalentes, 2), "Personal disponible total": int(per.get("personal_total", 0) or 0), "Personal directo disponible": int(per.get("personal_directo", 0) or 0), "Personal soporte disponible": int(per.get("personal_soporte", 0) or 0), "Personal indirecto disponible": int(per.get("personal_indirecto", 0) or 0), "Pedidos no confeccionables": int(inputs.get("pedidos_no_confeccionables", 0) or 0), "Kg no confeccionables": round(float(inputs.get("kg_no_confeccionables", 0) or 0), 2), "Estado capacidad": self._state(occ, inputs["semaphore_rules"], "General")}
 
     def calculate_capacity_alerts(self, summary: dict, family_rows: list[dict], line_rows: list[dict], incidencias: list[dict], resource_rows: list[dict] | None = None, bottleneck: dict | None = None, bottleneck_rows: list[dict] | None = None) -> list[dict]:
         out = list(incidencias)
@@ -1452,6 +1521,71 @@ class ProductionCapacityService:
             if calibre in calibres:
                 return max(0.1, float(r.get("factor_rendimiento", 1) or 1))
         return 1.0
+
+    def _order_crop(self, order: dict, inputs: dict | None = None) -> str:
+        cultivo = str(order.get("Cultivo", order.get("cultivo", "")) or "").strip()
+        if cultivo:
+            return cultivo
+        if isinstance(inputs, dict):
+            cultivo = str(inputs.get("cultivo_actual", "") or "").strip()
+            if cultivo:
+                return cultivo
+            return self._single_forecast_context_value(inputs.get("filters", {}), "cultivo")
+        return ""
+
+    def _is_productive_config_compatible_with_crop(self, productive_conf: dict | None, cultivo: str) -> bool:
+        if not productive_conf:
+            return False
+        crop = self._normalize_crop(cultivo)
+        raw_values: list[str] = []
+        for field in ("cultivo", "cultivos", "cultivos_aplicables", "contexto"):
+            value = productive_conf.get(field)
+            if value is None:
+                continue
+            if isinstance(value, (list, tuple, set)):
+                raw_values.extend(str(v) for v in value)
+            else:
+                raw_values.extend(re.split(r"[,;/|]+", str(value)))
+        configured = [self._normalize_crop(v) for v in raw_values if str(v or "").strip()]
+        if not configured:
+            return not self._requires_explicit_crop_compatibility(crop)
+        if any(v in {"TODOS", "ALL", "GENERAL"} for v in configured):
+            return True
+        if crop in configured:
+            return True
+        if "CITRICOS" in configured and self._is_citrus_crop(crop):
+            return True
+        return False
+
+    def _normalize_crop(self, value: str) -> str:
+        text = unicodedata.normalize("NFKD", str(value or "").strip().upper())
+        return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+    def _is_sandia_crop(self, cultivo: str) -> bool:
+        return self._normalize_crop(cultivo) == "SANDIA"
+
+    def _is_citrus_crop(self, cultivo: str) -> bool:
+        return self._normalize_crop(cultivo) in {"CITRICOS", "CITRICO", "NARANJA", "MANDARINA", "LIMON", "CLEMENTINA", "POMELO"}
+
+    def _requires_explicit_crop_compatibility(self, crop: str) -> bool:
+        return crop in {"SANDIA"}
+
+    def _not_confeccionable_inc(self, order: dict, cultivo: str, kg: float | None = None) -> dict:
+        motivo = "Pedido SANDIA sin línea productiva compatible configurada"
+        logger.info(
+            "[CAPACIDAD NO CONFECCIONABLE] pedido=%s cultivo=%s confeccion=%s kg=%s motivo=%s",
+            order.get("IdPedidoLora", order.get("id_previsto", "")),
+            cultivo,
+            order.get("IdConfeccion", order.get("grupo_confeccion", "")),
+            kg if kg is not None else "",
+            motivo,
+        )
+        return self._inc(
+            "No confeccionable",
+            order,
+            motivo,
+            "Crear mapeo de confección de sandía y línea/recurso físico correspondiente",
+        )
 
     def _estimate_personnel_for_order(self, mapped_order: dict, inputs: dict) -> int:
         cfg = self._line_cfg(mapped_order["linea"], inputs)
