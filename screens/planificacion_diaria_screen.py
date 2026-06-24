@@ -1,3 +1,5 @@
+import copy
+import hashlib
 import json
 import logging
 import os
@@ -86,14 +88,22 @@ class PlanificacionDiariaScreen(ttk.Frame):
     def _get_filter_options_for_active_tab(self, key: str) -> list[str]:
         payload = self._filters_payload()
         tab_name = self.tabs.tab(self.tabs.select(), "text") if hasattr(self, "tabs") else ""
-        cache_key = (tab_name, key, self._get_filters_key({**payload, key: []}))
-        cached = self._filter_options_cache.get(cache_key)
+        filters_for_key = {**payload, key: []}
+        cache_hash = self._get_filters_hash(filters_for_key, extra={"tab": tab_name, "key": key})
+        cache_key = (tab_name, key, cache_hash)
+        cache = self._planning_cache.setdefault("filter_options", {})
+        cached = cache.get(cache_key)
+        logger = logging.getLogger(__name__)
         if cached is not None:
-            return cached
+            logger.info("[CACHE FilterOptions] HIT hash=%s rows=%s", cache_hash, len(cached))
+            return self._copy_cached_result(cached)
 
+        logger.info("[CACHE FilterOptions] MISS hash=%s", cache_hash)
         options = self.service.get_planning_filter_options(key, {k: v for k, v in payload.items() if k != key})
-        self._filter_options_cache[cache_key] = options
-        return options
+        cache[cache_key] = self._copy_cached_result(options)
+        self._filter_options_cache[cache_key] = self._copy_cached_result(options)
+        logger.info("[CACHE FilterOptions] STORE hash=%s rows=%s", cache_hash, len(options))
+        return self._copy_cached_result(options)
 
     def _get_current_base_rows_for_filters(self, ignored_filter: str, payload: dict, tab_name: str) -> list[dict]:
         filters = {k: v for k, v in payload.items() if k != ignored_filter}
@@ -348,7 +358,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
             "stock_campo": None,
             "stock_almacen": None,
             "stock_almacen_detalle": None,
-            "pedidos_pendientes": None,
+            "pedidos_pendientes": {},
+            "filter_options": {},
             "pedidos_previstos": None,
             "balance": None,
             "capacidad_productiva": None,
@@ -372,6 +383,18 @@ class PlanificacionDiariaScreen(ttk.Frame):
             "empresa", "var_coop", "grupo_varietal", "marca", "pedidos_modo",
         )) + (("sim_policy", stable(policy)),)
 
+
+    def _get_filters_hash(self, payload: dict | None = None, *, extra: dict | None = None) -> str:
+        normalized = self._get_filters_key(payload)
+        if extra:
+            normalized = normalized + tuple((key, str(extra[key] or "")) for key in sorted(extra))
+        raw = json.dumps(normalized, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+    @staticmethod
+    def _copy_cached_result(value):
+        return copy.deepcopy(value)
+
     def _invalidate_planning_cache(self, motivo: str, keys: list[str] | None = None) -> None:
         logger = logging.getLogger(__name__)
         logger.debug("CACHE INVALIDADA motivo=%s", motivo)
@@ -384,7 +407,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self._filter_options_cache = {}
         for key in keys:
             if key in self._planning_cache:
-                self._planning_cache[key] = None
+                self._planning_cache[key] = {} if key in {"pedidos_pendientes", "filter_options"} else None
         self._planning_cache["aprovechamientos_resumen"] = None
         self._planning_cache["aprovechamientos_detalle"] = None
         self.last_capacity_simulation = None
@@ -402,14 +425,30 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
     def _cache_get(self, key: str):
         logger = logging.getLogger(__name__)
-        if self._planning_cache.get(key) is not None:
+        value = self._planning_cache.get(key)
+        if value is not None and not (key in {"pedidos_pendientes", "filter_options"} and value == {}):
             logger.debug("CACHE HIT %s", key)
-            return self._planning_cache[key]
+            return value
         logger.debug("CACHE MISS %s", key)
         return None
 
     def _cache_set(self, key: str, value) -> None:
         self._planning_cache[key] = value
+
+    def _get_pedidos_pendientes_cached(self, payload: dict, modo_pedidos: str) -> tuple[list[dict], dict]:
+        logger = logging.getLogger(__name__)
+        cache = self._planning_cache.setdefault("pedidos_pendientes", {})
+        cache_key = self._get_filters_hash(payload, extra={"modo_pedidos": modo_pedidos})
+        cached = cache.get(cache_key)
+        if cached is not None:
+            rows = cached[0] if isinstance(cached, tuple) and cached else []
+            logger.info("[CACHE Pedidos] HIT hash=%s rows=%s", cache_key, len(rows))
+            return self._copy_cached_result(cached)
+        logger.info("[CACHE Pedidos] MISS hash=%s", cache_key)
+        result = self.service.load_pedidos_pendientes(payload, modo_pedidos)
+        cache[cache_key] = self._copy_cached_result(result)
+        logger.info("[CACHE Pedidos] STORE hash=%s rows=%s", cache_key, len(result[0] if result else []))
+        return self._copy_cached_result(result)
 
     def _balance_preloaded_context(self) -> dict:
         preloaded: dict = {}
@@ -418,10 +457,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
             stock_rows, detalle_rows, _warning = cached_almacen
             preloaded["stock_almacen"] = stock_rows
             preloaded["stock_almacen_detalle"] = detalle_rows
-        cached_pedidos = self._cache_get("pedidos_pendientes")
-        if cached_pedidos is not None:
-            pedidos_raw, _pedidos_view, _kpi = cached_pedidos
-            preloaded["pedidos_pendientes"] = pedidos_raw
+        if self.pedidos_pendientes_rows_raw:
+            preloaded["pedidos_pendientes"] = [dict(r) for r in self.pedidos_pendientes_rows_raw]
         cached_campo = self._cache_get("stock_campo")
         if cached_campo is not None:
             stock_campo_rows, _updated, _warning = cached_campo
@@ -474,26 +511,19 @@ class PlanificacionDiariaScreen(ttk.Frame):
                     logging.getLogger(__name__).warning("No se pudo cargar stock almacén: %s", exc)
                     messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock almacén: {exc}")
         elif tab_activa == "Pedidos pendientes":
-            cached = self._cache_get("pedidos_pendientes")
-            if cached is not None:
-                self.pedidos_pendientes_rows_raw, self.pedidos_pendientes_rows, pedidos_kpi = cached
-                logger.info("[PERF Tab.Pedidos.Service] tiempo=%.3fs rows=%s cache=hit", 0.0, len(self.pedidos_pendientes_rows))
-                self._refresh_pedidos_local_filter_options(self.pedidos_pendientes_rows_raw)
-            else:
-                modo_pedidos = self.pedidos_modo_var.get()
-                try:
-                    service_t0 = perf_counter()
-                    pedidos_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, modo_pedidos)
-                    self.pedidos_pendientes_rows_raw = [dict(r) for r in pedidos_rows]
-                    self._refresh_pedidos_local_filter_options(pedidos_rows)
-                    self.pedidos_pendientes_rows, pedidos_kpi = self._apply_pedidos_local_filters(pedidos_rows, pedidos_kpi)
-                    logger.info("[PERF Tab.Pedidos.Service] tiempo=%.3fs rows=%s", perf_counter() - service_t0, len(self.pedidos_pendientes_rows))
-                    self._cache_set("pedidos_pendientes", (self.pedidos_pendientes_rows_raw, self.pedidos_pendientes_rows, pedidos_kpi))
-                except Exception as exc:
-                    self.pedidos_pendientes_rows = []
-                    self.pedidos_pendientes_rows_raw = []
-                    logging.getLogger(__name__).warning("No se pudo cargar pedidos pendientes: %s", exc)
-                    messagebox.showwarning("Pedidos pendientes", f"No se pudo cargar pedidos pendientes: {exc}")
+            modo_pedidos = self.pedidos_modo_var.get()
+            try:
+                service_t0 = perf_counter()
+                pedidos_rows, pedidos_kpi = self._get_pedidos_pendientes_cached(payload, modo_pedidos)
+                self.pedidos_pendientes_rows_raw = [dict(r) for r in pedidos_rows]
+                self._refresh_pedidos_local_filter_options(pedidos_rows)
+                self.pedidos_pendientes_rows, pedidos_kpi = self._apply_pedidos_local_filters(pedidos_rows, pedidos_kpi)
+                logger.info("[PERF Tab.Pedidos.Service] tiempo=%.3fs rows=%s", perf_counter() - service_t0, len(self.pedidos_pendientes_rows))
+            except Exception as exc:
+                self.pedidos_pendientes_rows = []
+                self.pedidos_pendientes_rows_raw = []
+                logging.getLogger(__name__).warning("No se pudo cargar pedidos pendientes: %s", exc)
+                messagebox.showwarning("Pedidos pendientes", f"No se pudo cargar pedidos pendientes: {exc}")
         elif tab_activa == "Pedidos previstos":
             cached = self._cache_get("pedidos_previstos")
             if self.pedidos_previstos_panel:
@@ -1334,7 +1364,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         except Exception:
             logging.getLogger(__name__).exception("No se pudo asegurar previsión de recolección para PDF comercial")
         try:
-            pedidos_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, self.pedidos_modo_var.get())
+            pedidos_rows, pedidos_kpi = self._get_pedidos_pendientes_cached(payload, self.pedidos_modo_var.get())
             self._refresh_pedidos_local_filter_options(pedidos_rows)
             pedidos_pendientes_rows, _ = self._apply_pedidos_local_filters(pedidos_rows, pedidos_kpi)
         except Exception:
@@ -1442,7 +1472,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         payload = self._filters_payload()
         try:
             cap = self._current_capacity_simulation(payload)
-            pedidos_rows, pedidos_kpi = self.service.load_pedidos_pendientes(payload, self.pedidos_modo_var.get())
+            pedidos_rows, pedidos_kpi = self._get_pedidos_pendientes_cached(payload, self.pedidos_modo_var.get())
             pedidos_pendientes, _ = self._apply_pedidos_local_filters(pedidos_rows, pedidos_kpi)
         except Exception as exc:
             messagebox.showerror("Exportar diagnóstico", f"No se pudo preparar el diagnóstico: {exc}", parent=self)
