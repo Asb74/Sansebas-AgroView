@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import inspect
+import json
 from collections import Counter, defaultdict
 import importlib
 import re
@@ -17,6 +20,33 @@ from services.pedidos_previstos_service import cargar_pedidos_previstos_filtrado
 
 
 logger = logging.getLogger(__name__)
+
+_TRACE_QUERY_FILTERS_SEEN: dict[str, int] = defaultdict(int)
+
+
+def _trace_filters(label: str, filters: dict, extra: dict | None = None) -> str:
+    payload = dict(filters or {})
+    if extra:
+        payload.update(extra)
+    filters_json = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
+    filters_hash = hashlib.sha256(filters_json.encode("utf-8")).hexdigest()[:12]
+    key = f"{label}:{filters_hash}"
+    _TRACE_QUERY_FILTERS_SEEN[key] += 1
+    logger.info(
+        "[TRACE %s.Filters] hash=%s count=%s filters=%s",
+        label,
+        filters_hash,
+        _TRACE_QUERY_FILTERS_SEEN[key],
+        filters_json,
+    )
+    return filters_hash
+
+
+def _trace_stack(label: str) -> None:
+    stack = inspect.stack()
+    caller = stack[3].function if len(stack) > 3 else "<unknown>"
+    logger.info("[TRACE %s.Start] caller=%s", label, caller)
+    logger.info("[TRACE %s.Path] %s", label, " > ".join(f.function for f in stack[3:8]))
 
 _CALIBRES_PERF = {
     "normalizaciones": 0,
@@ -2741,6 +2771,8 @@ class PlanningRepository:
 
     def get_stock_almacen(self, filters: dict) -> tuple[list[dict], str | None]:
         t0_total = time.perf_counter()
+        _trace_stack("StockAlmacen.Query")
+        filters_hash = _trace_filters("StockAlmacen.Query", filters)
         path = self.db_loteado
         logger.debug("BD loteado usada: %s", path)
         if not path.exists():
@@ -2748,6 +2780,7 @@ class PlanningRepository:
             logger.info("[PERF Repo.StockAlmacen.Query] tiempo=%.3fs rows=%s", 0.0, 0)
             logger.info("[PERF Repo.StockAlmacen.Format] tiempo=%.3fs", 0.0)
             logger.info("[PERF Repo.StockAlmacen.Total] tiempo=%.3fs", time.perf_counter() - t0_total)
+            logger.info("[TRACE StockAlmacen.Query.End] hash=%s rows=%s tiempo=%.3fs", filters_hash, 0, time.perf_counter() - t0_total)
             return [], None
         with sqlite3.connect(path) as conn:
             conn.row_factory = sqlite3.Row
@@ -2839,6 +2872,7 @@ class PlanningRepository:
             )
         logger.info("[PERF Repo.StockAlmacen.Format] tiempo=%.3fs", time.perf_counter() - format_t0)
         logger.info("[PERF Repo.StockAlmacen.Total] tiempo=%.3fs", time.perf_counter() - t0_total)
+        logger.info("[TRACE StockAlmacen.Query.End] hash=%s rows=%s tiempo=%.3fs", filters_hash, len(data), time.perf_counter() - t0_total)
         return data, None
 
     def get_stock_almacen_detalle_palets(self, filters: dict) -> list[dict]:
@@ -2911,6 +2945,8 @@ class PlanningRepository:
     def get_pedidos_pendientes(self, filters: dict, modo_pedidos: str = "10_dias") -> tuple[list[dict], dict[str, float]]:
         logger.debug("Cargando pedidos pendientes. Modo=%s Filters=%s", modo_pedidos, filters)
         t0_total = time.perf_counter()
+        _trace_stack("Pedidos.Query")
+        filters_hash = _trace_filters("Pedidos.Query", filters, {"modo_pedidos": modo_pedidos})
         logger.debug("get_pedidos_pendientes: inicio")
         pedidos_path = self._db_path(DB_PEDIDOS)
         logger.debug("Ruta DBPedidos.sqlite usada: %s", pedidos_path)
@@ -2922,6 +2958,7 @@ class PlanningRepository:
             logger.info("[PERF Repo.Pedidos.Enrich] tiempo=%.3fs", 0.0)
             logger.info("[PERF Repo.Pedidos.KPI] tiempo=%.3fs", 0.0)
             logger.info("[PERF Repo.Pedidos.Total] tiempo=%.3fs", time.perf_counter() - t0_total)
+            logger.info("[TRACE Pedidos.Query.End] hash=%s rows=%s tiempo=%.3fs", filters_hash, 0, time.perf_counter() - t0_total)
             return [], kpi_vacio
 
         with sqlite3.connect(pedidos_path) as conn:
@@ -3189,6 +3226,7 @@ class PlanningRepository:
                 logger.warning("No se encontraron pedidos pendientes con los filtros aplicados.")
                 logger.info("[PERF Repo.Pedidos.KPI] tiempo=%.3fs", 0.0)
                 logger.info("[PERF Repo.Pedidos.Total] tiempo=%.3fs", time.perf_counter() - t0_total)
+                logger.info("[TRACE Pedidos.Query.End] hash=%s rows=%s tiempo=%.3fs", filters_hash, 0, time.perf_counter() - t0_total)
                 return [], kpi_vacio
 
         kpi_t0 = time.perf_counter()
@@ -3211,6 +3249,7 @@ class PlanningRepository:
         kpi["% merma total"] = round((float(kpi.get("Merma kg total", 0) or 0) / pedido_total) * 100, 2) if pedido_total > 0 else 0.0
         logger.info("[PERF Repo.Pedidos.KPI] tiempo=%.3fs", time.perf_counter() - kpi_t0)
         logger.info("[PERF Repo.Pedidos.Total] tiempo=%.3fs", time.perf_counter() - t0_total)
+        logger.info("[TRACE Pedidos.Query.End] hash=%s rows=%s tiempo=%.3fs", filters_hash, len(rows), time.perf_counter() - t0_total)
         return rows, kpi
 
 

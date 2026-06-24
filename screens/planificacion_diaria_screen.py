@@ -430,6 +430,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
     def load_data(self, save_filters: bool = True) -> None:
         tab_activa = self.tabs.tab(self.tabs.select(), "text")
+        logging.getLogger(__name__).info("[TRACE Planificacion.LoadData.Start] tab=%s save_filters=%s", tab_activa, save_filters)
         perf_tab = {"Pedidos pendientes": "Pedidos", "Balance": "Balance", "Stock almacén": "StockAlmacen"}.get(tab_activa)
         logger = logging.getLogger(__name__)
         total_t0 = perf_counter()
@@ -849,6 +850,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                     0.0,
                     marks.get("total", 0.0),
                 )
+                logger.info("[TRACE Tk.After] screen=PlanificacionDiaria delay_ms=0 callback=finish_simulacion")
                 self.after(0, lambda: finish(result, error))
 
         def finish(result: dict | None, error: Exception | None) -> None:
@@ -1184,6 +1186,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self._reload_with_invalidated_cache("actualizar_foto_local", save_filters=True)
 
     def _on_tab_changed(self, _event=None) -> None:
+        tab_activa = self.tabs.tab(self.tabs.select(), "text") if hasattr(self, "tabs") else ""
+        logging.getLogger(__name__).info("[TRACE NotebookTabChanged] screen=PlanificacionDiaria tab=%s", tab_activa)
         self.load_data(save_filters=False)
 
     def reset_filters(self) -> None:
