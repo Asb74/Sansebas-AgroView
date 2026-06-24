@@ -43,6 +43,15 @@ else:  # pragma: no cover
 class CommercialPdfReportService:
     """Genera el informe comercial diario desde las filas ya filtradas en pantalla."""
 
+    COLOR_PRIMARY = "#1F4E79"
+    COLOR_HEADER_BG = "#D9EAF7"
+    COLOR_LIGHT_BG = "#F5F7FA"
+    COLOR_GREEN = "#C8E6C9"
+    COLOR_YELLOW = "#FFF3CD"
+    COLOR_RED = "#F8D7DA"
+    COLOR_GREY = "#E0E0E0"
+
+
     def default_filename(self, cultivos: Sequence[Any] | None = None, now: datetime | None = None) -> str:
         cultivo_slug = self._cultivo_filename_slug(cultivos)
         timestamp = (now or datetime.now()).strftime("%Y%m%d_%H%M")
@@ -97,8 +106,8 @@ class CommercialPdfReportService:
         self._styles = getSampleStyleSheet()
         self._small = ParagraphStyle("Small", parent=self._styles["Normal"], fontSize=6.2, leading=7.2, alignment=TA_LEFT)
         self._normal = ParagraphStyle("NormalCompact", parent=self._styles["Normal"], fontSize=8, leading=9.5)
-        self._section = ParagraphStyle("Section", parent=self._styles["Heading2"], fontSize=14, leading=16, spaceBefore=4, spaceAfter=7, textColor=colors.HexColor("#1F4E79"))
-        self._title = ParagraphStyle("Title", parent=self._styles["Heading1"], fontSize=20, leading=23, alignment=TA_CENTER, textColor=colors.HexColor("#1F4E79"))
+        self._section = ParagraphStyle("Section", parent=self._styles["Heading2"], fontSize=14, leading=16, spaceBefore=4, spaceAfter=7, textColor=colors.HexColor(self.COLOR_PRIMARY))
+        self._title = ParagraphStyle("Title", parent=self._styles["Heading1"], fontSize=20, leading=23, alignment=TA_CENTER, textColor=colors.HexColor(self.COLOR_PRIMARY))
         self._kpi = ParagraphStyle("Kpi", parent=self._styles["Normal"], fontSize=10, leading=12, alignment=TA_CENTER)
 
         campo = list(stock_campo_rows or [])
@@ -131,29 +140,75 @@ class CommercialPdfReportService:
     def _p(self, value: Any) -> Paragraph:
         return Paragraph(str(value if value is not None else ""), self._small)
 
-    def _num(self, value: Any, decimals: int = 2) -> str:
-        try: return f"{float(str(value).replace(',', '.')):,.{decimals}f}"
-        except Exception: return str(value or "")
-
-    def _format_toneladas(self, value: Any) -> str:
+    def _to_float(self, value: Any, default: float = 0.0) -> float:
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value if value is not None else "").strip()
+        if not text:
+            return default
         try:
-            return f"{float(value or 0) / 1000:.1f}".replace(".", ",") + " t"
+            if "," in text and "." in text:
+                text = text.replace(".", "").replace(",", ".")
+            elif "," in text:
+                text = text.replace(",", ".")
+            return float(text)
         except Exception:
-            return "0,0 t"
+            return default
 
-    def _format_toneladas_cifra(self, value: Any) -> str:
+    def _format_number(self, value: Any, decimals: int = 0) -> str:
         try:
-            return f"{float(value or 0) / 1000:.1f}".replace(".", ",")
+            text = f"{float(value or 0):,.{decimals}f}"
+            return text.replace(",", "_").replace(".", ",").replace("_", ".")
         except Exception:
-            return "0,0"
+            return str(value or "")
 
-    def _format_pct_1(self, value: Any, *, blank: str = "-") -> str:
+    def _format_kg(self, value: Any) -> str:
+        return f"{self._format_number(self._to_float(value), 0)} kg"
+
+    def _format_t(self, value: Any) -> str:
+        return f"{self._format_number(self._to_float(value) / 1000, 1)} t"
+
+    def _format_pct(self, value: Any, *, blank: str = "-") -> str:
         if value is None:
             return blank
-        try:
-            return f"{float(value):.1f}".replace(".", ",")
-        except Exception:
-            return blank
+        return f"{self._format_number(self._to_float(value), 1)} %"
+
+    def _num(self, value: Any, decimals: int = 2) -> str:
+        return self._format_number(self._to_float(value), decimals)
+
+    def _format_toneladas(self, value: Any) -> str:
+        return self._format_t(value)
+
+    def _format_toneladas_cifra(self, value: Any) -> str:
+        return self._format_number(self._to_float(value) / 1000, 1)
+
+    def _format_pct_1(self, value: Any, *, blank: str = "-") -> str:
+        return self._format_pct(value, blank=blank).replace(" %", "") if value is not None else blank
+
+    def _traffic_label(self, value: Any, green_min: float, yellow_min: float) -> str:
+        if value is None:
+            return "GRIS"
+        numeric = self._to_float(value)
+        if numeric >= green_min:
+            return "VERDE"
+        if numeric >= yellow_min:
+            return "AMARILLO"
+        return "ROJO"
+
+    def _traffic_color(self, label: str):
+        palette = {"VERDE": self.COLOR_GREEN, "AMARILLO": self.COLOR_YELLOW, "ROJO": self.COLOR_RED, "GRIS": self.COLOR_GREY}
+        return colors.HexColor(palette.get(str(label).upper(), self.COLOR_GREY)) if REPORTLAB_AVAILABLE else None
+
+    def _risk_label(self, cobertura: float | None = None, *, sin_aprovechamiento_pct: float | None = None) -> str:
+        if sin_aprovechamiento_pct is not None:
+            if sin_aprovechamiento_pct <= 5:
+                return "VERDE"
+            if sin_aprovechamiento_pct <= 15:
+                return "AMARILLO"
+            return "ROJO"
+        if cobertura is None:
+            return "GRIS"
+        return self._traffic_label(cobertura, 130, 100)
 
     def _sum(self, rows: Iterable[dict], field: str) -> float:
         total = 0.0
@@ -207,31 +262,87 @@ class CommercialPdfReportService:
         story.append(self._table(data, repeat=0, header=False, col_widths=[4*cm, 21*cm]))
         story.append(Spacer(1, 6))
 
+    def _kpi_cards(self, cards: list[dict[str, Any]], *, columns: int = 4, width: float = 6.4*cm) -> Table:
+        rows: list[list[Any]] = []
+        for i in range(0, len(cards), columns):
+            chunk = cards[i:i + columns]
+            rows.append([
+                Paragraph(f"<b>{card['label']}</b><br/><font size='14'><b>{card['value']}</b></font><br/><font size='7'>{card.get('unit', '')}</font>", self._kpi)
+                for card in chunk
+            ] + [""] * (columns - len(chunk)))
+        table = Table(rows, colWidths=[width] * columns)
+        style = [
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor(self.COLOR_HEADER_BG)),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("TOPPADDING", (0, 0), (-1, -1), 7),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 7),
+        ]
+        for idx, card in enumerate(cards):
+            row, col = divmod(idx, columns)
+            bg = self._traffic_color(card.get("status", "GRIS")) if card.get("status") else colors.HexColor(self.COLOR_LIGHT_BG)
+            style.append(("BACKGROUND", (col, row), (col, row), bg))
+        table.setStyle(TableStyle(style))
+        return table
+
     def _add_summary(self, story: list, campo: list[dict], almacen: list[dict], pendientes: list[dict], previstos: list[dict]) -> None:
         kg_campo = self._sum(campo, "Kg campo")
         kg_almacen = self._sum(almacen, "Kg stock")
         kg_pendientes = self._sum(pendientes, "Kg pendiente")
         kg_previstos = self._sum(previstos, "Kg estimados")
-        self._section_title(story, "RESUMEN EJECUTIVO", "resumen_ejecutivo")
         demanda_total = kg_pendientes + kg_previstos
-        cobertura = ((kg_campo + kg_almacen) / demanda_total * 100) if demanda_total else 0
-        estado = "VERDE" if cobertura >= 130 else "AMARILLO" if cobertura >= 100 else "ROJO"
-        rows = [
-            ["DISPONIBILIDAD", "DEMANDA", "COBERTURA"],
-            [
-                f"Kg stock campo\n{self._num(kg_campo)}\nKg stock almacén\n{self._num(kg_almacen)}\nTotal disponible\n{self._num(kg_campo + kg_almacen)}",
-                f"Kg pedidos pendientes\n{self._num(kg_pendientes)}\nKg pedidos previstos\n{self._num(kg_previstos)}\nDemanda total\n{self._num(demanda_total)}",
-                f"Dif. almacén vs pendientes\n{self._num(kg_almacen - kg_pendientes)}\nDif. total vs demanda\n{self._num(kg_campo + kg_almacen - demanda_total)}\nCobertura\n{cobertura:.0f}% ({estado})",
-            ],
+        total_disponible = kg_campo + kg_almacen
+        cobertura = (total_disponible / demanda_total * 100) if demanda_total else None
+        diferencia_total = total_disponible - demanda_total
+        diferencia_almacen = kg_almacen - kg_pendientes
+        estado = self._risk_label(cobertura)
+
+        self._section_title(story, "RESUMEN EJECUTIVO", "resumen_ejecutivo")
+        cards = [
+            {"label": "STOCK CAMPO", "value": self._format_t(kg_campo), "unit": self._format_kg(kg_campo)},
+            {"label": "STOCK ALMACÉN", "value": self._format_t(kg_almacen), "unit": self._format_kg(kg_almacen), "status": "VERDE" if kg_almacen >= kg_pendientes and kg_pendientes else None},
+            {"label": "TOTAL DISPONIBLE", "value": self._format_t(total_disponible), "unit": self._format_kg(total_disponible)},
+            {"label": "PEDIDOS PENDIENTES", "value": self._format_t(kg_pendientes), "unit": self._format_kg(kg_pendientes), "status": "AMARILLO" if kg_pendientes > 0 else "VERDE"},
+            {"label": "PEDIDOS PREVISTOS", "value": self._format_t(kg_previstos), "unit": self._format_kg(kg_previstos), "status": "AMARILLO" if kg_previstos > 0 else "VERDE"},
+            {"label": "COBERTURA GLOBAL", "value": self._format_pct(cobertura) if cobertura is not None else "Sin demanda", "unit": estado, "status": estado},
+            {"label": "DIFERENCIA", "value": self._format_t(diferencia_total), "unit": "Disponible vs demanda", "status": "VERDE" if diferencia_total >= 0 else "ROJO"},
+            {"label": "ESTADO GENERAL", "value": estado, "unit": "Semáforo operativo", "status": estado},
         ]
-        story.append(self._table(rows, col_widths=[8.5*cm, 8.5*cm, 8.5*cm], row_styles=[(1, estado)]))
-        max_value = max(kg_campo, kg_almacen, kg_pendientes, kg_previstos, 1)
-        bars = [["Indicador", "Kg", "Barra"]]
-        for label, value in [("Stock campo", kg_campo), ("Stock almacén", kg_almacen), ("Pedidos pendientes", kg_pendientes), ("Pedidos previstos", kg_previstos)]:
-            bars.append([label, self._num(value), "█" * max(1, int(value / max_value * 28)) if value else ""])
+        story.append(self._kpi_cards(cards, columns=4, width=6.4*cm))
         story.append(Spacer(1, 8))
-        story.append(Paragraph("Comparativa visual stock / demanda", self._normal))
-        story.append(self._table(bars, col_widths=[5*cm, 4*cm, 16*cm]))
+
+        lectura = []
+        if demanda_total:
+            if cobertura is not None and cobertura >= 130:
+                lectura.append("Cobertura global suficiente para la demanda actual.")
+            elif cobertura is not None and cobertura >= 100:
+                lectura.append("Cobertura global ajustada: conviene revisar disponibilidad por variedad y confección.")
+            else:
+                lectura.append("Cobertura global insuficiente para la demanda actual.")
+            if diferencia_total >= 0:
+                lectura.append(f"El stock total supera la demanda en {self._format_t(diferencia_total)}.")
+            else:
+                lectura.append(f"La demanda supera el stock total en {self._format_t(abs(diferencia_total))}.")
+        else:
+            lectura.append("No hay demanda pendiente o prevista en los datos actuales.")
+        lectura.append("El stock de almacén cubre por sí solo los pedidos pendientes." if diferencia_almacen >= 0 else "El stock de almacén no cubre por sí solo los pedidos pendientes.")
+        lectura.append("Existen pedidos pendientes para revisar." if kg_pendientes > 0 else "No hay pedidos pendientes para revisar.")
+        lectura.append("Existen pedidos previstos no confirmados." if kg_previstos > 0 else "No hay pedidos previstos no confirmados.")
+        lectura.append("Revisar partidas sin aprovechamiento si existen en el informe.")
+        story.append(Paragraph("LECTURA RÁPIDA", self._normal))
+        story.append(self._table([["Lectura operativa"]] + [[text] for text in lectura], col_widths=[25.6*cm]))
+        story.append(Spacer(1, 8))
+
+        alerts = [["Nivel", "Alerta", "Lectura"]]
+        alerts.append([estado, "Cobertura global", "Sin demanda actual." if cobertura is None else f"Cobertura {self._format_pct(cobertura)}."])
+        if kg_almacen < kg_pendientes:
+            alerts.append(["AMARILLO", "Stock almacén", "Almacén inferior a pedidos pendientes; revisar campo y confección."])
+        if kg_previstos > 0:
+            alerts.append(["AMARILLO", "Pedidos previstos", "Hay demanda prevista no confirmada que puede consumir disponibilidad."])
+        if len(alerts) == 2 and estado == "VERDE":
+            alerts.append(["VERDE", "General", "No se detectan alertas globales con los datos del resumen."])
+        story.append(Paragraph("ALERTAS DEL INFORME", self._normal))
+        story.append(self._table(alerts, row_styles=[(i, r[0]) for i, r in enumerate(alerts[1:], start=1)], col_widths=[3*cm, 5*cm, 17.6*cm]))
         story.append(PageBreak())
 
     def _value(self, row: dict, column: str) -> Any:
@@ -264,6 +375,21 @@ class CommercialPdfReportService:
             result.append(bucket)
         return sorted(result, key=lambda r: tuple(str(r.get(k, "")) for k in keys))
 
+
+    def _top_by(self, rows: Sequence[dict], group_field: str, sum_field: str, *, limit: int = 8) -> list[tuple[str, float]]:
+        totals: dict[str, float] = {}
+        for row in rows:
+            key = str(self._value(row, group_field) or row.get(group_field) or "Sin especificar").strip() or "Sin especificar"
+            totals[key] = totals.get(key, 0.0) + self._sum([row], sum_field)
+        return sorted(totals.items(), key=lambda item: item[1], reverse=True)[:limit]
+
+    def _ranking_table(self, ranking: list[tuple[str, float]], total: float, kg_label: str) -> Table:
+        data = [["Posición", "Variedad / grupo", kg_label, "% sobre total"]]
+        for pos, (label, kg) in enumerate(ranking, start=1):
+            pct = (kg / total * 100) if total else 0
+            data.append([pos, label, self._format_kg(kg), self._format_pct(pct)])
+        return self._table(data, col_widths=[2.5*cm, 11*cm, 6*cm, 4*cm], right_cols=[2, 3], center_cols=[0])
+
     def _add_group_summary(self, story: list, title: str, rows: list[dict], keys: list[str], sum_fields: dict[str, str], *, count_label: str | None = None, extra_fields: list[str] | None = None) -> None:
         grouped = self._group_rows(rows, keys, sum_fields, count_label=count_label)
         columns = keys + ([count_label] if count_label else []) + list(sum_fields) + list(extra_fields or [])
@@ -278,6 +404,25 @@ class CommercialPdfReportService:
         self._section_title(story, "STOCK CAMPO", "stock_campo")
         if not rows:
             story.append(Paragraph("Sin datos para los filtros actuales.", self._normal)); story.append(PageBreak()); return
+        total_kg = self._sum(rows, "Kg campo")
+        variedades_set = {str(self._value(r, "Variedad") or "").strip() for r in rows if str(self._value(r, "Variedad") or "").strip()}
+        socios_set = {str(self._value(r, "Socio") or self._value(r, "IdSocio") or "").strip() for r in rows if str(self._value(r, "Socio") or self._value(r, "IdSocio") or "").strip()}
+        boletas_set = {str(self._value(r, "Boleta") or "").strip() for r in rows if str(self._value(r, "Boleta") or "").strip()}
+        grupos_set = {str(self._value(r, "Grupo varietal") or "").strip() for r in rows if str(self._value(r, "Grupo varietal") or "").strip()}
+        story.append(Paragraph("STOCK CAMPO - RESUMEN", self._normal))
+        story.append(self._kpi_cards([
+            {"label": "TOTAL KG CAMPO", "value": self._format_t(total_kg), "unit": self._format_kg(total_kg)},
+            {"label": "Nº VARIEDADES", "value": len(variedades_set), "unit": "variedades"},
+            {"label": "Nº SOCIOS", "value": len(socios_set), "unit": "socios"},
+            {"label": "Nº BOLETAS", "value": len(boletas_set), "unit": "boletas"},
+            {"label": "Nº GRUPOS", "value": len(grupos_set), "unit": "grupos varietales"},
+        ], columns=5, width=5.1*cm))
+        top = self._top_by(rows, "Variedad", "Kg campo", limit=8)
+        if top:
+            story.append(Spacer(1, 6))
+            story.append(Paragraph("TOP VARIEDADES EN CAMPO", self._normal))
+            story.append(self._ranking_table(top, total_kg, "Kg campo"))
+            story.append(Spacer(1, 8))
         columns = ["Fecha carga", "Semana", "Socio", "Variedad", "Grupo varietal", "Boleta", "Plataforma", "Empresa", "Color / restricciones", "Kg campo"]
         sorted_rows = sorted(rows, key=lambda r: (str(self._value(r, "Grupo varietal")), str(self._value(r, "Variedad")), str(self._value(r, "Socio")), str(self._value(r, "Boleta"))))
         data = [columns]
@@ -325,7 +470,7 @@ class CommercialPdfReportService:
         return name.upper() if upper else name
 
     def _fmt_t(self, kg: Any) -> str:
-        return f"{self._format_toneladas(kg).replace('.', ',')} t"
+        return self._format_t(kg)
 
     def _prevision_fecha(self, row: dict) -> Any:
         return row.get("Fecha_date") or row.get("Fecha") or row.get("FechaR_date") or row.get("FechaR")
@@ -353,6 +498,11 @@ class CommercialPdfReportService:
             [self._fmt_t(total_kg), len(socios), len(boletas), len(variedades), len(dias)],
         ], col_widths=[5*cm, 4*cm, 4*cm, 4*cm, 4*cm]))
         story.append(Spacer(1, 6))
+        top_previstas = self._top_by(rows, "Variedad", "KgAprox", limit=8)
+        if top_previstas:
+            story.append(Paragraph("TOP VARIEDADES PREVISTAS", self._normal))
+            story.append(self._ranking_table(top_previstas, total_kg, "Kg previstos"))
+            story.append(Spacer(1, 8))
 
         self._add_prevision_weekly_matrix(story, rows, filters or {})
 
@@ -465,6 +615,25 @@ class CommercialPdfReportService:
         self._section_title(story, "STOCK ALMACÉN RESUMIDO", "stock_almacen")
         if not rows:
             story.append(Paragraph("Sin datos para los filtros actuales.", self._normal)); story.append(PageBreak()); return
+        total_kg = self._sum(rows, "Kg stock")
+        total_palets = self._sum(rows, "Palets")
+        total_cajas = self._sum(rows, "Cajas")
+        confecciones = {str(self._value(r, "Confección") or "").strip() for r in rows if str(self._value(r, "Confección") or "").strip()}
+        calibres = {str(self._value(r, "Calibre") or "").strip() for r in rows if str(self._value(r, "Calibre") or "").strip()}
+        story.append(Paragraph("STOCK ALMACÉN - RESUMEN", self._normal))
+        story.append(self._kpi_cards([
+            {"label": "KG STOCK TOTAL", "value": self._format_t(total_kg), "unit": self._format_kg(total_kg)},
+            {"label": "PALETS TOTALES", "value": self._format_number(total_palets, 0), "unit": "palets"},
+            {"label": "CAJAS TOTALES", "value": self._format_number(total_cajas, 0), "unit": "cajas"},
+            {"label": "Nº CONFECCIONES", "value": len(confecciones), "unit": "confecciones"},
+            {"label": "Nº CALIBRES", "value": len(calibres), "unit": "calibres"},
+        ], columns=5, width=5.1*cm))
+        top_confecciones = self._top_by(rows, "Confección", "Kg stock", limit=8)
+        if top_confecciones:
+            story.append(Spacer(1, 6))
+            story.append(Paragraph("TOP CONFECCIONES EN ALMACÉN", self._normal))
+            story.append(self._ranking_table(top_confecciones, total_kg, "Kg stock"))
+            story.append(Spacer(1, 8))
         keys = ["Grupo varietal", "Marca", "Confección", "Calibre", "Categoría"]
         optional = [c for c in ("Tipo palet", "Nombre palet") if self._has_any_value(rows, c)]
         sums = {"Palets": "Palets", "Cajas": "Cajas", "Kg stock": "Kg stock"}
@@ -602,11 +771,17 @@ class CommercialPdfReportService:
         blocks = [("Real PesosFres", []), ("Real Loteado", []), ("HarvestSync", []), ("Estimado manual", []), ("Sin aprovechamiento", [])]
         by = {k: v for k, v in blocks}
         for r in rows: by[estado(r)].append(r)
-        data = [["Bloque", "Nº partidas", "Kg campo afectado", "%"]]
+        data = [["Origen", "Nº partidas", "Kg campo afectado", "%", "Estado"]]
+        row_styles = []
         for label, part_rows in blocks:
             kg = self._sum(part_rows, "Kg campo")
-            data.append([label, len(part_rows), self._num(kg), f"{(kg / total * 100 if total else 0):.1f}%"])
-        story.append(self._table(data, col_widths=[8*cm, 4*cm, 5*cm, 3*cm]))
+            pct = (kg / total * 100 if total else 0)
+            sem = self._risk_label(sin_aprovechamiento_pct=pct) if label == "Sin aprovechamiento" else "VERDE"
+            data.append([label, len(part_rows), self._format_kg(kg), self._format_pct(pct), sem])
+            if label == "Sin aprovechamiento":
+                row_styles.append((len(data) - 1, sem))
+        story.append(Paragraph("Resumen visual por origen", self._normal))
+        story.append(self._table(data, row_styles=row_styles, col_widths=[8*cm, 4*cm, 5*cm, 3*cm, 3*cm]))
         story.append(PageBreak())
 
     def _add_aprovechamiento_detalle_partida(self, story: list, stock_rows: list[dict], detalle_map: dict[str, list[dict]]) -> None:
@@ -937,14 +1112,15 @@ class CommercialPdfReportService:
 
     def _format_cell(self, value: Any, column: str) -> str:
         if "Kg" in column: return self._num(value)
-        if any(x in column for x in ("Palets", "Cajas")): return self._num(value, 2).rstrip('0').rstrip('.') if str(value).strip() else ""
+        if any(x in column for x in ("Palets", "Cajas")):
+            return self._format_number(self._to_float(value), 0) if str(value).strip() else ""
         return str(value or "")
 
     def _table(self, data: list[list[Any]], repeat: int = 1, header: bool = True, col_widths: list[float] | None = None, row_styles: list[tuple[int, str]] | None = None, right_cols: Sequence[int] | None = None, center_cols: Sequence[int] | None = None) -> Table:
         wrapped = [[self._p(c) for c in row] for row in data]
         t = Table(wrapped, repeatRows=repeat, colWidths=col_widths)
         style = [("GRID", (0,0), (-1,-1), 0.25, colors.lightgrey), ("VALIGN", (0,0), (-1,-1), "TOP"), ("LEFTPADDING", (0,0), (-1,-1), 2), ("RIGHTPADDING", (0,0), (-1,-1), 2)]
-        if header: style += [("BACKGROUND", (0,0), (-1,0), colors.HexColor("#D9EAF7")), ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold")]
+        if header: style += [("BACKGROUND", (0,0), (-1,0), colors.HexColor(self.COLOR_HEADER_BG)), ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold")]
         for col in center_cols or []:
             style.append(("ALIGN", (col, 0), (col, -1), "CENTER"))
         for col in right_cols or []:
@@ -952,23 +1128,23 @@ class CommercialPdfReportService:
         for i, row in enumerate(data):
             first = str(row[0]) if row else ""
             if first.startswith("Subtotal confección"):
-                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#F1F1F1"))]
+                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor(self.COLOR_LIGHT_BG))]
             elif first.startswith("Subtotal marca"):
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#EAF3F8"))]
             elif first.startswith("Total grupo varietal"):
-                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#D9EAF7"))]
+                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor(self.COLOR_HEADER_BG))]
             elif first.startswith("TOTAL ALMACÉN"):
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#9DC3E6"))]
             elif first.startswith("SUBTOTAL GRUPO VARIETAL"):
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#D9D9D9"))]
             elif first.startswith("GRUPO VARIETAL:"):
-                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#D9EAF7")), ("SPAN", (0,i), (-1,i))]
+                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor(self.COLOR_HEADER_BG)), ("SPAN", (0,i), (-1,i))]
             elif first.startswith("SUBTOTAL "):
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#EAF3F8"))]
             elif first.startswith(("Subtotal", "Total", "TOTAL")):
-                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor("#F1F1F1"))]
+                style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor(self.COLOR_LIGHT_BG))]
         color_map = {
-            "VERDE": "#E2F0D9", "AMARILLO": "#FFF2CC", "ROJO": "#F4CCCC", "GRIS": "#E7E6E6",
+            "VERDE": self.COLOR_GREEN, "AMARILLO": self.COLOR_YELLOW, "ROJO": self.COLOR_RED, "GRIS": self.COLOR_GREY,
             "HARVESTSYNC": "#D9EAF7", "REAL_PESOSFRES": "#E2F0D9", "LOTEADO": "#E7E6E6",
             "MANUAL": "#FFF2CC", "ESTIMADO_MANUAL": "#FFF2CC", "SIN_APROVECHAMIENTO": "#F4CCCC",
             "GRUPO_APROVECHAMIENTO": "#D9EAF7", "SUBTOTAL_APROVECHAMIENTO": "#EAF3F8", "TOTAL_APROVECHAMIENTO": "#D9D9D9",
@@ -986,7 +1162,7 @@ class CommercialPdfReportService:
                 style.append(("BACKGROUND", (0, row_idx), (-1, row_idx), colors.HexColor("#EAF3F8")))
             elif marker_text in {"socio", "variedad", "cultivo", "general"}:
                 style.append(("FONTNAME", (0, row_idx), (-1, row_idx), "Helvetica-Bold"))
-                style.append(("BACKGROUND", (0, row_idx), (-1, row_idx), colors.HexColor("#F1F1F1")))
+                style.append(("BACKGROUND", (0, row_idx), (-1, row_idx), colors.HexColor(self.COLOR_LIGHT_BG)))
         t.setStyle(TableStyle(style)); return t
 
     def _generate_minimal_pdf(self, target: Path, **kwargs: Any) -> None:
