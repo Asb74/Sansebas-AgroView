@@ -698,6 +698,7 @@ class ProductionCapacityService:
             availability_issue = self._resource_availability_issue(code, inputs)
             if availability_issue:
                 incidencias.append(availability_issue)
+                row["_availability_audit"] = availability_issue.get("_availability_audit", {})
             if int(cfg.get("reparte_kg", 0) or 0) == 1:
                 split_codes.append(code)
             else:
@@ -747,6 +748,15 @@ class ProductionCapacityService:
                 horas = assigned_kg / capacidad_total if capacidad_total > 0 else 0.0
                 ocupacion = horas / horas_utiles_dia * 100 if horas_utiles_dia > 0 else 0.0
                 estado = "Incidencia" if incidencias else ("Rojo" if ocupacion >= 100 else "Amarillo" if ocupacion >= 85 else "Verde")
+            availability_audit = resource.get("_availability_audit") or {}
+            if availability_audit:
+                logger.info(
+                    "[CAPACITY AUDIT] recurso=%s contexto=%s disponible=%s usado_en_calculo=%s",
+                    resource.get("codigo", ""),
+                    availability_audit.get("contexto", ""),
+                    availability_audit.get("disponible", ""),
+                    False,
+                )
             out.append({
                 "Recurso": resource.get("codigo", ""),
                 "Tipo recurso": resource.get("tipo_recurso", ""),
@@ -1317,8 +1327,21 @@ class ProductionCapacityService:
                 continue
             contexto = str(row.get("contexto", "") or "").strip().upper()
             if contexto in context_values and int(row.get("disponible", 1) or 0) != 1:
+                disponible = int(row.get("disponible", 1) or 0)
+                logger.info(
+                    "[CAPACITY AUDIT] recurso=%s contexto=%s disponible=%s usado_en_calculo=%s",
+                    recurso_codigo,
+                    contexto,
+                    disponible,
+                    False,
+                )
                 motivo = str(row.get("motivo", "") or "").strip() or f"No disponible en contexto {contexto}"
-                return {"tipo": "Recurso no disponible por contexto", "motivo": f"{recurso_codigo}: {motivo}", "accion": "Revisar disponibilidad del recurso o el contexto de planificación"}
+                return {
+                    "tipo": "Recurso no disponible por contexto",
+                    "motivo": f"{recurso_codigo}: {motivo}",
+                    "accion": "Revisar disponibilidad del recurso o el contexto de planificación",
+                    "_availability_audit": {"contexto": contexto, "disponible": disponible},
+                }
         return None
 
 
