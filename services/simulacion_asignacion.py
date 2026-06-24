@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from copy import deepcopy
 from datetime import date, datetime
 import json
@@ -73,6 +74,51 @@ CONFIG_CALIDAD_OPERATIVA = {
 }
 _quality_service = OperationalQualityService()
 logger = logging.getLogger(__name__)
+
+_UTILIDAD_PERF = defaultdict(float)
+_UTILIDAD_COUNT = defaultdict(int)
+_UTILIDAD_OPERACIONES = (
+    "perfil_confeccion",
+    "perfil_stock",
+    "config",
+    "texto_candidato",
+    "destrio_historico",
+    "componentes_destrio",
+    "calculo_final",
+)
+_UTILIDAD_SLOW_THRESHOLD_SECS = 0.01
+
+
+def reset_utilidad_operativa_perf_counters() -> None:
+    _UTILIDAD_PERF.clear()
+    _UTILIDAD_COUNT.clear()
+
+
+def _registrar_utilidad_operativa_perf(operacion: str, segundos: float, *, perfil_stock: object = "", origen: object = "") -> None:
+    _UTILIDAD_PERF[operacion] += segundos
+    _UTILIDAD_COUNT[operacion] += 1
+    _UTILIDAD_PERF["total"] += segundos
+    if operacion == "calculo_final":
+        _UTILIDAD_COUNT["calls"] += 1
+    if segundos > _UTILIDAD_SLOW_THRESHOLD_SECS:
+        logger.info(
+            "[PERF UtilidadOperativaSlow] operacion=%s tiempo=%.4fs perfil_stock=%s origen=%s",
+            operacion,
+            segundos,
+            perfil_stock,
+            origen,
+        )
+
+
+def log_utilidad_operativa_perf_summary() -> None:
+    logger.info(
+        "[PERF UtilidadOperativa.Total] perfil_confeccion=%.3fs perfil_stock=%.3fs config=%.3fs "
+        "texto_candidato=%.3fs destrio_historico=%.3fs componentes_destrio=%.3fs calculo_final=%.3fs total=%.3fs calls=%s",
+        *(_UTILIDAD_PERF[operacion] for operacion in _UTILIDAD_OPERACIONES),
+        _UTILIDAD_PERF["total"],
+        _UTILIDAD_COUNT["calls"],
+    )
+
 
 PRIORIDADES_PEDIDOS_PATH = Path("runtime_config/prioridades_pedidos.json")
 COMPATIBILIDADES_OPERATIVAS_PATH = Path("runtime_config/compatibilidades_operativas.json")
@@ -789,10 +835,24 @@ def _subir_riesgo(riesgo: str) -> str:
 
 
 def calcular_utilidad_operativa(pedido: dict, candidato: dict) -> dict:
+    origen_perf = candidato.get("Origen", candidato.get("origen", ""))
+
+    t_op = perf_counter()
     perfil_confeccion = _norm_text(pedido.get("perfil_confeccion", "")) or detectar_perfil_confeccion(pedido)
+    _registrar_utilidad_operativa_perf("perfil_confeccion", perf_counter() - t_op, origen=origen_perf)
+
+    t_op = perf_counter()
     perfil_stock = detectar_perfil_stock(candidato)
+    _registrar_utilidad_operativa_perf("perfil_stock", perf_counter() - t_op, perfil_stock=perfil_stock, origen=origen_perf)
+
+    t_op = perf_counter()
     cfg = obtener_config_utilidad_stock(perfil_stock, candidato=candidato)
+    _registrar_utilidad_operativa_perf("config", perf_counter() - t_op, perfil_stock=perfil_stock, origen=origen_perf)
+
+    t_op = perf_counter()
     texto_candidato = " ".join(_norm_text(candidato.get(c, "")) for c in ("origen", "Origen", "tipo_cobertura", "Tipo cobertura", "tipo", "pedido", "descripcion", "observaciones"))
+    _registrar_utilidad_operativa_perf("texto_candidato", perf_counter() - t_op, perfil_stock=perfil_stock, origen=origen_perf)
+
     es_estandar = "ESTANDAR" in texto_candidato or "ESTÁNDAR" in texto_candidato
     es_precalibrado = "PRECALIBRADO" in texto_candidato
     primera_pct = float(cfg.get("primera_pct", 0.80))
@@ -803,9 +863,16 @@ def calcular_utilidad_operativa(pedido: dict, candidato: dict) -> dict:
     porcentaje_destrio = float(cfg.get("destrio_fallback_pct", 0.10))
     usar_destrio_historico = bool(cfg.get("usar_destrio_historico", False))
     kg_fisicos = _to_float(candidato.get("Kg disponibles", candidato.get("kg_disponibles", 0)))
-    destrio_historico = extraer_porcentaje_destrio_historico(candidato) if (perfil_stock == "CAMPO_REAL" and usar_destrio_historico) else None
-    podrido_pct_hist, deslinea_pct_hist, desmesa_pct_hist = extraer_componentes_destrio_historico(candidato) if perfil_stock == "CAMPO_REAL" else (None, None, None)
 
+    t_op = perf_counter()
+    destrio_historico = extraer_porcentaje_destrio_historico(candidato) if (perfil_stock == "CAMPO_REAL" and usar_destrio_historico) else None
+    _registrar_utilidad_operativa_perf("destrio_historico", perf_counter() - t_op, perfil_stock=perfil_stock, origen=origen_perf)
+
+    t_op = perf_counter()
+    podrido_pct_hist, deslinea_pct_hist, desmesa_pct_hist = extraer_componentes_destrio_historico(candidato) if perfil_stock == "CAMPO_REAL" else (None, None, None)
+    _registrar_utilidad_operativa_perf("componentes_destrio", perf_counter() - t_op, perfil_stock=perfil_stock, origen=origen_perf)
+
+    t_op = perf_counter()
     texto_cobertura = _norm_text(candidato.get("Tipo cobertura", candidato.get("tipo_cobertura", "")))
     ya_neto_flag = candidato.get("kg_campo_real_ya_neto")
     if isinstance(ya_neto_flag, str):
@@ -865,7 +932,7 @@ def calcular_utilidad_operativa(pedido: dict, candidato: dict) -> dict:
     else:
         motivo += "; Exigente/desconocido: solo se considera primera útil"
 
-    return {
+    resultado = {
         "perfil_confeccion": perfil_confeccion,
         "perfil_stock": perfil_stock,
         "coef_utilidad": coef_utilidad,
@@ -889,6 +956,8 @@ def calcular_utilidad_operativa(pedido: dict, candidato: dict) -> dict:
         "penalizacion_riesgo": PENALIZACION_RIESGO.get(riesgo, 0),
         "motivo_riesgo": motivo,
     }
+    _registrar_utilidad_operativa_perf("calculo_final", perf_counter() - t_op, perfil_stock=perfil_stock, origen=origen_perf)
+    return resultado
 
 
 def calcular_score_candidato(candidato: dict, pedido: dict | None = None, scoring: dict | None = None) -> tuple[int, str]:
@@ -1009,6 +1078,7 @@ def simular_asignacion_pedido(pedido: dict, candidatos: list[dict], scoring: dic
 def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: dict | None = None) -> tuple[list[dict], list[dict], dict]:
     t_total_global = perf_counter()
     reset_calibres_perf_counters()
+    reset_utilidad_operativa_perf_counters()
     count_pedidos = 0
     count_candidatos_raw = 0
     count_candidatos_evaluados = 0
@@ -1409,6 +1479,7 @@ def simular_asignacion_global(pedidos: list[dict], get_candidatos_cb, scoring: d
         eval_perf_totals["restricciones"],
         eval_perf_totals["score"],
     )
+    log_utilidad_operativa_perf_summary()
     logger.info(
         "[COUNT EvalCandidato.Total] compatibilidad=%s cobertura=%s stock=%s disponibilidad=%s restricciones=%s score=%s",
         eval_count_totals["compatibilidad"],
