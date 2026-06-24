@@ -122,6 +122,16 @@ class CommercialPdfReportService:
         almacen = list(stock_almacen_rows or [])
         prevision = list(prevision_recoleccion_rows or [])
         active_filters = filters or {}
+        presentation_warnings = self._run_pdf_presentation_checks({
+            "stock_campo_rows": campo,
+            "stock_almacen_rows": almacen,
+            "prevision_recoleccion_rows": prevision,
+            "pedidos_pendientes_rows": list(pedidos_pendientes_rows or []),
+            "pedidos_previstos_rows": list(pedidos_previstos_rows or []),
+            "aprovechamiento_volcado": aprovechamiento_volcado or {},
+        })
+        for warning in presentation_warnings:
+            logger.warning("PDF presentation check: %s", warning)
         selected_cultivos = self._selected_filter_values(active_filters.get("cultivo"))
         pendientes = self._filter_pending_rows(list(pedidos_pendientes_rows or []), selected_cultivos)
         previstos = list(pedidos_previstos_rows or [])
@@ -296,6 +306,49 @@ class CommercialPdfReportService:
 
     def _format_pct_value(self, value: Any, *, blank: str = "-") -> str:
         return self._format_number(self._to_float(value), 1) if value is not None else blank
+
+    def _validate_pdf_totals(self, rows: list[dict], weekly_total_kg: float | None = None) -> list[str]:
+        if not rows:
+            return []
+        base_total = self._sum(rows, "KgAprox")
+        totals = {
+            "cabecera": base_total,
+            "top_variedades": sum(v for _, v in self._top_by(rows, "Variedad", "KgAprox", limit=len(rows))),
+            "resumen_dia": sum(self._sum(day_rows, "KgAprox") for day_rows in self._group_lists_by_date(rows).values()),
+        }
+        if weekly_total_kg is not None:
+            totals["semanal"] = weekly_total_kg
+        warnings = []
+        for name, value in totals.items():
+            if abs(value - base_total) > 1:
+                warnings.append(f"Total previsión incoherente en {name}: {value:.0f} kg vs {base_total:.0f} kg")
+        return warnings
+
+    def _group_lists_by_date(self, rows: list[dict]) -> dict[str, list[dict]]:
+        by_day: dict[str, list[dict]] = {}
+        for r in rows:
+            by_day.setdefault(str(self._prevision_fecha(r) or ""), []).append(r)
+        return by_day
+
+    def _run_pdf_presentation_checks(self, data: dict[str, Any]) -> list[str]:
+        warnings: list[str] = []
+        text = str(data)
+        if "00:00:00" in text:
+            warnings.append("Se detectaron fechas con hora residual 00:00:00 en datos de entrada.")
+        if "t t" in text:
+            warnings.append("Se detectó texto con unidad duplicada 't t'.")
+        if "..." in text or "…" in text:
+            warnings.append("Se detectaron cadenas con puntos suspensivos en datos de entrada.")
+        campo = list(data.get("stock_campo_rows") or [])
+        total_campo = self._sum(campo, "Kg campo")
+        if total_campo > 100000:
+            by_origen: dict[str, float] = {}
+            for row in campo:
+                by_origen[self._aprovechamiento_estado_row(row)] = by_origen.get(self._aprovechamiento_estado_row(row), 0.0) + self._sum([row], "Kg campo")
+            if any(0 < kg < 1000 for kg in by_origen.values()):
+                warnings.append("Kg de aprovechamiento sospechosamente bajos frente al stock campo total.")
+        warnings.extend(self._validate_pdf_totals(list(data.get("prevision_recoleccion_rows") or [])))
+        return warnings
 
     def _format_date_es(self, value: Any) -> str:
         if isinstance(value, datetime):
@@ -759,7 +812,7 @@ class CommercialPdfReportService:
             for r in sorted(rows, key=lambda x: (str(self._value(x,"Fecha salida")), -self._sum([x],"Kg pendiente")))[:12]:
                 status = self._date_status_label(self._value(r,"Fecha salida"), today) if self._sum([r],"Kg pendiente") > 0 else "FUTURO"
                 sem = "ROJO" if status == "HOY" else "AMARILLO" if status == "MAÑANA" else "VERDE"
-                prio.append([self._value(r,c) for c in ["Fecha salida","Cliente","Pedido","Grupo confección","Grupo varietal"]] + [self._format_kg(self._sum([r],"Kg pendiente")), self._format_number(self._sum([r],"Palets pendientes"),0), sem])
+                prio.append([self._format_cell(self._value(r, c), c) for c in ["Fecha salida", "Cliente", "Pedido", "Grupo confección", "Grupo varietal"]] + [self._format_kg(self._sum([r], "Kg pendiente")), self._format_number(self._sum([r], "Palets pendientes"), 0), sem])
                 styles.append((len(prio)-1, sem))
             story.append(Paragraph("PRIORIDAD PRODUCCIÓN", self._normal)); story.append(self._table(prio, row_styles=styles)); story.append(Spacer(1,6))
         if prevision:
@@ -770,7 +823,7 @@ class CommercialPdfReportService:
             for day, day_rows in sorted(by_day.items()):
                 socios = {str(r.get("IdSocio") or r.get("Socio") or "").strip() for r in day_rows if str(r.get("IdSocio") or r.get("Socio") or "").strip()}
                 boletas = {str(r.get("Boleta") or "").strip() for r in day_rows if str(r.get("Boleta") or "").strip()}
-                data.append([day, self._format_kg(self._sum(day_rows,"KgAprox")), len(socios), len(boletas), self._main_value(day_rows,"Variedad","KgAprox")])
+                data.append([self._format_date_es(day), self._format_kg(self._sum(day_rows, "KgAprox")), len(socios), len(boletas), self._main_value(day_rows, "Variedad", "KgAprox")])
             story.append(Paragraph("PREVISIÓN ENTRADAS CAMPO", self._normal)); story.append(self._table(data))
         story.append(PageBreak())
 
@@ -799,7 +852,12 @@ class CommercialPdfReportService:
             if label == "Sin aprovechamiento": sin_pct = pct
             estado = self._risk_label(sin_aprovechamiento_pct=pct) if label == "Sin aprovechamiento" else ("VERDE" if kg else "GRIS")
             data.append([label, self._format_kg(kg), self._format_pct(pct), estado])
-        bar_rows = [{"Origen": row[0], "Kg": self._to_float(str(row[1]).replace(" kg", "")), "Estado": row[3]} for row in data[1:]]
+        bar_rows = []
+        for label in labels:
+            kg = self._sum(by[label], "Kg campo")
+            pct = kg / total * 100 if total else 0
+            estado = self._risk_label(sin_aprovechamiento_pct=pct) if label == "Sin aprovechamiento" else ("VERDE" if kg else "GRIS")
+            bar_rows.append({"Origen": label, "Kg": kg, "Estado": estado})
         self._add_bar_table(story, "RESUMEN APROVECHAMIENTO CAMPO", bar_rows, "Origen", "Kg", total=total, max_rows=5, status_col="Estado")
         sin_rows = by["Sin aprovechamiento"]
         if sin_rows:
@@ -850,7 +908,7 @@ class CommercialPdfReportService:
         buckets: dict[str, list[dict]] = {"Grupo varietal": [], "Variedad": [], "Socio": []}
 
         def subtotal(label: str, value: Any, level: str) -> None:
-            data.append([label] + [""] * (len(columns) - 2) + [self._num(value)])
+            data.append([label] + [""] * (len(columns) - 2) + [self._format_kg(value)])
             styles.append((len(data) - 1, level))
 
         for row in sorted_rows:
@@ -920,6 +978,12 @@ class CommercialPdfReportService:
         top_previstas = self._top_by(rows, "Variedad", "KgAprox", limit=8)
         if top_previstas:
             self._add_bar_table(story, "TOP VARIEDADES PREVISTAS", top_previstas, 0, 1, total=total_kg, max_rows=8)
+
+        total_warnings = self._validate_pdf_totals(rows)
+        if total_warnings:
+            for warning in total_warnings:
+                logger.warning("PDF totals validation: %s", warning)
+            story.append(Paragraph("Nota: existen diferencias entre resumen semanal y total previsto mostrado; revisar origen de datos.", self._normal))
 
         self._add_prevision_weekly_matrix(story, rows, filters or {})
 
@@ -1022,6 +1086,11 @@ class CommercialPdfReportService:
             data.append([bucket["Socio"], bucket["Cult."], bucket["Variedad"]] + [self._format_weekly_tons(kg) for kg in values] + [self._format_weekly_tons(sum(values))])
         data.append(["TOTAL", "", ""] + [self._format_weekly_tons(day_totals[d[0]]) for d in days] + [self._format_weekly_tons(sum(day_totals.values()))])
         story.append(Paragraph("RESUMEN SEMANAL DE RECOLECCIÓN PREVISTA", self._normal))
+        weekly_total = sum(day_totals.values())
+        for warning in self._validate_pdf_totals(rows, weekly_total):
+            logger.warning("PDF totals validation: %s", warning)
+            story.append(Paragraph("Nota: existen diferencias entre resumen semanal y total previsto mostrado; revisar origen de datos.", self._normal))
+            break
         story.append(self._table(data, col_widths=[4.2*cm, 1.2*cm, 4.2*cm] + [1.9*cm] * 8, right_cols=list(range(3, 11)), center_cols=list(range(1, 11))))
         story.append(Spacer(1, 8))
 
@@ -1148,7 +1217,7 @@ class CommercialPdfReportService:
             elif str(self._value(r, "Origen cálculo") or "").upper() == "ESTIMADO_SIN_CONFECCION":
                 styles.append((len(data) - 1, "AMARILLO"))
         story.append(Paragraph("Detalle completo de líneas de pedido", self._normal))
-        story.append(self._table(data, row_styles=styles))
+        story.append(self._table(data, row_styles=styles, col_widths=[1.8*cm, 4.2*cm, 2.2*cm, 1.7*cm, 2.5*cm, 2.5*cm, 1.4*cm, 1.6*cm, 1.8*cm, 3.6*cm, 2.8*cm, 1.7*cm, 2.1*cm, 2.1*cm, 2.1*cm, 2.1*cm, 1.8*cm, 4.0*cm]))
         story.append(Spacer(1, 6))
 
     def _add_confeccion_mix(self, story: list, rows: list[dict], kg_field: str, palets_field: str) -> None:
@@ -1199,6 +1268,7 @@ class CommercialPdfReportService:
                 row += [self._format_cell(vals["Palets"], "Palets"), self._format_kg(vals["Kg teórico"]), self._format_kg(vals["Kg terminado"]), self._format_kg(vals["Kg pendiente"])]
             row += [self._format_cell(totals["Palets"], "Palets"), self._format_kg(totals["Kg teórico"]), self._format_kg(totals["Kg terminado"]), self._format_kg(totals["Kg pendiente"])]
             data.append(row)
+        story.append(Paragraph("Detalle técnico para auditoría y revisión operativa avanzada.", self._normal))
         story.append(Paragraph("Detalle técnico: matriz operativa por semana, fecha, cliente y grupo varietal", self._normal)); story.append(self._table(data))
 
     def _add_aprovechamientos(self, story: list, rows: list[dict]) -> None:
@@ -1449,7 +1519,7 @@ class CommercialPdfReportService:
         story.append(Spacer(1, 6))
         story.append(Paragraph("CALIDAD DE INFORMACIÓN DEL VOLCADO", self._normal))
         qcols = ["Tipo dato", "Palets/líneas", "Kg", "%"]
-        story.append(self._table([qcols] + [[r.get(c, "") for c in qcols] for r in (volcado.get("quality") or [])], col_widths=[7*cm, 4*cm, 4*cm, 3*cm]))
+        story.append(self._table([qcols] + [[self._format_cell(r.get(c, ""), c) for c in qcols] for r in (volcado.get("quality") or [])], col_widths=[7*cm, 4*cm, 4*cm, 3*cm]))
         story.append(PageBreak())
 
     def _add_comparativa_aprovechamientos(self, story: list, campo: list[dict], volcado: dict[str, Any]) -> None:
@@ -1493,18 +1563,20 @@ class CommercialPdfReportService:
             {"label": "Nº PEDIDOS HOY", "value": len({self._value(r, "Pedido") for r in today_rows}), "unit": "pedidos", "status": "ROJO" if today_rows else "VERDE"},
             {"label": "Nº PEDIDOS MAÑANA", "value": len({self._value(r, "Pedido") for r in tomorrow_rows}), "unit": "pedidos", "status": "AMARILLO" if tomorrow_rows else "VERDE"},
         ], columns=5, width=5.1*cm)
-        grouped = self._group_sum(rows, ["Fecha salida"], {"Kg pendiente": "Kg pendiente", "Palets pendientes": "Palets pendientes"}, count_label="Nº pedidos")
+        agenda_rows = [r for r in rows if self._sum([r], "Kg pendiente") > 0 or str(self._value(r, "Estado") or "").strip().upper() not in {"TERMINADO", "COMPLETO"}]
+        story.append(Paragraph("Agenda priorizada: se muestran líneas con pendiente > 0.", self._normal))
+        grouped = self._group_sum(agenda_rows, ["Fecha salida"], {"Kg pendiente": "Kg pendiente", "Palets pendientes": "Palets pendientes"}, count_label="Nº pedidos")
         summary = [["Fecha", "Estado temporal", "Kg pendiente", "Palets pendientes", "Nº pedidos", "Principal cliente", "Principal grupo varietal"]]
         for g in sorted(grouped, key=lambda x: str(x.get("Fecha salida") or "")):
-            day_rows = [r for r in rows if str(self._value(r, "Fecha salida") or "") == str(g.get("Fecha salida") or "")]
+            day_rows = [r for r in agenda_rows if str(self._value(r, "Fecha salida") or "") == str(g.get("Fecha salida") or "")]
             summary.append([self._format_date_es(g.get("Fecha salida", "")), self._date_status_label(g.get("Fecha salida"), today), self._format_kg(g["Kg pendiente"]), self._format_number(g["Palets pendientes"],0), g.get("Nº pedidos",0), self._main_value(day_rows,"Cliente"), self._main_value(day_rows,"Grupo varietal")])
         story.append(Paragraph("AGRUPACIÓN POR DÍA", self._normal)); story.append(self._table(summary)); story.append(Spacer(1,8))
         columns = ["Fecha salida", "Cliente", "Pedido", "Cultivo", "Grupo confección", "Grupo varietal", "Kg pendiente", "Palets pendientes"]
         for optional in ("Prioridad", "Estado"):
-            if self._has_any_value(rows, optional): columns.append(optional)
+            if self._has_any_value(agenda_rows, optional): columns.append(optional)
         data = [columns + ["Semáforo"]]
         styles = []
-        for r in sorted(rows, key=lambda x: (str(self._value(x, "Fecha salida")), -self._sum([x], "Kg pendiente")))[:120]:
+        for r in sorted(agenda_rows, key=lambda x: (str(self._value(x, "Fecha salida")), -self._sum([x], "Kg pendiente")))[:120]:
             kg = self._sum([r], "Kg pendiente")
             status = self._date_status_label(self._value(r, "Fecha salida"), today) if kg > 0 else "FUTURO"
             sem = "ROJO" if status == "HOY" else "AMARILLO" if status == "MAÑANA" else "VERDE"
