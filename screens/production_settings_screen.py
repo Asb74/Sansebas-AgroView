@@ -8,7 +8,7 @@ from openpyxl.utils import get_column_letter
 
 from db.production_settings_repository import infer_default_staff_type, staff_type_flags
 from services.production_settings_service import ProductionSettingsService
-from utils.master_excel_io import export_master_to_excel, import_master_from_excel
+from utils.master_excel_io import export_master_to_excel, import_master_from_excel, is_blank, normalize_bool, normalize_headers
 from utils.help_dialog import show_tab_help
 from utils.production_master_excel_configs import PRODUCTION_MASTER_EXCEL_CONFIGS
 from utils.production_help_texts import PRODUCTION_CALIBER_FACTORS_HELP, PRODUCTION_CALIBER_FACTORS_HELP_KEYS, PRODUCTION_CAPACITY_MASTERS_HELP, PRODUCTION_CAPACITY_MASTERS_HELP_KEYS, PRODUCTION_FIELD_HELP, PRODUCTION_LINES_HELP, PRODUCTION_LINES_HELP_KEYS, PRODUCTION_PACKAGING_HELP, PRODUCTION_PACKAGING_HELP_KEYS, PRODUCTION_PACKAGING_MAPPING_HELP, PRODUCTION_PACKAGING_MAPPING_HELP_KEYS, PRODUCTION_PENALTIES_HELP, PRODUCTION_PENALTIES_HELP_KEYS, PRODUCTION_PERFORMANCE_HELP, PRODUCTION_PERFORMANCE_HELP_KEYS, PRODUCTION_PERSONAL_HELP, PRODUCTION_PERSONAL_HELP_KEYS, PRODUCTION_FLOW_STAFFING_HELP, PRODUCTION_FLOW_STAFFING_HELP_KEYS, PRODUCTION_SEMAPHORE_HELP, PRODUCTION_SEMAPHORE_HELP_KEYS, PRODUCTION_RESOURCES_HELP, PRODUCTION_RESOURCES_HELP_KEYS, get_help_items
@@ -1916,7 +1916,8 @@ class ProductionSettingsScreen(ttk.Frame):
             header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
             if not header_row:
                 return [], True
-            headers = [str(h or "").strip() for h in header_row]
+            raw_headers = [str(h or "").strip() for h in header_row]
+            headers, _header_aliases = normalize_headers(raw_headers)
             missing = [col for col in config.get("required_columns", []) if col not in headers]
             if missing:
                 errors.append(f"{sheet_name}: faltan columnas obligatorias: {', '.join(missing)}")
@@ -1925,10 +1926,18 @@ class ProductionSettingsScreen(ttk.Frame):
             for row_idx, vals in enumerate(ws.iter_rows(min_row=2, values_only=True), start=2):
                 row = {headers[i]: vals[i] if i < len(vals) else None for i in range(len(headers))}
                 clean = {c: row.get(c, "") for c in config["columns"]}
-                if all(clean.get(c) in (None, "") for c in config["columns"] if c != "id"):
+                if all(is_blank(clean.get(c)) for c in config["columns"] if c != "id"):
                     continue
+                if sheet_name == "RecursosRequeridosLinea":
+                    print(
+                        "[IMPORT DEBUG RecursosRequeridosLinea] "
+                        f"fila={row_idx} headers={headers} row_dict={row} "
+                        f"obligatorio_raw={row.get('obligatorio')} reparte_kg_raw={row.get('reparte_kg')} "
+                        f"obligatorio_normalized={normalize_bool(row.get('obligatorio'))} "
+                        f"reparte_kg_normalized={normalize_bool(row.get('reparte_kg'))}"
+                    )
                 for column in config.get("required_columns", []):
-                    if str(clean.get(column) or "").strip() == "":
+                    if is_blank(clean.get(column)):
                         errors.append(f"{sheet_name} fila {row_idx}: {column} obligatorio.")
                 for column in config.get("numeric_columns", []):
                     raw = clean.get(column)
@@ -1940,7 +1949,7 @@ class ProductionSettingsScreen(ttk.Frame):
                         except ValueError:
                             errors.append(f"{sheet_name} fila {row_idx}: {column} no es numérico válido ({raw}).")
                 for column in config.get("boolean_columns", []):
-                    clean[column] = 1 if str(clean.get(column, "0")).strip().upper() in {"1", "SI", "S", "SÍ", "TRUE", "X", "Y", "YES"} else 0
+                    clean[column] = normalize_bool(clean.get(column))
                 unique_key = config.get("unique_key", "")
                 if unique_key:
                     key = "|".join(str(clean.get(part, "")).strip().lower() for part in unique_key.split("|"))
@@ -1958,7 +1967,7 @@ class ProductionSettingsScreen(ttk.Frame):
                 imported_by_key[spec["key"]] = rows
 
         if not imported_by_key and "Datos" in wb.sheetnames:
-            datos_headers = [str(h or "").strip() for h in next(wb["Datos"].iter_rows(min_row=1, max_row=1, values_only=True))]
+            datos_headers, _datos_aliases = normalize_headers([str(h or "").strip() for h in next(wb["Datos"].iter_rows(min_row=1, max_row=1, values_only=True))])
             for spec in specs:
                 config = cfg[spec["key"]]
                 if all(column in datos_headers for column in config.get("required_columns", [])):

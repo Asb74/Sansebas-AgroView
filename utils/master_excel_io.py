@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from pathlib import Path
 from tkinter import filedialog
 
@@ -8,13 +10,32 @@ from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
 
 
+def normalize_header(value) -> str:
+    text = "" if value is None else str(value)
+    text = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", text)
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    return re.sub(r"_+", "_", text).strip("_")
+
+def normalize_headers(headers) -> tuple[list[str], dict[str, str]]:
+    normalized_headers = [normalize_header(header) for header in headers]
+    aliases = {normalized: original for original, normalized in zip(headers, normalized_headers) if normalized}
+    return normalized_headers, aliases
+
+
+def is_blank(value) -> bool:
+    return value is None or str(value).strip() == ""
+
+
 def normalize_bool(value) -> int:
     if value is None:
         return 0
     normalized = str(value).strip().upper()
-    if normalized in {"1", "S", "SI", "SÍ", "TRUE", "X", "Y", "YES"}:
+    if normalized in {"1", "S", "SI", "SÍ", "TRUE", "X", "Y", "YES", "ACTIVO"}:
         return 1
-    if normalized in {"0", "N", "NO", "FALSE", "", "NONE"}:
+    if normalized in {"0", "N", "NO", "FALSE", "", "NONE", "INACTIVO"}:
         return 0
     return 1 if normalized else 0
 
@@ -104,7 +125,8 @@ def import_master_from_excel(path: str, config: dict) -> tuple[list[dict], list[
     if not header_row:
         raise ValueError("El Excel no contiene cabeceras.")
 
-    headers = [str(h or "").strip() for h in header_row]
+    raw_headers = [str(h or "").strip() for h in header_row]
+    headers, _aliases = normalize_headers(raw_headers)
     validate_required_columns(headers, config.get("required_columns", []))
 
     columns = config.get("columns", headers)
@@ -120,7 +142,7 @@ def import_master_from_excel(path: str, config: dict) -> tuple[list[dict], list[
         clean_row: dict = {column: row.get(column, "") for column in columns}
 
         for column in required_columns:
-            if str(row.get(column) or "").strip() == "":
+            if is_blank(row.get(column)):
                 errors.append(f"Fila {excel_row_index}: {column} obligatorio.")
 
         for column in numeric_columns:
