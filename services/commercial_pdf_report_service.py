@@ -1294,25 +1294,50 @@ class CommercialPdfReportService:
         story.append(self._table(data, row_styles=styles, col_widths=[2.5*cm, 6*cm, 3.2*cm, 3.2*cm, 2.8*cm, 4.5*cm, 3*cm], right_cols=[3,4], center_cols=[6]))
         story.append(Spacer(1, 6))
 
+    def _estado_priority(self, row: dict) -> int:
+        estado = str(self._value(row, "Estado") or "").strip().upper()
+        if estado in {"PENDIENTE", "PARCIAL", "EN CURSO"}:
+            return 0
+        if estado in {"TERMINADO", "COMPLETO"}:
+            return 2
+        return 1
+
+    def _compact_confeccion(self, row: dict, max_len: int = 18) -> str:
+        value = self._value(row, "Grupo confección") or self._value(row, "Confección")
+        return self._short_text(value or "-", max_len)
+
     def _add_pedidos_detail(self, story: list, rows: list[dict]) -> None:
-        columns = [
-            "Pedido", "Cliente", "Fecha salida", "Cultivo", "Variedad Coop", "Grupo varietal",
-            "Calibre", "Categoría", "Marca", "Confección", "Grupo confección", "Palets pedido",
-            "Kg pedido teórico", "Kg estimado", "Kg hecho real", "Kg pendiente", "Estado", "Observación",
-        ]
+        columns = ["Fecha", "Cliente", "Pedido", "Variedad", "Grupo", "Calibre", "Conf.", "Palets", "Kg pend.", "Estado", "Obs."]
         data = [columns]
         styles = []
-        for r in sorted(rows, key=lambda x: (str(self._value(x, "Fecha salida")), str(self._value(x, "Cliente")), str(self._value(x, "Pedido"))))[:120]:
-            data.append([self._clean_client_name(self._value(r, c), None) if c == "Cliente" else self._format_cell(self._value(r, c), c) for c in columns])
+        pending_rows = [r for r in rows if self._sum([r], "Kg pendiente") > 0]
+        completed_rows = [r for r in rows if r not in pending_rows]
+        ordered = sorted(pending_rows, key=lambda x: (self._safe_date(self._value(x, "Fecha salida")) or date.max, self._estado_priority(x), -self._sum([x], "Kg pendiente")))
+        remaining = max(0, 120 - len(ordered))
+        ordered += sorted(completed_rows, key=lambda x: (self._safe_date(self._value(x, "Fecha salida")) or date.max, self._estado_priority(x), -self._sum([x], "Kg pendiente")))[:remaining]
+        for r in ordered[:120]:
+            sin_conf = str(self._value(r, "Origen cálculo") or "").strip().upper() == "ESTIMADO_SIN_CONFECCION"
+            data.append([
+                self._format_date_es(self._value(r, "Fecha salida")),
+                self._clean_client_name(self._value(r, "Cliente"), 28) or "-",
+                self._short_text(self._value(r, "Pedido"), 16) or "-",
+                self._short_text(self._value(r, "Variedad Coop") or self._value(r, "Variedad"), 20) or "-",
+                self._short_text(self._value(r, "Grupo varietal"), 18) or "-",
+                self._short_text(self._value(r, "Calibre"), 10) or "-",
+                self._compact_confeccion(r),
+                self._format_cell(self._value(r, "Palets pendientes") or self._value(r, "Palets pedido"), "Palets"),
+                self._format_kg(self._sum([r], "Kg pendiente")),
+                self._short_text(self._value(r, "Estado"), 14) or "-",
+                "Sin conf." if sin_conf else "",
+            ])
             estado = str(self._value(r, "Estado") or "").upper()
             if estado in {"TERMINADO", "COMPLETO"}:
                 styles.append((len(data) - 1, "VERDE"))
-            elif str(self._value(r, "Origen cálculo") or "").upper() == "ESTIMADO_SIN_CONFECCION":
+            elif sin_conf:
                 styles.append((len(data) - 1, "AMARILLO"))
-        story.append(Paragraph("Detalle completo de líneas de pedido", self._normal))
-        header_map = {"Kg pedido teórico": "Kg teórico", "Kg hecho real": "Kg hecho", "Kg pendiente": "Kg pend.", "Grupo confección": "G. conf.", "Grupo varietal": "G. varietal", "Variedad Coop": "Variedad"}
-        data[0] = [header_map.get(c, c) for c in data[0]]
-        story.append(self._table(data, row_styles=styles, col_widths=[1.7*cm, 3.2*cm, 2.0*cm, 1.4*cm, 2.2*cm, 2.2*cm, 1.2*cm, 1.4*cm, 1.6*cm, 3.1*cm, 2.3*cm, 1.5*cm, 1.9*cm, 1.8*cm, 1.8*cm, 1.8*cm, 1.6*cm, 3.2*cm], right_cols=[11,12,13,14,15], center_cols=[16], font_size=5.0))
+        story.append(Paragraph("DETALLE OPERATIVO DE PEDIDOS", self._normal))
+        story.append(Paragraph("Detalle operativo resumido. Para auditoría completa usar exportación Excel.", self._normal))
+        story.append(self._table(data, row_styles=styles, col_widths=[2.0*cm, 4.2*cm, 2.4*cm, 3.4*cm, 3.0*cm, 1.7*cm, 3.0*cm, 1.8*cm, 2.4*cm, 2.1*cm, 2.0*cm], right_cols=[7, 8], center_cols=[0, 9], font_size=6.5))
         story.append(Spacer(1, 6))
 
     def _add_confeccion_mix(self, story: list, rows: list[dict], kg_field: str, palets_field: str) -> None:
@@ -1363,10 +1388,78 @@ class CommercialPdfReportService:
                 row += [self._format_cell(vals["Palets"], "Palets"), self._format_kg(vals["Kg teórico"]), self._format_kg(vals["Kg terminado"]), self._format_kg(vals["Kg pendiente"])]
             row += [self._format_cell(totals["Palets"], "Palets"), self._format_kg(totals["Kg teórico"]), self._format_kg(totals["Kg terminado"]), self._format_kg(totals["Kg pendiente"])]
             data.append(row)
-        if len(header) > 18:
-            story.append(Paragraph("Matriz técnica resumida; consultar exportación Excel para revisión completa.", self._normal))
+        summary_data = self._build_pedidos_matrix_summary_data(rows, pedido_kg, kg_field, palets_field)
         story.append(Paragraph("Detalle técnico para auditoría y revisión operativa avanzada.", self._normal))
-        story.append(Paragraph("Detalle técnico: matriz operativa por semana, fecha, cliente y grupo varietal", self._normal)); story.append(self._table(data, font_size=4.8))
+        self._render_or_summarize_table(
+            story,
+            "Detalle técnico: matriz operativa por semana, fecha, cliente y grupo varietal",
+            data,
+            summary_data,
+            full_columns=header,
+            summary_columns=summary_data[0],
+            full_note="Matriz técnica completa incluida porque cabe en PDF.",
+            summary_note="Matriz técnica completa no incluida en PDF por anchura. Consultar exportación Excel para detalle por grupo/calibre. Disponible en exportación Excel.",
+            full_font_size=6.5,
+            summary_font_size=6.5,
+            summary_widths=[1.8*cm, 2.0*cm, 4.2*cm, 2.4*cm, 3.8*cm, 2.0*cm, 2.6*cm, 2.6*cm, 2.6*cm, 2.3*cm],
+            right_cols=[5, 6, 7, 8],
+            center_cols=[0, 1, 9],
+        )
+
+    def _build_pedidos_matrix_summary_data(self, rows: list[dict], pedido_kg: str, kg_field: str, palets_field: str) -> list[list[Any]]:
+        grouped = self._group_rows(rows, ["Semana", "Fecha salida", "Cliente", "Pedido"], {"Palets total": palets_field, "Kg teórico": pedido_kg, "Kg terminado": "Kg hecho real", "Kg pendiente": kg_field})
+        data: list[list[Any]] = [["Semana", "Fecha", "Cliente", "Pedido", "Grupo principal", "Palets total", "Kg teórico", "Kg terminado", "Kg pendiente", "Estado"]]
+        for g in sorted(grouped, key=lambda r: (str(r.get("Semana") or ""), self._safe_date(r.get("Fecha salida")) or date.max, str(r.get("Cliente") or ""), str(r.get("Pedido") or "")))[:80]:
+            group_rows = [r for r in rows if str(self._value(r, "Semana") or "") == str(g.get("Semana") or "") and str(self._value(r, "Fecha salida") or "") == str(g.get("Fecha salida") or "") and str(self._value(r, "Cliente") or "") == str(g.get("Cliente") or "") and str(self._value(r, "Pedido") or "") == str(g.get("Pedido") or "")]
+            estado = self._short_text(self._main_value(group_rows, "Estado"), 14) or "-"
+            data.append([
+                g.get("Semana") or "-",
+                self._format_date_es(g.get("Fecha salida")),
+                self._clean_client_name(g.get("Cliente"), 28) or "-",
+                self._short_text(g.get("Pedido"), 16) or "-",
+                self._short_text(self._main_value(group_rows, "Grupo varietal"), 22) or "-",
+                self._format_cell(g.get("Palets total"), "Palets"),
+                self._format_kg(g.get("Kg teórico")),
+                self._format_kg(g.get("Kg terminado")),
+                self._format_kg(g.get("Kg pendiente")),
+                estado,
+            ])
+        return data
+
+    def _available_table_width(self) -> float:
+        return landscape(A4)[0] - (1.4 * cm)
+
+    def _should_render_full_table(self, num_cols: int, min_col_width: float = 35, available_width: float | None = None) -> bool:
+        available = available_width if available_width is not None else self._available_table_width()
+        return num_cols <= 14 and (num_cols * min_col_width) <= available
+
+    def _render_or_summarize_table(
+        self,
+        story: list,
+        title: str,
+        full_data: list[list[Any]],
+        summary_data: list[list[Any]],
+        full_columns: Sequence[Any],
+        summary_columns: Sequence[Any],
+        *,
+        full_note: str = "",
+        summary_note: str = "Tabla completa no incluida en PDF por anchura. Consultar exportación Excel.",
+        full_font_size: float = 6.5,
+        summary_font_size: float = 6.5,
+        summary_widths: list[float] | None = None,
+        right_cols: Sequence[int] | None = None,
+        center_cols: Sequence[int] | None = None,
+    ) -> None:
+        render_full = self._should_render_full_table(len(full_columns), available_width=self._available_table_width())
+        if render_full:
+            story.append(Paragraph(title, self._normal))
+            if full_note:
+                story.append(Paragraph(full_note, self._normal))
+            story.append(self._table(full_data, font_size=max(full_font_size, 6.5), right_cols=right_cols, center_cols=center_cols))
+            return
+        story.append(Paragraph("MATRIZ OPERATIVA RESUMIDA", self._normal))
+        story.append(Paragraph(summary_note, self._normal))
+        story.append(self._table(summary_data, col_widths=summary_widths, font_size=max(summary_font_size, 6.5), right_cols=right_cols, center_cols=center_cols))
 
     def _add_aprovechamientos(self, story: list, rows: list[dict]) -> None:
         self._section_title(story, "APROVECHAMIENTO ESTIMADO", "aprovechamiento_estimado")
