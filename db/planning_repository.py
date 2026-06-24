@@ -4372,6 +4372,7 @@ class PlanningRepository:
             "empresa_id_to_display": {},
             "grupos_por_cultivo": defaultdict(list),
             "variedades": [],
+            "marcas": [],
         }
         eepl_path = self._db_path(DB_EEPPL)
         logger.info("[FiltrosMaestros] DBEEPPL path=%s", eepl_path)
@@ -4444,26 +4445,62 @@ class PlanningRepository:
                 else:
                     logger.warning("[FiltrosMaestros] tabla Empresa sin columna IdEmpresa en DBEEPPL.sqlite")
             if "MVariedad" in tables:
-                for r in conn.execute("SELECT DISTINCT CULTIVO, Variedad, GRUPO FROM MVariedad").fetchall():
-                    cultivo = clean(r["CULTIVO"])
-                    variedad = clean(r["Variedad"])
-                    grupo = clean(r["GRUPO"])
-                    if grupo:
-                        add_unique(data["grupos_por_cultivo"][cultivo.upper()], grupo)
-                        add_unique(data["grupos_por_cultivo"]["__ALL__"], grupo)
-                    if variedad:
-                        data["variedades"].append({"cultivo": cultivo, "grupo": grupo, "variedad": variedad})
+                cols = [r[1] for r in conn.execute('PRAGMA table_info("MVariedad")').fetchall()]
+                cultivo_col = self._find_column(cols, ["CULTIVO", "Cultivo", "cultivo"])
+                variedad_col = self._find_column(cols, ["Variedad", "VARIEDAD", "variedad"])
+                grupo_col = self._find_column(cols, ["GRUPO", "Grupo", "grupo"])
+                subgrupo_col = self._find_column(cols, ["SUBGRUPO", "Subgrupo", "subgrupo"])
+                if cultivo_col and variedad_col and grupo_col:
+                    subgrupo_expr = f'"{subgrupo_col}"' if subgrupo_col else "NULL"
+                    query = (
+                        f'SELECT DISTINCT "{cultivo_col}" AS cultivo, "{variedad_col}" AS variedad, '
+                        f'"{grupo_col}" AS grupo, {subgrupo_expr} AS subgrupo FROM "MVariedad"'
+                    )
+                    for r in conn.execute(query).fetchall():
+                        cultivo = clean(r["cultivo"])
+                        variedad = clean(r["variedad"])
+                        grupo = clean(r["grupo"])
+                        subgrupo = clean(r["subgrupo"])
+                        grupo_varietal = " ".join(part for part in (grupo, subgrupo) if part).strip()
+                        if grupo_varietal:
+                            add_unique(data["grupos_por_cultivo"][cultivo.upper()], grupo_varietal)
+                            add_unique(data["grupos_por_cultivo"]["__ALL__"], grupo_varietal)
+                        if variedad:
+                            data["variedades"].append({"cultivo": cultivo, "grupo": grupo_varietal, "variedad": variedad})
+                else:
+                    logger.warning("[FiltrosMaestros] tabla MVariedad sin columnas CULTIVO/Variedad/GRUPO en DBEEPPL.sqlite")
+
+        pedidos_path = self._db_path(DB_PEDIDOS)
+        if pedidos_path.exists():
+            try:
+                with sqlite3.connect(pedidos_path) as conn_pedidos:
+                    conn_pedidos.row_factory = sqlite3.Row
+                    tables_pedidos = [r[0] for r in conn_pedidos.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+                    if "MConfecciones" in tables_pedidos:
+                        cols = [r[1] for r in conn_pedidos.execute('PRAGMA table_info("MConfecciones")').fetchall()]
+                        marca_col = self._find_column(cols, ["MARCA", "Marca", "marca"])
+                        if marca_col:
+                            rows = conn_pedidos.execute(
+                                f'SELECT DISTINCT "{marca_col}" AS marca FROM "MConfecciones" '
+                                f"""WHERE "{marca_col}" IS NOT NULL AND TRIM("{marca_col}") <> ''"""
+                            ).fetchall()
+                            for r in rows:
+                                add_unique(data["marcas"], r["marca"])
+            except Exception:
+                logger.exception("Error cargando marcas maestras desde MConfecciones")
         data["campanas"] = sorted(data["campanas"], key=lambda x: (self._numeric_sort_key(x), x.upper()), reverse=True)
         data["empresas"] = sorted(data["empresas"], key=lambda x: (self._numeric_sort_key(data["empresa_display_to_id"].get(x, x)), x.upper()))
         for mapping_key in ("cultivos_por_campana", "grupos_por_cultivo"):
             for k, vals in list(data[mapping_key].items()):
                 data[mapping_key][k] = sorted(set(vals), key=lambda x: x.upper())
         data["variedades"] = sorted(data["variedades"], key=lambda r: str(r.get("variedad", "")).upper())
+        data["marcas"] = sorted(set(data["marcas"]), key=lambda x: x.upper())
         logger.info("[FiltrosMaestros] campañas cargadas=%s", len(data["campanas"]))
         logger.info("[FiltrosMaestros] cultivos cargados=%s", len(data["cultivos_por_campana"].get("__ALL__", [])))
         logger.info("[FiltrosMaestros] empresas cargadas=%s", len(data["empresas"]))
         logger.info("[FiltrosMaestros] variedades cargadas=%s", len(data["variedades"]))
         logger.info("[FiltrosMaestros] grupos cargados=%s", len(data["grupos_por_cultivo"].get("__ALL__", [])))
+        logger.info("[FiltrosMaestros] marcas cargadas=%s", len(data["marcas"]))
         logger.info("[Filtros] maestros cargados campañas=%s cultivos=%s empresas=%s variedades=%s", len(data["campanas"]), len(data["cultivos_por_campana"].get("__ALL__", [])), len(data["empresas"]), len(data["variedades"]))
         self._planning_filter_master_cache = data
         return data
@@ -4495,28 +4532,33 @@ class PlanningRepository:
         campanas = self._normalize_filter_values(effective.get("campana"))
         cultivos = self._normalize_filter_values_upper(effective.get("cultivo"))
         grupos = self._normalize_filter_values_upper(effective.get("grupo_varietal"))
+
+        def finish(values: list[str], source: str) -> list[str]:
+            logger.info("[PERF FilterOptions.Source] key=%s origen=%s rows=%s", key, source, len(values))
+            return values
+
         if key == "campana":
             if not cultivos:
-                return list(masters.get("campanas", []))
+                return finish(list(masters.get("campanas", [])), "CAMPAÑA")
             vals = [p.get("campana", "") for p in masters.get("campana_cultivo_pairs", []) if str(p.get("cultivo", "")).upper() in cultivos]
-            return sorted({v for v in vals if v}, key=lambda x: (self._numeric_sort_key(x), x.upper()), reverse=True)
+            return finish(sorted({v for v in vals if v}, key=lambda x: (self._numeric_sort_key(x), x.upper()), reverse=True), "CAMPAÑA")
         if key == "cultivo":
             selected = campanas or []
             if not selected:
-                return list(masters.get("cultivos_por_campana", {}).get("__ALL__", []))
+                return finish(list(masters.get("cultivos_por_campana", {}).get("__ALL__", [])), "CAMPAÑA")
             vals = []
             for campana in selected:
                 vals.extend(masters.get("cultivos_por_campana", {}).get(str(campana).upper(), []))
-            return sorted(set(vals), key=lambda x: x.upper())
+            return finish(sorted(set(vals), key=lambda x: x.upper()), "CAMPAÑA")
         if key == "empresa":
-            return list(masters.get("empresas", []))
+            return finish(list(masters.get("empresas", [])), "Empresa")
         if key == "grupo_varietal":
             if not cultivos:
-                return list(masters.get("grupos_por_cultivo", {}).get("__ALL__", []))
+                return finish(list(masters.get("grupos_por_cultivo", {}).get("__ALL__", [])), "MVariedad.GRUPO_SUBGRUPO")
             vals = []
             for cultivo in cultivos:
                 vals.extend(masters.get("grupos_por_cultivo", {}).get(cultivo, []))
-            return sorted(set(vals), key=lambda x: x.upper())
+            return finish(sorted(set(vals), key=lambda x: x.upper()), "MVariedad.GRUPO_SUBGRUPO")
         if key == "var_coop":
             vals = []
             for row in masters.get("variedades", []):
@@ -4525,10 +4567,11 @@ class PlanningRepository:
                 if grupos and str(row.get("grupo", "")).upper() not in grupos:
                     continue
                 vals.append(str(row.get("variedad", "")).strip())
-            return sorted({v for v in vals if v}, key=lambda x: x.upper())
+            return finish(sorted({v for v in vals if v}, key=lambda x: x.upper()), "MVariedad")
         if key == "marca":
-            return self._get_marca_options_from_available_data(effective)
-        return self.get_filter_options_contextual(key, effective)
+            return finish(list(masters.get("marcas", [])), "MConfecciones.MARCA")
+        values = self.get_filter_options_contextual(key, effective)
+        return finish(values, "contextual_ligero")
 
     def _get_marca_options_from_available_data(self, filters: dict) -> list[str]:
         marcas: set[str] = set()
