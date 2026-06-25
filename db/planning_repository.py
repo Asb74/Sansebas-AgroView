@@ -90,6 +90,31 @@ def normalizar_numero(valor: Any) -> float:
     except Exception:
         return 0.0
 
+def _log_float_conversion_diagnostic(table_name: str, column_name: str, original_value: Any, normalized_value: Any = None) -> None:
+    logger.debug(
+        "[DIAG float_conversion.before] tabla=%s columna=%s valor_original=%r tipo_dato=%s valor_normalizado=%r",
+        table_name,
+        column_name,
+        original_value,
+        type(original_value).__name__,
+        normalized_value,
+    )
+
+def _diagnostic_float(value: Any, table_name: str, column_name: str, normalized_value: Any = None) -> float:
+    _log_float_conversion_diagnostic(table_name, column_name, value, normalized_value)
+    try:
+        return float(value)
+    except Exception:
+        logger.exception(
+            "[DIAG float_conversion.error] tabla=%s columna=%s valor_original=%r tipo_dato=%s valor_normalizado=%r",
+            table_name,
+            column_name,
+            value,
+            type(value).__name__,
+            normalized_value,
+        )
+        raise
+
 def normalizar_campana(valor: Any) -> str:
     txt = normalizar_texto(valor)
     return str(int(float(txt))) if txt.replace('.', '', 1).isdigit() else txt
@@ -247,10 +272,14 @@ class PlanningRepository:
 
     @staticmethod
     def _build_neto_correcto(neto_partida: Any, neto: Any) -> float:
-        neto_partida_val = float(neto_partida or 0)
+        neto_partida_raw = neto_partida or 0
+        neto_partida_normalized = str(neto_partida_raw).strip().replace(",", ".") if neto_partida_raw is not None else None
+        neto_partida_val = _diagnostic_float(neto_partida_raw, "PesosFres", "NetoPartida", neto_partida_normalized)
         if neto_partida_val > 0:
             return neto_partida_val
-        return float(neto or 0)
+        neto_raw = neto or 0
+        neto_normalized = str(neto_raw).strip().replace(",", ".") if neto_raw is not None else None
+        return _diagnostic_float(neto_raw, "PesosFres", "Neto", neto_normalized)
 
     @staticmethod
     def _find_column(table_columns: list[str], candidates: list[str]) -> str | None:
@@ -2187,7 +2216,9 @@ class PlanningRepository:
             return str(value or "").strip()
 
         try:
-            kg_campo = round(float(row.get("Kg campo", row.get("Kg campo origen", 0)) or 0), 2)
+            kg_campo_raw = row.get("Kg campo", row.get("Kg campo origen", 0)) or 0
+            kg_campo_normalized = str(kg_campo_raw).strip().replace(",", ".") if kg_campo_raw is not None else None
+            kg_campo = round(_diagnostic_float(kg_campo_raw, "Stock campo calculado", "Kg campo", kg_campo_normalized), 2)
         except (TypeError, ValueError):
             kg_campo = 0.0
         return (
