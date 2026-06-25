@@ -14,6 +14,7 @@ import unicodedata
 from services.operational_quality_service import OperationalQualityService
 from services.planning_service import PlanningService
 from services.production_settings_service import ProductionSettingsService
+from services.production_capacity_service import ProductionCapacityService
 from services.pedidos_previstos_service import (
     PEDIDOS_PREVISTOS_PATH,
     cargar_pedidos_previstos,
@@ -2366,7 +2367,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
         for child in popup.winfo_children():
             child.destroy()
     popup.title("Simulación de asignación")
-    popup.geometry("1300x750")
+    popup.geometry("1450x850")
     sim_context = {
         "cultivo_actual": cultivo_actual,
         "campana_actual": campana_actual,
@@ -2423,22 +2424,27 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     ttk.Button(top_actions, text="Leyenda", command=_abrir_leyenda).pack(side="right")
 
     top = ttk.LabelFrame(popup, text="Pedidos pendientes", padding=8)
-    top.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+    top.pack(fill="both", expand=False, padx=8, pady=(8, 4))
     t_notebook = perf_counter()
     notebook = ttk.Notebook(popup)
     notebook.pack(fill="both", expand=True, padx=8, pady=(4, 8))
     _log_render_perf("Notebook", t_notebook, accion="crear_pack")
+    diagnostico_tab = ttk.Frame(notebook, padding=8)
     resumen_tab = ttk.Frame(notebook, padding=8)
     horizonte_tab = ttk.Frame(notebook, padding=8)
     matriz_tab = ttk.Frame(notebook, padding=8)
     sobrantes_tab = ttk.Frame(notebook, padding=8)
     necesidades_tab = ttk.Frame(notebook, padding=8)
+    pedidos_tab = ttk.Frame(notebook, padding=8)
+    capacidad_tab = ttk.Frame(notebook, padding=8)
+    personal_tab = ttk.Frame(notebook, padding=8)
+    cuellos_tab = ttk.Frame(notebook, padding=8)
     plan_operativo_tab = ttk.Frame(notebook, padding=8)
     riesgos_tab = ttk.Frame(notebook, padding=8)
     tecnico_tab = ttk.Frame(notebook, padding=8)
     compat_tab = ttk.Frame(notebook, padding=8)
     previstos_tab = ttk.Frame(notebook, padding=8)
-    _log_render_perf("GeneracionPestanas", t_crear_ventana, pestanas_creadas=10)
+    _log_render_perf("GeneracionPestanas", t_crear_ventana, pestanas_creadas=15)
     _log_render_perf("CrearVentana", t_crear_ventana, mode_refresh=mode_refresh)
 
     _log_sim_trace("Fase2", descripcion="cargar_pedidos_previstos")
@@ -2467,11 +2473,27 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
 
     _log_sim_trace("Fase3", descripcion="crear_columnas_y_treeviews")
     t_columnas = perf_counter()
-    pedidos_cols = ["Origen demanda", "Fecha salida", "Bloque temporal", "Prioridad manual", "Prioridad total", "Motivo prioridad", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Kg potencial físico", "Kg potencial útil"]
+    pedidos_cols = ["Origen demanda", "Fecha salida", "Bloque temporal", "Prioridad manual", "Prioridad total", "Motivo prioridad", "Cliente", "Variedad", "Calibre", "Categoría", "Grupo confección", "Perfil confección", "Kg pendientes", "Estado simulación", "Kg cobertura simulada", "Kg asignado global", "Kg faltante global", "Estado global", "Estado stock", "Estado productivo", "Línea productiva", "Horas necesarias", "Capacidad día", "Personal requerido", "Motivo bloqueo", "Acción sugerida", "Adelantable", "Kg potencial físico", "Kg potencial útil"]
     t_treeview = perf_counter()
     pedidos_tbl = DataTable(top, pedidos_cols)
     pedidos_tbl.pack(fill="both", expand=True)
     pedidos_op_cols = ["Fecha salida", "Bloque temporal", "Variedad", "Calibre", "Categoría", "Grupo confección", "Kg pendientes", "Kg asignado global", "Kg faltante global", "Estado global"]
+    pedidos_decision_cols = ["Fecha salida", "Cliente", "Variedad", "Calibre", "Kg pendientes", "Estado stock", "Estado productivo", "Línea productiva", "Horas necesarias", "Capacidad día", "Personal requerido", "Motivo bloqueo", "Acción sugerida", "Adelantable"]
+    pedidos_decision_tbl = DataTable(pedidos_tab, pedidos_decision_cols)
+    pedidos_decision_tbl.pack(fill="both", expand=True)
+    cap_cols = ["Día operativo", "Línea productiva", "Capacidad kg/día", "Kg ya asignados", "Kg pendientes", "Kg adelantables", "Ocupación %", "Estado"]
+    cap_tbl = DataTable(capacidad_tab, cap_cols)
+    cap_tbl.pack(fill="both", expand=True)
+    personal_cols = ["Puesto", "Mínimo necesario", "Óptimo necesario", "Disponible", "Déficit", "Línea afectada", "Pedidos afectados"]
+    personal_tbl = DataTable(personal_tab, personal_cols)
+    personal_tbl.pack(fill="both", expand=True)
+    cuello_cols = ["Recurso", "Línea", "Kg/h", "Kg requeridos", "Horas necesarias", "Ocupación %", "Pedidos afectados", "Acción sugerida"]
+    cuello_tbl = DataTable(cuellos_tab, cuello_cols)
+    cuello_tbl.pack(fill="both", expand=True)
+    diag_box = ttk.LabelFrame(diagnostico_tab, text="Diagnóstico ejecutivo", padding=10)
+    diag_box.pack(fill="both", expand=True)
+    diag_lbl = ttk.Label(diag_box, text="", justify="left", anchor="nw")
+    diag_lbl.pack(fill="both", expand=True, anchor="nw")
     pedidos_op_tbl = DataTable(tecnico_tab, pedidos_op_cols)
     pedidos_op_tbl.pack(fill="both", expand=True)
 
@@ -2632,7 +2654,71 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     t_necesidades = perf_counter()
     necesidades_rows, need_tot = _calcular_necesidades(simulaciones)
     _log_asignacion_perf("Necesidades", t_necesidades, rows_entrada=len(simulaciones), rows_salida=len(necesidades_rows))
+    t_capacidad = perf_counter()
+    capacity_result = {"summary": {}, "line_rows": [], "staffing_rows": [], "bottleneck_rows": [], "incidencias": [], "pedidos": []}
+    capacity_by_id: dict[str, dict] = {}
+    capacity_error = ""
+    try:
+        cap_service = ProductionCapacityService()
+        cap_filters = dict(filters_payload or {})
+        cap_inputs = cap_service.load_capacity_inputs(cap_filters, "simulacion_asignacion")
+        cap_inputs["filters"] = cap_filters
+        mapped, cap_incidencias = cap_service.map_orders_to_productive_config(pedidos_operativos, [], cap_inputs)
+        line_rows = cap_service.calculate_line_capacity(mapped, cap_inputs)
+        staffing = cap_service.calculate_staffing_requirements({"line_rows": line_rows, "inputs": cap_inputs})
+        fam_rows = cap_service.calculate_family_capacity(mapped, cap_inputs, staffing["rows"])
+        resource_rows, resource_incidencias = cap_service.calculate_physical_resource_capacity(mapped, cap_inputs)
+        bottleneck = cap_service.detect_bottleneck(resource_rows)
+        bottleneck_rows = cap_service.calculate_bottlenecks({"line_rows": line_rows, "staffing_rows": staffing["rows"], "mapped": mapped, "inputs": cap_inputs})
+        personnel_resources = cap_service.calculate_resource_personnel(resource_rows)
+        cap_summary = cap_service.calculate_capacity_summary(mapped, fam_rows, line_rows, cap_inputs)
+        cap_summary.update({
+            "personal_minimo_flujo": staffing["summary"].get("personal_minimo_requerido", 0),
+            "personal_optimo_flujo": staffing["summary"].get("personal_optimo_requerido", 0),
+            "deficit_personal_flujo": staffing["summary"].get("deficit_personal", 0),
+            "personal_minimo_recursos": personnel_resources.get("personal_minimo_recursos", 0),
+            "personal_optimo_recursos": personnel_resources.get("personal_optimo_recursos", 0),
+        })
+        alerts = cap_service.calculate_capacity_alerts(cap_summary, fam_rows, line_rows, cap_incidencias + resource_incidencias + staffing["incidencias"], resource_rows, bottleneck, bottleneck_rows)
+        capacity_result = {"summary": cap_summary, "family_rows": fam_rows, "line_rows": line_rows, "resource_rows": resource_rows, "staffing_rows": staffing["rows"], "bottleneck_rows": bottleneck_rows, "incidencias": alerts, "pedidos": mapped}
+        for m in mapped:
+            capacity_by_id[_pedido_id_prioridad(m.get("pedido", {}))] = m
+    except Exception as exc:  # noqa: BLE001 - la simulación de stock debe seguir funcionando aunque falte maestro productivo
+        capacity_error = str(exc)
+        logger.exception("[SIM CAPACITY] error al calcular capacidad productiva")
+    cap_secs = perf_counter() - t_capacidad
+    cap_summary = capacity_result.get("summary", {})
+    logger.info("[SIM CAPACITY] pedidos=%s lineas=%s kg_total=%s kg_asignable=%s kg_sin_capacidad=%s tiempo=%.3fs", len(pedidos_operativos), len(capacity_result.get("line_rows", [])), round(sum(_kg_pendiente_linea(p) for p in pedidos_operativos), 2), cap_summary.get("Kg total simulación", 0), max(0.0, sum(_kg_pendiente_linea(p) for p in pedidos_operativos) - _to_float(cap_summary.get("Kg total simulación", 0))), cap_secs)
+
     resumen_rows: list[dict] = []
+    def _estado_productivo_para(pedido: dict, estado_stock: str, kg_faltante: float) -> dict:
+        pid = _pedido_id_prioridad(pedido)
+        mapped = capacity_by_id.get(pid)
+        if kg_faltante > 0:
+            estado = "PARCIAL" if _to_float(kg_faltante) < _kg_pendiente_linea(pedido) else "FALTA_FRUTA"
+            return {"Estado stock": estado_stock, "Estado productivo": estado, "Línea productiva": "", "Horas necesarias": "", "Capacidad día": "", "Personal requerido": "", "Motivo bloqueo": "Falta fruta/calibre/variedad", "Acción sugerida": "Recolectar calibre concreto o revisar compatibilidades", "Adelantable": "No"}
+        if not mapped:
+            motivo = "Sin mapeo productivo" if not capacity_error else f"Capacidad no disponible: {capacity_error[:80]}"
+            estado = "SIN_MAPEO" if not capacity_error else "FALTA_CAPACIDAD"
+            return {"Estado stock": estado_stock, "Estado productivo": estado, "Línea productiva": "", "Horas necesarias": "", "Capacidad día": "", "Personal requerido": "", "Motivo bloqueo": motivo, "Acción sugerida": "Revisar mapeos de confección/capacidad", "Adelantable": "No"}
+        linea = str(mapped.get("linea", "") or "")
+        line_row = next((r for r in capacity_result.get("line_rows", []) if str(r.get("Línea productiva", "")) == linea), {})
+        occ = _to_float(line_row.get("Ocupación %", 0))
+        hdisp = _to_float(line_row.get("Horas disponibles línea", 0))
+        horas = _to_float(mapped.get("horas", 0))
+        personal = int(mapped.get("personal_minimo_linea", 0) or 0)
+        if occ >= 100:
+            estado, motivo, accion = "FALTA_CAPACIDAD", "Línea saturada", "Activar segunda línea o retrasar pedidos"
+        elif _to_float(cap_summary.get("deficit_personal_flujo", 0)) > 0:
+            estado, motivo, accion = "FALTA_PERSONAL", "Déficit de personal", "Añadir personal o revisar disponibilidad"
+        else:
+            estado, motivo, accion = "FABRICABLE_HOY", "", "Producir según prioridad"
+        fecha = _parse_fecha_salida(pedido.get("fecha_salida", pedido.get("Fecha salida", "")))
+        adelantable = "No"
+        if fecha and fecha > date.today() and estado == "FABRICABLE_HOY" and occ < 95:
+            estado, adelantable, accion = "FABRICABLE_SI_ADELANTO", "Adelantable", "Adelantar si no rompe prioridades"
+        return {"Estado stock": estado_stock, "Estado productivo": estado, "Línea productiva": linea, "Horas necesarias": f"{horas:.2f}", "Capacidad día": formatear_kg(_to_float(mapped.get("capacidad_real_kg_h", 0)) * hdisp), "Personal requerido": personal, "Motivo bloqueo": motivo, "Acción sugerida": accion, "Adelantable": adelantable}
+
     def _grupo_pedido(p: dict) -> str:
         return _norm_text(p.get("grupo_confeccion") or p.get("GrupoConfeccion") or p.get("GRUPO") or p.get("grupo")) or "DESCONOCIDO"
 
@@ -2657,6 +2743,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             tag_estado = "estado_neutro"
         grupo_conf = _grupo_pedido(pedido)
         perfil_conf = _perfil_pedido(pedido, grupo_conf)
+        prod_info = _estado_productivo_para(pedido, estado, _to_float(simulacion.get("kg_faltante_simulado", 0)))
         resumen_rows.append({
             "Origen demanda": "PREVISTO" if _norm_text(pedido.get("origen_demanda", "")) == "PREVISTO" else "REAL",
             "Fecha salida": pedido.get("fecha_salida", pedido.get("Fecha salida", "")),
@@ -2676,6 +2763,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Kg asignado global": formatear_kg(simulacion["kg_asignado_simulado"]),
             "Kg faltante global": formatear_kg(simulacion["kg_faltante_simulado"]),
             "Estado global": estado,
+            **prod_info,
             "Kg potencial físico": formatear_kg(simulacion["kg_potencial_fisico"]),
             "Kg potencial útil": formatear_kg(simulacion["kg_potencial_util"]),
             "__tags__": ("pedido_previsto", tag_estado) if _norm_text(pedido.get("origen_demanda", "")) == "PREVISTO" else (tag_estado,),
@@ -2684,6 +2772,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     for pedido in pedidos_informativos:
         if _pedido_id_prioridad(pedido) in ids_simulados:
             continue
+        prod_info = _estado_productivo_para(pedido, "SIN NECESIDAD", 0)
         resumen_rows.append({
             "Origen demanda": "PREVISTO" if _norm_text(pedido.get("origen_demanda", "")) == "PREVISTO" else "REAL",
             "Fecha salida": pedido.get("fecha_salida", pedido.get("Fecha salida", "")),
@@ -2703,6 +2792,7 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
             "Kg asignado global": formatear_kg(0),
             "Kg faltante global": formatear_kg(0),
             "Estado global": "SIN NECESIDAD",
+            **prod_info,
             "Kg potencial físico": formatear_kg(0),
             "Kg potencial útil": formatear_kg(0),
             "__tags__": ("pedido_previsto", "estado_neutro") if _norm_text(pedido.get("origen_demanda", "")) == "PREVISTO" else ("estado_neutro",),
@@ -2796,10 +2886,95 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     _log_asignacion_perf("BuildRows", t_build_rows, rows_entrada=len(pedidos) + len(previstos_activos) + len(inventario_global_simulado), rows_salida=len(resumen_rows) + len(sobrantes_rows) + len(necesidades_rows))
     _log_asignacion_perf("Total", t_build_rows, rows_entrada=len(pedidos) + len(previstos_activos) + len(inventario_global_simulado), rows_salida=len(resumen_rows) + len(sobrantes_rows) + len(necesidades_rows))
 
+    t_render_diag = perf_counter()
+    adelantables = [r for r in resumen_rows if r.get("Adelantable") == "Adelantable"]
+    kg_adelantables = sum(_to_float(r.get("Kg pendientes", 0)) for r in adelantables)
+    capacidad_libre_hoy = sum(max(0.0, _to_float(r.get("Horas disponibles línea", 0)) - _to_float(r.get("Horas necesarias", 0))) * _to_float(r.get("Capacidad real kg/h", 0)) for r in capacity_result.get("line_rows", []))
+    logger.info("[SIM ADELANTABLES] pedidos=%s kg=%s capacidad_libre_hoy=%s tiempo=%.3fs", len(adelantables), round(kg_adelantables, 2), round(capacidad_libre_hoy, 2), perf_counter() - t_render_diag)
+    falta_capacidad = sum(1 for r in resumen_rows if r.get("Estado productivo") == "FALTA_CAPACIDAD")
+    falta_personal = sum(1 for r in resumen_rows if r.get("Estado productivo") == "FALTA_PERSONAL")
+    sin_mapeo = sum(1 for r in resumen_rows if r.get("Estado productivo") == "SIN_MAPEO")
+    if insuficientes or falta_capacidad or falta_personal or sin_mapeo:
+        semaforo = "ROJO"
+    elif parciales or adelantables:
+        semaforo = "AMARILLO"
+    else:
+        semaforo = "VERDE"
+    motivos = []
+    if insuficientes or parciales:
+        motivos.append("falta fruta / calibre insuficiente")
+    if falta_capacidad:
+        motivos.append("falta capacidad productiva")
+    if falta_personal:
+        motivos.append("falta personal")
+    if sin_mapeo:
+        motivos.append("sin mapeo productivo")
+    if not motivos:
+        motivos.append("sin bloqueos críticos")
+    acciones = []
+    if adelantables:
+        acciones.append(f"Adelantar {len(adelantables)} pedidos ({formatear_kg(kg_adelantables)}) si no rompe prioridades")
+    if insuficientes or parciales:
+        acciones.append("Retrasar pedidos sin fruta o recolectar calibre/variedad concreta")
+    if sin_mapeo:
+        acciones.append("Revisar mapeos de confección y líneas productivas")
+    if falta_capacidad:
+        acciones.append("Activar segunda línea o mover carga entre líneas")
+    if falta_personal:
+        acciones.append("Añadir personal o revisar disponibilidad por puesto")
+    if not acciones:
+        acciones.append("Mantener plan de producción y vigilar sobrantes")
+    diag_lbl.configure(text=(
+        f"Estado general: {semaforo}\n\n"
+        f"Se pueden cubrir {totales} pedidos completos, {parciales} parciales y {insuficientes} insuficientes.\n\n"
+        f"Motivo principal: {'; '.join(motivos)}.\n\n"
+        f"Adelantables: {len(adelantables)} pedidos · {formatear_kg(kg_adelantables)} · capacidad libre estimada hoy {formatear_kg(capacidad_libre_hoy)}.\n"
+        f"Líneas: {', '.join(sorted({str(r.get('Línea productiva', '')) for r in adelantables if r.get('Línea productiva')})) or '-'}\n\n"
+        "Acciones sugeridas:\n" + "\n".join(f"• {a}" for a in acciones)
+    ))
+    logger.info("[SIM UI] render_diagnostico=%.3fs", perf_counter() - t_render_diag)
+
+    t_render_cap = perf_counter()
+    cap_tbl.set_rows([{
+        "Día operativo": date.today().isoformat(),
+        "Línea productiva": r.get("Línea productiva", ""),
+        "Capacidad kg/día": formatear_kg(_to_float(r.get("Horas disponibles línea", 0)) * _to_float(r.get("Capacidad real kg/h", 0))),
+        "Kg ya asignados": formatear_kg(r.get("Kg", 0)),
+        "Kg pendientes": formatear_kg(r.get("Kg", 0)),
+        "Kg adelantables": formatear_kg(sum(_to_float(a.get("Kg pendientes", 0)) for a in adelantables if a.get("Línea productiva") == r.get("Línea productiva"))),
+        "Ocupación %": r.get("Ocupación %", 0),
+        "Estado": "saturado" if _to_float(r.get("Ocupación %", 0)) >= 100 else "ajustado" if _to_float(r.get("Ocupación %", 0)) >= 85 else "disponible",
+    } for r in capacity_result.get("line_rows", [])] or [{"Día operativo": date.today().isoformat(), "Línea productiva": "Sin mapeo", "Estado": "sin mapeo"}])
+    logger.info("[SIM UI] render_capacidad=%.3fs", perf_counter() - t_render_cap)
+
+    t_render_personal = perf_counter()
+    personal_tbl.set_rows([{
+        "Puesto": r.get("Área / puesto", ""),
+        "Mínimo necesario": r.get("Mínimo", 0),
+        "Óptimo necesario": r.get("Óptimo", 0),
+        "Disponible": r.get("Disponible", ""),
+        "Déficit": max(0.0, -_to_float(r.get("Diferencia", 0))),
+        "Línea afectada": r.get("Línea productiva", ""),
+        "Pedidos afectados": sum(1 for x in resumen_rows if x.get("Línea productiva") == r.get("Línea productiva", "")),
+    } for r in capacity_result.get("staffing_rows", [])] or [{"Puesto": "Sin datos de personal", "Línea afectada": "", "Pedidos afectados": 0}])
+    logger.info("[SIM UI] render_personal=%.3fs", perf_counter() - t_render_personal)
+
+    cuello_tbl.set_rows([{
+        "Recurso": r.get("Puesto limitante", r.get("Recurso", "")),
+        "Línea": r.get("Línea productiva", ""),
+        "Kg/h": r.get("Capacidad real kg/h", r.get("Capacidad kg/h", "")),
+        "Kg requeridos": r.get("Kg línea", r.get("Kg asignados", "")),
+        "Horas necesarias": r.get("Horas necesarias", ""),
+        "Ocupación %": r.get("Ocupación %", r.get("Factor capacidad %", "")),
+        "Pedidos afectados": sum(1 for x in resumen_rows if x.get("Línea productiva") == r.get("Línea productiva", "")),
+        "Acción sugerida": r.get("Acción sugerida", "Revisar disponibilidad de recurso"),
+    } for r in capacity_result.get("bottleneck_rows", [])] or [{"Recurso": "Sin cuellos de botella detectados", "Acción sugerida": "Vigilar ocupación"}])
+
     _log_sim_trace("Fase6", descripcion="render_inicial_insertar_filas")
     t_render = perf_counter()
     t_insert_pedidos = perf_counter()
     pedidos_tbl.set_rows(resumen_rows)
+    pedidos_decision_tbl.set_rows([{k: r.get(k, "") for k in pedidos_decision_cols} for r in resumen_rows])
     pedidos_op_tbl.set_rows([{k: r.get(k, "") for k in pedidos_op_cols} for r in resumen_rows])
     _log_render_perf("InsertPedidos", t_insert_pedidos, rows_pedidos=len(resumen_rows), inserts=len(resumen_rows) * 2)
     t_insert_necesidades = perf_counter()
@@ -3230,21 +3405,23 @@ def abrir_simulacion_asignacion(parent: tk.Misc, pedidos: list[dict], get_candid
     riesgos_texto.extend([f"Producción: {x}" for x in diagnostico.get("recomendaciones_produccion", [])])
     ttk.Label(riesgos_box, text="\n".join([f"• {x}" for x in riesgos_texto if x]), justify="left").pack(anchor="w")
 
-    MOSTRAR_PESTANAS_AVANZADAS = False
+    t_crear_pestanas = perf_counter()
+    notebook.add(diagnostico_tab, text="Diagnóstico")
     notebook.add(resumen_tab, text="Resumen")
-    notebook.add(horizonte_tab, text="Horizonte")
-    # Pestañas avanzadas ocultas temporalmente
-    # Se reactivarán cuando se defina mejor el flujo operativo
-    # NO eliminar lógica interna
-    if MOSTRAR_PESTANAS_AVANZADAS:
-        notebook.add(plan_operativo_tab, text="Plan operativo")
-        notebook.add(matriz_tab, text="Matriz cobertura")
+    notebook.add(pedidos_tab, text="Pedidos")
+    notebook.add(capacidad_tab, text="Capacidad productiva")
+    notebook.add(personal_tab, text="Personal requerido")
+    notebook.add(cuellos_tab, text="Cuellos de botella")
     notebook.add(sobrantes_tab, text="Sobrantes")
     notebook.add(necesidades_tab, text="Necesidades")
-    notebook.add(riesgos_tab, text="Riesgos / Diagnóstico")
-    notebook.add(tecnico_tab, text="Técnico")
     notebook.add(compat_tab, text="Compatibilidades")
+    notebook.add(tecnico_tab, text="Técnico")
+    notebook.add(horizonte_tab, text="Horizonte")
+    notebook.add(plan_operativo_tab, text="Plan operativo")
+    notebook.add(matriz_tab, text="Matriz cobertura")
+    notebook.add(riesgos_tab, text="Riesgos / Diagnóstico")
     notebook.add(previstos_tab, text="Pedidos previstos")
+    logger.info("[SIM UI] crear_pestanas=%.3fs pestanas=%s", perf_counter() - t_crear_pestanas, len(notebook.tabs()))
 
     def render_candidatos(index: int) -> None:
         if index < 0 or index >= len(simulaciones):
