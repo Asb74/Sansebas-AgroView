@@ -1,4 +1,4 @@
-﻿from typing import Any, Iterable
+from typing import Any, Iterable
 
 PEDIDOS_FIELD_MAP = {
     "campana": "Campaña",
@@ -19,7 +19,11 @@ LIKE_FIELDS: set[str] = set()
 
 def pedidos_base_clause(alias: str = "p") -> str:
     prefix = f"{alias}." if alias else ""
-    return f'COALESCE({prefix}"Cancelado", 0) = 0'
+    column = f'{prefix}"Cancelado"'
+    return (
+        f"({column} IS NULL OR "
+        f"UPPER(TRIM(CAST({column} AS TEXT))) IN ('', '0', 'FALSE', 'F', 'NO', 'N'))"
+    )
 
 
 def pedidos_base_where(alias: str = "p") -> tuple[list[str], list[Any]]:
