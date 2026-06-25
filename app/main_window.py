@@ -42,9 +42,14 @@ class MainWindow(tk.Tk):
         self.comercial_service = ComercialService()
         self.runtime_db_service = RuntimeDatabaseService()
         self.update_orchestrator = UpdateOrchestratorService(runtime_database_service=self.runtime_db_service)
+        central_newer = self.runtime_db_service.central_sqlite_is_newer_than_snapshot()
         ok, errors = self.runtime_db_service.prepare_runtime_databases()
         if ok:
-            pass
+            if central_newer:
+                # Mensaje registrado en logs para no ralentizar el arranque con interacción modal.
+                pass
+            else:
+                pass
         elif self.runtime_db_service.has_current_snapshot():
             messagebox.showwarning("AgroView", self.runtime_db_service.WARNING_MESSAGE)
         else:
@@ -61,7 +66,7 @@ class MainWindow(tk.Tk):
         herramientas.add_command(label="Actualización tablas legacy", command=self.show_legacy_sync_settings)
         self.actualizaciones_menu = tk.Menu(herramientas, tearoff=False)
         self.actualizaciones_menu.add_command(label="Actualizar foto local", command=self.update_runtime_snapshot)
-        self.actualizaciones_menu.add_command(label="Actualizar tablas legacy activas", command=self.update_legacy_active)
+        self.actualizaciones_menu.add_command(label="Actualizar datos desde Access", command=self.update_legacy_active)
         self.actualizaciones_menu.add_command(label="Actualizar todo", command=self.update_all)
         herramientas.add_cascade(label="Actualizaciones", menu=self.actualizaciones_menu)
         herramientas.add_command(label="Configuración calidad operativa", command=self.show_operational_quality_settings)
@@ -134,7 +139,7 @@ class MainWindow(tk.Tk):
         self._run_update_action("Actualizar foto local", self.update_orchestrator.update_runtime_snapshot, self._format_runtime_result)
 
     def update_legacy_active(self) -> None:
-        self._run_update_action("Actualizar tablas legacy activas", self.update_orchestrator.update_legacy_active, self._format_legacy_result)
+        self._run_update_action("Actualizar datos desde Access", self.update_orchestrator.update_from_access_then_snapshot, self._format_access_result)
 
     def update_all(self) -> None:
         self._run_update_action("Actualizar todo", self.update_orchestrator.update_all, self._format_all_result)
@@ -175,6 +180,12 @@ class MainWindow(tk.Tk):
         ok = fail_count == 0 and not result.get("error")
         suffix = "" if ok else "\nHay errores; revisa el log."
         return ok, f"Resultado final: tablas legacy activas procesadas.\nCorrectos: {ok_count}\nFallidos: {fail_count}\nTotal: {total}{suffix}"
+
+    def _format_access_result(self, result: dict) -> tuple[bool, str]:
+        ok, msg = self._format_all_result(result)
+        if ok:
+            return True, "Se han actualizado los datos desde Access y se ha creado una nueva foto local."
+        return ok, msg
 
     def _format_all_result(self, result: dict) -> tuple[bool, str]:
         legacy_ok, legacy_msg = self._format_legacy_result(result.get("legacy", {}))

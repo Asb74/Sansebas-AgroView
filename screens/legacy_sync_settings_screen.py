@@ -141,13 +141,13 @@ class LegacySyncSettingsScreen(ttk.Frame):
         sid = self._selected_id()
         if not sid:
             return
-        self._run_update_action("Actualizar seleccionada", lambda: self._sync_selected_worker(sid), self._format_single_sync_result)
+        self._run_update_action("Actualizar seleccionada", lambda: self.update_orchestrator.update_selected_legacy_then_snapshot(sid), self._format_single_sync_result)
 
     def _sync_active(self) -> None:
         if self.service.get_central_sqlite_blocked_settings(active_only=True):
             self._show_central_sqlite_block_warning()
             return
-        self._run_update_action("Actualizar tablas legacy activas", self.update_orchestrator.update_legacy_active, self._format_legacy_result)
+        self._run_update_action("Actualizar activas", lambda: self.update_orchestrator.update_legacy_active(snapshot_after=True), self._format_legacy_result)
 
     def _update_runtime_snapshot(self) -> None:
         self._run_update_action("Actualizar foto local", self.update_orchestrator.update_runtime_snapshot, self._format_runtime_result)
@@ -161,10 +161,6 @@ class LegacySyncSettingsScreen(ttk.Frame):
             f"Esta operación está bloqueada por seguridad porque modificaría la SQLite central.\n\n{CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE}",
             parent=self,
         )
-
-    def _sync_selected_worker(self, setting_id: int) -> dict:
-        ok, msg = self.service.sync_setting(setting_id)
-        return {"ok": ok, "message": msg}
 
     def _run_update_action(self, title: str, action, formatter) -> None:
         messagebox.showinfo(title, f"Inicio de actualización: {title}.", parent=self)
@@ -189,9 +185,10 @@ class LegacySyncSettingsScreen(ttk.Frame):
     @staticmethod
     def _format_single_sync_result(result: dict) -> tuple[bool, str]:
         ok = bool(result.get("ok"))
-        message = result.get("message", "")
+        legacy = result.get("legacy", {})
+        message = result.get("message") or legacy.get("message", "")
         if ok:
-            return True, f"Resultado final: actualización seleccionada correcta.\n{message}"
+            return True, f"Resultado final: actualización seleccionada correcta.\n{message}\nSe ha creado una nueva foto local."
         return False, f"Resultado final: actualización seleccionada fallida.\n{message}\nRevisa el log."
 
     @staticmethod
@@ -216,6 +213,13 @@ class LegacySyncSettingsScreen(ttk.Frame):
                 "Esta operación está bloqueada por seguridad porque modificaría la SQLite central.\n"
                 f"{CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE}"
             )
+        runtime = result.get("runtime") or {}
+        if runtime:
+            runtime_ok = bool(runtime.get("ok"))
+            ok = ok and runtime_ok
+            runtime_msg = RuntimeDatabaseService.SUCCESS_MESSAGE if runtime_ok else RuntimeDatabaseService.WARNING_MESSAGE
+            suffix = "" if ok else "\nHay errores; revisa el log."
+            return ok, f"Resultado final: tablas legacy activas procesadas.\nCorrectos: {ok_count}\nFallidos: {fail_count}\nTotal: {total}\n{runtime_msg}{suffix}"
         suffix = "" if ok else "\nHay errores; revisa el log."
         return ok, f"Resultado final: tablas legacy activas procesadas.\nCorrectos: {ok_count}\nFallidos: {fail_count}\nTotal: {total}{suffix}"
 

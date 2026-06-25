@@ -20,7 +20,9 @@ class RuntimeDatabaseLockedError(RuntimeError):
 
 
 class RuntimeDatabaseService:
-    SUCCESS_MESSAGE = "Foto local actualizada correctamente."
+    SUCCESS_MESSAGE = "Se ha actualizado la foto local desde las bases SQLite centrales."
+    STARTUP_USING_CURRENT_MESSAGE = "Usando última foto local disponible."
+    STARTUP_CENTRAL_NEWER_MESSAGE = "Se detectó una SQLite central más reciente. Creando nueva foto local."
     WARNING_MESSAGE = "No se pudo actualizar la foto local. Se usará la última foto disponible."
     ERROR_MESSAGE = "No se pudo preparar ninguna foto local de datos."
     INFO_FILE = "snapshot_info.txt"
@@ -54,8 +56,15 @@ class RuntimeDatabaseService:
         return self._resolve_current_snapshot_dir() is not None
 
     def prepare_runtime_databases(self, force: bool = False) -> tuple[bool, list[str]]:
-        del force  # Se conserva por compatibilidad de llamadas existentes.
         try:
+            current = self._resolve_current_snapshot_dir()
+            if not force and current is not None and not self.central_sqlite_is_newer_than_snapshot(current):
+                logger.info("Arranque: SQLite central más reciente=no. %s", self.STARTUP_USING_CURRENT_MESSAGE)
+                return True, []
+            if not force and current is not None:
+                logger.info("Arranque: SQLite central más reciente=sí. %s", self.STARTUP_CENTRAL_NEWER_MESSAGE)
+            elif not force:
+                logger.info("Arranque: no hay snapshot local activo. Creando foto local desde SQLite central.")
             snapshot_dir = self.create_new_snapshot()
             self.activate_snapshot(snapshot_dir)
             self.cleanup_old_snapshots(keep=3)
@@ -91,6 +100,8 @@ class RuntimeDatabaseService:
                 logger.info("Copiando base SQLite a snapshot: %s -> %s", source, destination)
                 if not source.exists():
                     raise FileNotFoundError(f"No se encontró la base central: {source}")
+                if source.stat().st_size <= 0:
+                    raise RuntimeError(f"Base central vacía o inválida: {source}")
                 shutil.copy2(source, destination)
             self._write_snapshot_info(snapshot_dir)
             return snapshot_dir
@@ -129,6 +140,24 @@ class RuntimeDatabaseService:
             except ValueError:
                 continue
         return {"timestamp": raw_timestamp, "label": label, "path": str(snapshot_dir)}
+
+    def central_sqlite_is_newer_than_snapshot(self, snapshot_dir: Path | None = None) -> bool:
+        """Compare only file timestamps; do not open SQLite databases during startup."""
+        snapshot_dir = snapshot_dir or self._resolve_current_snapshot_dir()
+        if snapshot_dir is None:
+            logger.info("Arranque: SQLite central más reciente=sí (no hay snapshot).")
+            return True
+        for db_name in SQLITE_DATABASES:
+            central = self.central_dir / db_name
+            snapshot = snapshot_dir / db_name
+            if not central.exists() or not snapshot.exists():
+                logger.info("Arranque: SQLite central más reciente=sí (falta archivo). db=%s", db_name)
+                return True
+            if central.stat().st_mtime > snapshot.stat().st_mtime + 0.001:
+                logger.info("Arranque: SQLite central más reciente=sí. db=%s central_mtime=%s snapshot_mtime=%s", db_name, central.stat().st_mtime, snapshot.stat().st_mtime)
+                return True
+        logger.info("Arranque: SQLite central más reciente=no.")
+        return False
 
     def cleanup_old_snapshots(self, keep: int = 3) -> None:
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
