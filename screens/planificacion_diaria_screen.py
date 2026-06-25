@@ -1254,11 +1254,16 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self._btn_actualizar_foto.configure(state="normal", text="Actualizar foto local")
         ok = bool(result.get("ok"))
         if not ok:
-            messagebox.showwarning(
-                "Actualizar foto local",
-                "Resultado final: no se pudo actualizar completamente la foto local. Revisa el log.",
-                parent=self,
-            )
+            if result.get("error_type") == "runtime_databases_locked":
+                locked = ", ".join(result.get("locked_databases", [])) or "desconocidas"
+                message = (
+                    "No se pudo actualizar la foto local porque hay bases de datos en uso.\n"
+                    "Cierre las pantallas abiertas o reinicie la aplicación y vuelva a intentarlo.\n"
+                    f"Bases bloqueadas: {locked}"
+                )
+            else:
+                message = "Resultado final: no se pudo actualizar completamente la foto local. Revisa el log."
+            messagebox.showwarning("Actualizar foto local", message, parent=self)
         else:
             messagebox.showinfo("Actualizar foto local", "Resultado final: la foto local se actualizó correctamente.", parent=self)
         self._refresh_snapshot_info_label()
