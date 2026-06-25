@@ -187,10 +187,17 @@ class LegacySyncService:
         if not setting:
             return False, "Configuración no encontrada"
         mode = self._normalize_mode(str(setting.get("Modo", "REEMPLAZAR_TABLA")))
-        if self.setting_targets_central_sqlite(setting) and mode != "REEMPLAZAR_TABLA":
-            msg = self._central_sqlite_block_error(setting, mode)
+        if mode == "PLANIFICACION_HOY_EN_ADELANTE":
+            if self.setting_targets_central_sqlite(setting):
+                msg = self._central_sqlite_block_error(setting, mode)
+                self.repository.update_sync_result(setting_id, False, "Operación bloqueada por seguridad", msg)
+                return False, msg
+            return self.sync_planificacion_hoy_en_adelante(setting_id)
+        if mode == "REEMPLAZAR_TABLA":
+            ok, message, metrics = self.safe_sync_table(setting)
             end = datetime.utcnow().isoformat(timespec="seconds")
-            self.repository.update_sync_result(setting_id, False, "Operación bloqueada por seguridad", msg)
+            err = "" if ok else str(metrics.get("Error") or message)
+            self.repository.update_sync_result(setting_id, ok, message, err or None)
             self.repository.add_log(
                 {
                     "SettingId": setting_id,
@@ -201,77 +208,59 @@ class LegacySyncService:
                     "SqliteTable": setting["SqliteTable"],
                     "Inicio": start,
                     "Fin": end,
-                    "Ok": 0,
-                    "FilasExportadas": 0,
-                    "FilasImportadas": 0,
-                    "Mensaje": "Operación bloqueada por seguridad",
-                    "Error": msg,
+                    "Ok": 1 if ok else 0,
+                    "FilasExportadas": metrics.get("FilasExportadas", 0),
+                    "FilasImportadas": metrics.get("FilasImportadas", 0),
+                    "Mensaje": message,
+                    "Error": err,
                     "ModoUsado": mode,
-                    "TablaDestinoExistia": 0,
-                    "TablaDestinoCreada": 0,
+                    "TablaDestinoExistia": 1 if metrics.get("TablaDestinoExistia") else 0,
+                    "TablaDestinoCreada": 1 if metrics.get("TablaDestinoCreada") else 0,
                 }
             )
-            return False, msg
-        if mode == "PLANIFICACION_HOY_EN_ADELANTE":
-            return self.sync_planificacion_hoy_en_adelante(setting_id)
-        ok, message, csv_path, exported = self._run_export(setting_id)
-        imported = 0
-        err = None
-        table_existed = False
-        table_created = False
-        if ok and csv_path:
-            try:
-                if mode == "REEMPLAZAR_TABLA":
-                    imported, table_existed, table_created = self.safe_replace_table_from_csv(
-                        csv_path=csv_path,
-                        sqlite_path=Path(setting["SqlitePath"]),
-                        table_name=setting["SqliteTable"],
-                        allow_empty=bool(int(setting.get("AllowEmpty", 0) or 0)),
-                    )
-                else:
-                    imported, table_existed, table_created = self._import_csv_to_sqlite(
-                        csv_path=csv_path,
-                        sqlite_path=Path(setting["SqlitePath"]),
-                        table_name=setting["SqliteTable"],
-                        mode=mode,
-                    )
-                base_message = f"Exportados={exported} Importados={imported}"
-                if mode == "REEMPLAZAR_TABLA":
-                    base_message = (
-                        f"{base_message}. Sync segura/staging OK: CSV validado, staging creada/importada, "
-                        "tabla real reemplazada y backup eliminado"
-                    )
-                if not table_existed:
-                    message = f"{base_message}. La tabla destino no existía. Se ha creado correctamente."
-                else:
-                    message = base_message
-            except Exception as exc:
-                ok = False
-                err = str(exc)
-                message = "Error importando CSV en SQLite"
-        end = datetime.utcnow().isoformat(timespec="seconds")
-        self.repository.update_sync_result(setting_id, ok, message, err)
-        self.repository.add_log(
-            {
-                "SettingId": setting_id,
-                "Nombre": setting["Nombre"],
-                "AccessPath": setting["AccessPath"],
-                "AccessTable": setting["AccessTable"],
-                "SqlitePath": setting["SqlitePath"],
-                "SqliteTable": setting["SqliteTable"],
-                "Inicio": start,
-                "Fin": end,
-                "Ok": 1 if ok else 0,
-                "FilasExportadas": exported,
-                "FilasImportadas": imported,
-                "Mensaje": message,
-                "Error": err or "",
-                "ModoUsado": self._normalize_mode(str(setting.get("Modo", "REEMPLAZAR_TABLA"))),
-                "TablaDestinoExistia": 1 if table_existed else 0,
-                "TablaDestinoCreada": 1 if table_created else 0,
-            }
-        )
-        return ok, message if ok else f"{message}. {err or ''}".strip()
+            return ok, message
+        return False, "Modo no soportado todavía"
+
+    def safe_sync_table(self, setting: dict[str, Any]) -> tuple[bool, str, dict]:
+        """Synchronize a legacy Access table via CSV and local staging SQLite."""
+        metrics: dict[str, Any] = {
+            "FilasExportadas": 0,
+            "FilasImportadas": 0,
+            "ModoUsado": self._normalize_mode(str(setting.get("Modo", "REEMPLAZAR_TABLA"))),
+            "TablaDestinoExistia": False,
+            "TablaDestinoCreada": False,
+        }
+        setting_id = int(setting.get("Id") or 0)
+        table_name = str(setting.get("SqliteTable", "")).strip()
+        target_sqlite_path = Path(str(setting.get("SqlitePath", "")))
+        allow_empty = bool(int(setting.get("AllowEmpty", 0) or 0))
+        logger.info("Inicio safe sync legacy=%s tabla=%s destino=%s", setting.get("Nombre", ""), table_name, target_sqlite_path)
+        try:
+            self._validate_identifier(table_name)
+            ok, export_msg, csv_path, exported = self._run_export(setting_id)
+            metrics["FilasExportadas"] = exported
+            if not ok or not csv_path:
+                raise RuntimeError(export_msg)
+            logger.info("CSV generado tabla=%s path=%s filas_exportadas=%s", table_name, csv_path, exported)
+            csv_info = self._validate_csv_for_sync(csv_path, allow_empty=allow_empty)
+            logger.info("CSV validado tabla=%s columnas=%s filas=%s", table_name, csv_info["columns"], csv_info["rows"])
+            staging_dir = self.temp_dir / "staging"
+            staging_dir.mkdir(parents=True, exist_ok=True)
+            staging_sqlite_path = staging_dir / f"{table_name}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}.sqlite"
+            staging_info = self._import_csv_to_staging_sqlite(csv_path, staging_sqlite_path, table_name)
+            logger.info("SQLite staging creada tabla=%s path=%s", table_name, staging_sqlite_path)
+            logger.info("Filas importadas en staging tabla=%s filas=%s", table_name, staging_info["rows"])
+            staging_validation = self._validate_staging_table(staging_sqlite_path, table_name, allow_empty=allow_empty)
+            logger.info("Staging validada tabla=%s filas=%s columnas=%s", table_name, staging_validation["rows"], staging_validation["columns"])
+            replace_info = self._replace_table_from_staging(staging_sqlite_path, target_sqlite_path, table_name, allow_empty=allow_empty)
+            metrics.update(replace_info)
+            metrics["FilasImportadas"] = int(staging_validation["rows"])
+            message = f"Sincronización segura completada. Exportados={exported} Importados={metrics['FilasImportadas']}"
+            return True, message, metrics
+        except Exception as exc:
+            logger.exception("Sincronización segura cancelada. La tabla anterior se ha conservado. tabla=%s", table_name)
+            metrics["Error"] = str(exc)
+            return False, "Sincronización cancelada. La tabla anterior se ha conservado.", metrics
 
     def sync_active_settings(self) -> list[tuple[int, bool, str]]:
         results = []
@@ -818,6 +807,148 @@ class LegacySyncService:
             )
             conn.commit()
         return len(data_rows), table_existed, True
+
+    def _validate_csv_for_sync(self, csv_path: Path, allow_empty: bool = False) -> dict[str, Any]:
+        """Validate a CSV before it can be imported into staging."""
+        csv_path = Path(csv_path)
+        if not csv_path.exists():
+            raise ValueError(f"CSV no existe: {csv_path}")
+        if csv_path.stat().st_size <= 0:
+            raise ValueError("CSV vacío: archivo sin contenido")
+        rows = self._read_csv_rows(csv_path)
+        if not rows:
+            raise ValueError("CSV vacío: falta cabecera")
+        header = self._sanitize_headers(rows[0])
+        if not header or any(not c.strip() for c in header):
+            raise ValueError("CSV inválido: cabecera sin columnas válidas")
+        for column in header:
+            self.quote_identifier(column)
+        data_rows = rows[1:]
+        if not data_rows and not allow_empty:
+            raise ValueError("CSV sin filas de datos: AllowEmpty no está habilitado")
+        return {"columns": header, "rows": len(data_rows)}
+
+    def _import_csv_to_staging_sqlite(self, csv_path: Path, staging_sqlite_path: Path, table_name: str) -> dict[str, Any]:
+        """Create a local staging SQLite and import all CSV rows into it."""
+        self._validate_identifier(table_name)
+        csv_info = self._validate_csv_for_sync(csv_path, allow_empty=True)
+        rows = self._read_csv_rows(csv_path)
+        header = list(csv_info["columns"])
+        data_rows = rows[1:]
+        staging_sqlite_path = Path(staging_sqlite_path)
+        staging_sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        if staging_sqlite_path.exists():
+            staging_sqlite_path.unlink()
+        table = self.quote_identifier(table_name)
+        col_defs = ", ".join(f"{self.quote_identifier(c)} TEXT" for c in header)
+        columns = ", ".join(self.quote_identifier(c) for c in header)
+        placeholders = ",".join(["?"] * len(header))
+        normalized_rows = [tuple(r[: len(header)] + [""] * (len(header) - len(r))) for r in data_rows]
+        with sqlite3.connect(staging_sqlite_path, timeout=30) as conn:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute(f"CREATE TABLE {table} ({col_defs})")
+            conn.executemany(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", normalized_rows)
+            conn.commit()
+        return {"columns": header, "rows": len(normalized_rows), "path": str(staging_sqlite_path)}
+
+    def _validate_staging_table(self, staging_sqlite_path: Path, table_name: str, allow_empty: bool = False) -> dict[str, Any]:
+        """Validate the staging table before touching the real destination table."""
+        self._validate_identifier(table_name)
+        staging_sqlite_path = Path(staging_sqlite_path)
+        if not staging_sqlite_path.exists():
+            raise ValueError(f"SQLite staging no existe: {staging_sqlite_path}")
+        with sqlite3.connect(staging_sqlite_path, timeout=30) as conn:
+            if not self._table_exists(conn, table_name):
+                raise ValueError(f"Tabla staging no existe: {table_name}")
+            columns = self._table_columns(conn, table_name)
+            if not columns:
+                raise ValueError("Tabla staging sin columnas")
+            rows = self._count_rows(conn, table_name)
+            if rows <= 0 and not allow_empty:
+                raise ValueError("Tabla staging sin registros: AllowEmpty no está habilitado")
+            return {"columns": columns, "rows": rows}
+
+    def _replace_table_from_staging(
+        self,
+        staging_sqlite_path: Path,
+        target_sqlite_path: Path,
+        table_name: str,
+        allow_empty: bool = False,
+    ) -> dict[str, Any]:
+        """Safely swap a validated staging table into the target SQLite."""
+        self._validate_identifier(table_name)
+        staging_sqlite_path = Path(staging_sqlite_path)
+        target_sqlite_path = Path(target_sqlite_path)
+        target_sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S%f")
+        backup_name = f"__backup_{table_name}_{timestamp}"
+        incoming_name = f"__incoming_{table_name}_{timestamp}"
+        table = self.quote_identifier(table_name)
+        backup = self.quote_identifier(backup_name)
+        incoming = self.quote_identifier(incoming_name)
+        logger.info("SQLite destino detectada path=%s tabla=%s central=%s", target_sqlite_path, table_name, is_central_sqlite_path(target_sqlite_path))
+        staging_validation = self._validate_staging_table(staging_sqlite_path, table_name, allow_empty=allow_empty)
+        if int(staging_validation["rows"]) <= 0 and not allow_empty:
+            raise ValueError("Incoming bloqueada: staging sin registros")
+        with sqlite3.connect(target_sqlite_path, timeout=30) as conn:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            table_existed = self._table_exists(conn, table_name)
+            previous_count = self._count_rows(conn, table_name) if table_existed else 0
+            logger.info("Tabla real anterior tabla=%s existe=%s registros_anteriores=%s", table_name, table_existed, previous_count)
+            conn.execute(f"DROP TABLE IF EXISTS {incoming}")
+            conn.execute("ATTACH DATABASE ? AS staging", (str(staging_sqlite_path),))
+            try:
+                conn.execute(f"CREATE TABLE {incoming} AS SELECT * FROM staging.{table}")
+            finally:
+                conn.execute("DETACH DATABASE staging")
+            incoming_count = self._count_rows(conn, incoming_name)
+            incoming_columns = self._table_columns(conn, incoming_name)
+            logger.info("Incoming creada tabla=%s incoming=%s registros_incoming=%s columnas=%s", table_name, incoming_name, incoming_count, incoming_columns)
+            if not incoming_columns:
+                conn.execute(f"DROP TABLE IF EXISTS {incoming}")
+                conn.commit()
+                raise ValueError("Incoming sin columnas")
+            if incoming_count <= 0 and not allow_empty:
+                conn.execute(f"DROP TABLE IF EXISTS {incoming}")
+                conn.commit()
+                raise ValueError("Incoming sin registros: tabla real anterior conservada")
+            conn.commit()
+            try:
+                conn.execute("BEGIN")
+                if table_existed:
+                    conn.execute(f"DROP TABLE IF EXISTS {backup}")
+                    conn.execute(f"ALTER TABLE {table} RENAME TO {backup}")
+                    logger.info("Backup temporal creado tabla=%s backup=%s", table_name, backup_name)
+                conn.execute(f"ALTER TABLE {incoming} RENAME TO {table}")
+                final_count = self._count_rows(conn, table_name)
+                if final_count <= 0 and not allow_empty:
+                    raise ValueError("Conteo final inválido: tabla real quedaría vacía")
+                if table_existed:
+                    conn.execute(f"DROP TABLE {backup}")
+                    logger.info("Backup eliminado tabla=%s backup=%s", table_name, backup_name)
+                conn.commit()
+                logger.info("Tabla real sustituida tabla=%s registros_finales=%s", table_name, final_count)
+                return {
+                    "TablaDestinoExistia": table_existed,
+                    "TablaDestinoCreada": not table_existed,
+                    "RegistrosAnteriores": previous_count,
+                    "RegistrosIncoming": incoming_count,
+                    "RegistrosFinales": final_count,
+                }
+            except Exception:
+                logger.exception("Rollback safe sync tabla=%s; intentando conservar/restaurar tabla anterior", table_name)
+                conn.rollback()
+                if not self._table_exists(conn, table_name) and self._table_exists(conn, backup_name):
+                    conn.execute(f"ALTER TABLE {backup} RENAME TO {table}")
+                    conn.commit()
+                    logger.info("Tabla anterior restaurada tabla=%s desde backup=%s", table_name, backup_name)
+                if self._table_exists(conn, incoming_name):
+                    conn.execute(f"DROP TABLE IF EXISTS {incoming}")
+                    conn.commit()
+                logger.info("Tabla anterior conservada tabla=%s", table_name)
+                raise
 
     def safe_replace_table_from_csv(
         self,

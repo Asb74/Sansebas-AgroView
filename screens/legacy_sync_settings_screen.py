@@ -141,10 +141,6 @@ class LegacySyncSettingsScreen(ttk.Frame):
         sid = self._selected_id()
         if not sid:
             return
-        setting = next((r for r in self.service.get_settings() if int(r["Id"]) == sid), None)
-        if setting and self.service.setting_targets_central_sqlite(setting):
-            self._show_central_sqlite_block_warning()
-            return
         self._run_update_action("Actualizar seleccionada", lambda: self._sync_selected_worker(sid), self._format_single_sync_result)
 
     def _sync_active(self) -> None:
