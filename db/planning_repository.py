@@ -90,15 +90,30 @@ def normalizar_numero(valor: Any) -> float:
     except Exception:
         return 0.0
 
+def _conversion_caller_name() -> str:
+    stack = inspect.stack()
+    for frame in stack[2:8]:
+        if frame.function not in {
+            "_conversion_caller_name",
+            "_log_float_conversion_diagnostic",
+            "_diagnostic_float",
+        }:
+            return frame.function
+    return "<unknown>"
+
+
 def _log_float_conversion_diagnostic(table_name: str, column_name: str, original_value: Any, normalized_value: Any = None) -> None:
     logger.debug(
-        "[DIAG float_conversion.before] tabla=%s columna=%s valor_original=%r tipo_dato=%s valor_normalizado=%r",
+        "[DIAG float_conversion.before] metodo=%s tabla=%s columna=%s valor_original=%s valor_repr=%r tipo_dato=%s valor_normalizado=%r",
+        _conversion_caller_name(),
         table_name,
         column_name,
+        original_value,
         original_value,
         type(original_value).__name__,
         normalized_value,
     )
+
 
 def _diagnostic_float(value: Any, table_name: str, column_name: str, normalized_value: Any = None) -> float:
     _log_float_conversion_diagnostic(table_name, column_name, value, normalized_value)
@@ -106,9 +121,11 @@ def _diagnostic_float(value: Any, table_name: str, column_name: str, normalized_
         return float(value)
     except Exception:
         logger.exception(
-            "[DIAG float_conversion.error] tabla=%s columna=%s valor_original=%r tipo_dato=%s valor_normalizado=%r",
+            "[DIAG float_conversion.error] metodo=%s tabla=%s columna=%s valor_original=%s valor_repr=%r tipo_dato=%s valor_normalizado=%r",
+            _conversion_caller_name(),
             table_name,
             column_name,
+            value,
             value,
             type(value).__name__,
             normalized_value,
@@ -2215,12 +2232,9 @@ class PlanningRepository:
         def _clean(value: Any) -> str:
             return str(value or "").strip()
 
-        try:
-            kg_campo_raw = row.get("Kg campo", row.get("Kg campo origen", 0)) or 0
-            kg_campo_normalized = str(kg_campo_raw).strip().replace(",", ".") if kg_campo_raw is not None else None
-            kg_campo = round(_diagnostic_float(kg_campo_raw, "Stock campo calculado", "Kg campo", kg_campo_normalized), 2)
-        except (TypeError, ValueError):
-            kg_campo = 0.0
+        kg_campo_raw = row.get("Kg campo", row.get("Kg campo origen", 0)) or 0
+        kg_campo_normalized = str(kg_campo_raw).strip().replace(",", ".") if kg_campo_raw is not None else None
+        kg_campo = round(_diagnostic_float(kg_campo_raw, "Stock campo calculado", "Kg campo", kg_campo_normalized), 2)
         return (
             _clean(row.get("Boleta")),
             _clean(row.get("Fecha carga", row.get("FechaCarga", ""))),
