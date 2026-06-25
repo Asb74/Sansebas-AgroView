@@ -16,6 +16,9 @@ from services.runtime_database_service import RuntimeDatabaseService
 
 
 VALID_MODES = {"REEMPLAZAR_TABLA", "CREAR_O_REEMPLAZAR", "PLANIFICACION_HOY_EN_ADELANTE"}
+VALID_FILTER_MODES = {"NINGUNO", "DIRECTO", "PREFIJO_TEXTO", "PREFIJO_NUMERICO", "RELACION", "PREFIJO"}
+VALID_FILTER_TYPES = {"TEXTO", "ENTERO"}
+VALID_REPLACE_MODES = {"TABLA_COMPLETA", "PARTICION", "SOLO_INSERTAR", "MERGE"}
 logger = logging.getLogger(__name__)
 
 
@@ -116,6 +119,24 @@ class LegacySyncService:
                 "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
                 "Activa": 1,
             },
+            {
+                "Nombre": "DatosCalibre",
+                "AccessTable": "DatosCalibre",
+                "AccessPath": access_fruta,
+                "SqliteTable": "DatosCalibre",
+                "SqlitePath": str(Path(CENTRAL_SQLITE_DIR) / "DBfruta.sqlite"),
+                "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
+                "Activa": 1,
+            },
+            {
+                "Nombre": "Partidas",
+                "AccessTable": "Partidas",
+                "AccessPath": access_fruta,
+                "SqliteTable": "Partidas",
+                "SqlitePath": str(Path(CENTRAL_SQLITE_DIR) / "DBfruta.sqlite"),
+                "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
+                "Activa": 1,
+            },
         ]
         for default in defaults:
             sqlite_file = Path(default["SqlitePath"]).name.lower()
@@ -133,6 +154,136 @@ class LegacySyncService:
             self.repository.add_setting(data)
             settings.append(data)
             logger.info("Configuración legacy creada automáticamente: %s", default["Nombre"])
+
+
+    def list_sqlite_tables(self, sqlite_path: str) -> list[str]:
+        path = Path(str(sqlite_path or "").strip())
+        if not path.exists():
+            raise ValueError("SQLite no existe")
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").fetchall()
+        tables = [str(r[0]) for r in rows]
+        logger.info("Tablas SQLite cargadas path=%s total=%s", path, len(tables))
+        return tables
+
+    def list_sqlite_columns(self, sqlite_path: str, table_name: str) -> list[dict[str, Any]]:
+        path = Path(str(sqlite_path or "").strip())
+        table = str(table_name or "").strip()
+        if not path.exists():
+            raise ValueError("SQLite no existe")
+        self._validate_identifier(table)
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            rows = conn.execute(f"PRAGMA table_info({self.quote_identifier(table)})").fetchall()
+        columns = [{"name": r[1], "type": r[2], "notnull": r[3], "pk": r[5]} for r in rows]
+        logger.info("Campos SQLite cargados path=%s tabla=%s total=%s", path, table, len(columns))
+        return columns
+
+    def list_access_tables(self, access_path: str) -> list[str]:
+        rows = self._run_access_schema_script(access_path, "tables")
+        tables = sorted({row[0] for row in rows if row and row[0]})
+        logger.info("Tablas Access cargadas path=%s total=%s", access_path, len(tables))
+        return tables
+
+    def list_access_columns(self, access_path: str, table_name: str) -> list[dict[str, Any]]:
+        table = str(table_name or "").strip()
+        if not table:
+            raise ValueError("Tabla Access obligatoria")
+        rows = self._run_access_schema_script(access_path, "columns", table)
+        columns = [{"name": r[0], "type": r[1] if len(r) > 1 else ""} for r in rows if r]
+        logger.info("Campos Access cargados path=%s tabla=%s total=%s", access_path, table, len(columns))
+        return columns
+
+    def _run_access_schema_script(self, access_path: str, mode: str, table_name: str = "") -> list[list[str]]:
+        mdb_path = Path(str(access_path or "").strip()).resolve()
+        if not mdb_path.exists():
+            raise ValueError("AccessPath no existe")
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        out_path = (self.temp_dir / f"schema_{mode}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}.txt").resolve()
+        script_path = (self.temp_dir / "introspect_access_schema.vbs").resolve()
+        script = """Option Explicit
+Dim dbPath, mode, tableName, outputPath
+dbPath=WScript.Arguments(0): mode=WScript.Arguments(1): tableName=WScript.Arguments(2): outputPath=WScript.Arguments(3)
+Dim conn, fso, out, rs, provider
+Set fso=CreateObject("Scripting.FileSystemObject")
+Set out=fso.OpenTextFile(outputPath,2,True)
+Set conn=CreateObject("ADODB.Connection")
+For Each provider In Array("Microsoft.Jet.OLEDB.4.0","Microsoft.ACE.OLEDB.12.0","Microsoft.ACE.OLEDB.16.0")
+  On Error Resume Next
+  conn.Open "Provider=" & provider & ";Data Source=" & dbPath & ";Mode=Read;"
+  If Err.Number=0 Then Exit For
+  Err.Clear
+Next
+If conn.State<>1 Then out.WriteLine "__ERROR__|No se pudo abrir Access en modo lectura": out.Close: WScript.Quit 2
+If LCase(mode)="tables" Then
+  Set rs=conn.OpenSchema(20)
+  Do Until rs.EOF
+    If UCase(CStr(rs.Fields("TABLE_TYPE").Value))="TABLE" Then out.WriteLine CStr(rs.Fields("TABLE_NAME").Value)
+    rs.MoveNext
+  Loop
+  rs.Close
+Else
+  Set rs=CreateObject("ADODB.Recordset")
+  On Error Resume Next
+  rs.Open "SELECT TOP 0 * FROM [" & Replace(tableName,"]","]]" ) & "]", conn, 3, 1
+  If Err.Number<>0 Then out.WriteLine "__ERROR__|" & Err.Description: out.Close: conn.Close: WScript.Quit 3
+  On Error Goto 0
+  Dim i
+  For i=0 To rs.Fields.Count-1
+    out.WriteLine rs.Fields(i).Name & "|" & CStr(rs.Fields(i).Type)
+  Next
+  rs.Close
+End If
+conn.Close: out.Close
+"""
+        script_path.write_text(script, encoding="utf-8")
+        command = [self.get_cscript_path(), "//nologo", self._to_windows_path(script_path), self._to_windows_path(mdb_path), mode, table_name, self._to_windows_path(out_path)]
+        result = subprocess.run(command, capture_output=True, text=True, encoding="cp1252", timeout=60)
+        if result.returncode != 0:
+            raise RuntimeError(f"No se pudo analizar Access. Código={result.returncode}\n{result.stdout}\n{result.stderr}")
+        lines = out_path.read_text(encoding="cp1252", errors="replace").splitlines() if out_path.exists() else []
+        if lines and lines[0].startswith("__ERROR__|"):
+            raise RuntimeError(lines[0].split("|", 1)[1])
+        return [line.split("|") for line in lines if line.strip()]
+
+    def suggest_filter(self, columns: list[str] | list[dict[str, Any]]) -> dict[str, Any]:
+        names = [str(c.get("name") if isinstance(c, dict) else c) for c in columns]
+        rules = [("Campaña", "DIRECTO", "TEXTO"), ("CAMPAÑA", "DIRECTO", "ENTERO"), ("IdPalet", "PREFIJO_NUMERICO", "ENTERO"), ("IdPartidaP", "PREFIJO_TEXTO", "TEXTO")]
+        for field, mode, typ in rules:
+            if field in names:
+                logger.info("Filtro sugerido campo=%s modo=%s tipo=%s", field, mode, typ)
+                return {"FiltroActivo": 1, "FiltroModo": mode, "FiltroCampo": field, "FiltroTipo": typ}
+        logger.info("Filtro sugerido: sin coincidencias")
+        return {"FiltroActivo": 0, "FiltroModo": "NINGUNO", "FiltroCampo": "", "FiltroTipo": "TEXTO"}
+
+    def preview_configuration(self, data: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(data)
+        payload["FiltroCampanaModo"] = str(payload.get("FiltroModo") or payload.get("FiltroCampanaModo") or "NINGUNO").replace("PREFIJO_NUMERICO", "PREFIJO").replace("PREFIJO_TEXTO", "PREFIJO")
+        payload["FiltroCampanaCampo"] = payload.get("FiltroCampo") or payload.get("FiltroCampanaCampo", "")
+        payload["FiltroCampanaTipo"] = payload.get("FiltroTipo") or payload.get("FiltroCampanaTipo", "TEXTO")
+        payload["FiltroCampanaValorOrigen"] = payload.get("FiltroValorOrigen") or payload.get("FiltroCampanaValorOrigen", "CAMPANA_ACTIVA")
+        payload["FiltroCampanaValorFijo"] = payload.get("FiltroValorFijo") or payload.get("FiltroCampanaValorFijo", "")
+        campana = ""
+        sql = f"SELECT * FROM {self._quote_access_identifier(str(payload.get('AccessTable','')))}"
+        try:
+            ctx = self._build_campaign_filter_context(payload)
+            if ctx:
+                sql = ctx["access_sql"]
+                campana = str(ctx["campana"])
+        except Exception as exc:
+            sql = f"No se pudo generar SQL filtrado: {exc}"
+        estimated_rows = None
+        if Path(str(payload.get("AccessPath", ""))).exists() and sql.upper().startswith("SELECT * FROM "):
+            try:
+                count_sql = re.sub(r"^SELECT \*", "SELECT COUNT(*) AS Total", sql, count=1, flags=re.IGNORECASE)
+                ok, _msg, csv_path, _rows = self._run_export_custom({**payload, "Nombre": "preview"}, count_sql, output_tag="preview_count")
+                if ok and csv_path and csv_path.exists():
+                    rows = self._read_csv_rows(csv_path)
+                    if len(rows) > 1 and rows[1]:
+                        estimated_rows = rows[1][0]
+            except Exception:
+                logger.exception("No se pudo estimar filas de la configuración legacy")
+        logger.info("Configuración probada nombre=%s sql=%s filas_estimadas=%s", payload.get("Nombre", ""), sql, estimated_rows)
+        return {"access_sql": sql, "campana": campana, "estimated_rows": estimated_rows, "sqlite_destino": f"{payload.get('SqlitePath','')}:{payload.get('SqliteTable','')}", "reemplazo_modo": payload.get("ReemplazoModo", "TABLA_COMPLETA"), "crear_snapshot": int(payload.get("CrearSnapshotDespues", 1) or 0) == 1, "limpiar_cache": int(payload.get("LimpiarCacheDespues", 1) or 0) == 1}
 
     def get_settings(self) -> list[dict[str, Any]]:
         return self.repository.get_settings()
@@ -602,6 +753,12 @@ class LegacySyncService:
             raise ValueError("SqliteTable es obligatorio")
         if self._normalize_mode(str(data.get("Modo", "REEMPLAZAR_TABLA"))) not in VALID_MODES:
             raise ValueError("Modo no válido")
+        if str(data.get("FiltroModo", data.get("FiltroCampanaModo", "NINGUNO"))).upper() not in VALID_FILTER_MODES:
+            raise ValueError("FiltroModo no válido")
+        if str(data.get("FiltroTipo", data.get("FiltroCampanaTipo", "TEXTO"))).upper() not in VALID_FILTER_TYPES:
+            raise ValueError("FiltroTipo no válido")
+        if str(data.get("ReemplazoModo", "TABLA_COMPLETA")).upper() not in VALID_REPLACE_MODES:
+            raise ValueError("ReemplazoModo no válido")
         self._validate_identifier(str(data.get("SqliteTable")))
 
     @staticmethod
@@ -704,6 +861,8 @@ class LegacySyncService:
             ("Loteado", "Loteado", "bdloteado.sqlite", "Loteado"),
             ("Lote", "Lote", "bdloteado.sqlite", "Lote"),
             ("PesosFres", "PesosFres", "DBfruta.sqlite", "PesosFres"),
+            ("DatosCalibre", "DatosCalibre", "DBfruta.sqlite", "DatosCalibre"),
+            ("Partidas", "Partidas", "DBfruta.sqlite", "Partidas"),
         ]
         settings = self.repository.get_settings()
         updated = 0
@@ -1051,13 +1210,20 @@ class LegacySyncService:
         staging_sqlite_path: Path,
         target_sqlite_path: Path,
         table_name: str,
-        partition_ctx: dict[str, Any],
+        partition_ctx: dict[str, Any] | str,
+        campana: Any | None = None,
     ) -> dict[str, Any]:
         """Safely replace only the campaign partition configured for this table."""
         self._validate_identifier(table_name)
-        delete_where = str(partition_ctx.get("delete_where") or "").strip()
-        delete_params = tuple(partition_ctx.get("delete_params") or ())
-        mode = str(partition_ctx.get("mode") or "")
+        if isinstance(partition_ctx, str):
+            self._validate_identifier(partition_ctx)
+            delete_where = f"{self.quote_identifier(partition_ctx)} = ?"
+            delete_params = (campana,)
+            mode = "DIRECTO"
+        else:
+            delete_where = str(partition_ctx.get("delete_where") or "").strip()
+            delete_params = tuple(partition_ctx.get("delete_params") or ())
+            mode = str(partition_ctx.get("mode") or "")
         if not delete_where:
             raise ValueError("Condición DELETE destino vacía; destino conservado")
         staging_sqlite_path = Path(staging_sqlite_path)
