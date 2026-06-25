@@ -1,7 +1,9 @@
 import tkinter as tk
+import threading
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from services.legacy_sync_service import LegacySyncService
+from services.update_orchestrator_service import UpdateOrchestratorService
 from widgets.screen_header import ScreenHeader
 
 
@@ -12,6 +14,8 @@ class LegacySyncSettingsScreen(ttk.Frame):
         super().__init__(master, padding=10)
         self.on_back = on_back
         self.service = LegacySyncService()
+        self.update_orchestrator = UpdateOrchestratorService(legacy_sync_service=self.service)
+        self.action_buttons: list[ttk.Button] = []
         self.tree: ttk.Treeview
         self._build_ui()
         self._load()
@@ -30,12 +34,15 @@ class LegacySyncSettingsScreen(ttk.Frame):
         btns.grid(row=2, column=0, sticky="ew")
         actions = [
             ("Añadir", self._add), ("Editar", self._edit), ("Eliminar", self._delete), ("Probar lectura", self._test),
-            ("Actualizar seleccionada", self._sync_selected), ("Actualizar activas", self._sync_active), ("Ver log", self._show_log),
+            ("Actualizar seleccionada", self._sync_selected), ("Actualizar activas", self._sync_active),
+            ("Actualizar foto local", self._update_runtime_snapshot), ("Actualizar todo", self._update_all), ("Ver log", self._show_log),
             ("Copiar comando", self._copy_command),
             ("Crear configuración planificación por defecto", self._create_defaults),
         ]
         for i, (label, cmd) in enumerate(actions):
-            ttk.Button(btns, text=label, command=cmd).grid(row=0, column=i, padx=4, pady=4, sticky="w")
+            button = ttk.Button(btns, text=label, command=cmd)
+            button.grid(row=0, column=i, padx=4, pady=4, sticky="w")
+            self.action_buttons.append(button)
 
     def _load(self) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -133,16 +140,71 @@ class LegacySyncSettingsScreen(ttk.Frame):
         sid = self._selected_id()
         if not sid:
             return
-        ok, msg = self.service.sync_setting(sid)
-        self._load()
-        (messagebox.showinfo if ok else messagebox.showerror)("Sincronización", msg, parent=self)
+        self._run_update_action("Actualizar seleccionada", lambda: self._sync_selected_worker(sid), self._format_single_sync_result)
 
     def _sync_active(self) -> None:
-        results = self.service.sync_active_settings()
+        self._run_update_action("Actualizar tablas legacy activas", self.update_orchestrator.update_legacy_active, self._format_legacy_result)
+
+    def _update_runtime_snapshot(self) -> None:
+        self._run_update_action("Actualizar foto local", self.update_orchestrator.update_runtime_snapshot, self._format_runtime_result)
+
+    def _update_all(self) -> None:
+        self._run_update_action("Actualizar todo", self.update_orchestrator.update_all, self._format_all_result)
+
+    def _sync_selected_worker(self, setting_id: int) -> dict:
+        ok, msg = self.service.sync_setting(setting_id)
+        return {"ok": ok, "message": msg}
+
+    def _run_update_action(self, title: str, action, formatter) -> None:
+        messagebox.showinfo(title, f"Inicio de actualización: {title}.", parent=self)
+        self._set_actions_state("disabled")
+
+        def worker() -> None:
+            result = action()
+            self.after(0, lambda: self._finish_update_action(title, result, formatter))
+
+        threading.Thread(target=worker, name=f"{title}Worker", daemon=True).start()
+
+    def _finish_update_action(self, title: str, result: dict, formatter) -> None:
+        self._set_actions_state("normal")
         self._load()
-        total = len(results)
-        oks = sum(1 for _, ok, _ in results if ok)
-        messagebox.showinfo("Sincronización", f"Actualizadas activas: {oks}/{total}", parent=self)
+        ok, message = formatter(result)
+        (messagebox.showinfo if ok else messagebox.showwarning)(title, message, parent=self)
+
+    def _set_actions_state(self, state: str) -> None:
+        for button in self.action_buttons:
+            button.configure(state=state)
+
+    @staticmethod
+    def _format_single_sync_result(result: dict) -> tuple[bool, str]:
+        ok = bool(result.get("ok"))
+        message = result.get("message", "")
+        if ok:
+            return True, f"Resultado final: actualización seleccionada correcta.\n{message}"
+        return False, f"Resultado final: actualización seleccionada fallida.\n{message}\nRevisa el log."
+
+    @staticmethod
+    def _format_runtime_result(result: dict) -> tuple[bool, str]:
+        ok = bool(result.get("ok"))
+        if ok:
+            return True, "Resultado final: la foto local se actualizó correctamente."
+        return False, "Resultado final: no se pudo actualizar completamente la foto local. Revisa el log."
+
+    @staticmethod
+    def _format_legacy_result(result: dict) -> tuple[bool, str]:
+        ok_count = int(result.get("ok_count", 0))
+        fail_count = int(result.get("fail_count", 0))
+        total = int(result.get("total", ok_count + fail_count))
+        ok = fail_count == 0 and not result.get("error")
+        suffix = "" if ok else "\nHay errores; revisa el log."
+        return ok, f"Resultado final: tablas legacy activas procesadas.\nCorrectos: {ok_count}\nFallidos: {fail_count}\nTotal: {total}{suffix}"
+
+    def _format_all_result(self, result: dict) -> tuple[bool, str]:
+        legacy_ok, legacy_msg = self._format_legacy_result(result.get("legacy", {}))
+        runtime_ok, runtime_msg = self._format_runtime_result(result.get("runtime", {}))
+        ok = legacy_ok and runtime_ok
+        suffix = "" if ok else "\nHay errores; revisa el log."
+        return ok, f"Resultado final: actualización completa.\n\n{legacy_msg}\n\n{runtime_msg}{suffix}"
 
     def _show_log(self) -> None:
         logs = self.service.get_logs(200)

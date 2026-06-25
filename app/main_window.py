@@ -1,4 +1,5 @@
 import tkinter as tk
+import threading
 from tkinter import messagebox, ttk
 
 from screens.boa_comercial_screen import BOAComercialScreen
@@ -14,6 +15,7 @@ from screens.operational_quality_settings_screen import OperationalQualitySettin
 from screens.ranking_cliente_settings_screen import RankingClienteSettingsScreen
 from services.comercial_service import ComercialService
 from services.runtime_database_service import RuntimeDatabaseService
+from services.update_orchestrator_service import UpdateOrchestratorService
 from utils.ui_assets import get_logo
 
 
@@ -39,6 +41,7 @@ class MainWindow(tk.Tk):
         self.current_screen = None
         self.comercial_service = ComercialService()
         self.runtime_db_service = RuntimeDatabaseService()
+        self.update_orchestrator = UpdateOrchestratorService(runtime_database_service=self.runtime_db_service)
         ok, errors = self.runtime_db_service.prepare_runtime_databases()
         if not ok:
             messagebox.showwarning("AgroView", self.runtime_db_service.WARNING_MESSAGE)
@@ -52,6 +55,11 @@ class MainWindow(tk.Tk):
         herramientas.add_command(label="Configuración ranking clientes", command=self.show_ranking_settings)
         herramientas.add_command(label="Planificación diaria", command=self.show_planificacion_diaria)
         herramientas.add_command(label="Actualización tablas legacy", command=self.show_legacy_sync_settings)
+        self.actualizaciones_menu = tk.Menu(herramientas, tearoff=False)
+        self.actualizaciones_menu.add_command(label="Actualizar foto local", command=self.update_runtime_snapshot)
+        self.actualizaciones_menu.add_command(label="Actualizar tablas legacy activas", command=self.update_legacy_active)
+        self.actualizaciones_menu.add_command(label="Actualizar todo", command=self.update_all)
+        herramientas.add_cascade(label="Actualizaciones", menu=self.actualizaciones_menu)
         herramientas.add_command(label="Configuración calidad operativa", command=self.show_operational_quality_settings)
         herramientas.add_command(label="Configuración productiva", command=self.show_production_settings)
         menubar.add_cascade(label="Herramientas", menu=herramientas)
@@ -117,6 +125,57 @@ class MainWindow(tk.Tk):
 
     def show_production_settings(self) -> None:
         self._show_screen(ProductionSettingsScreen(self.container, on_back=self.show_home))
+
+    def update_runtime_snapshot(self) -> None:
+        self._run_update_action("Actualizar foto local", self.update_orchestrator.update_runtime_snapshot, self._format_runtime_result)
+
+    def update_legacy_active(self) -> None:
+        self._run_update_action("Actualizar tablas legacy activas", self.update_orchestrator.update_legacy_active, self._format_legacy_result)
+
+    def update_all(self) -> None:
+        self._run_update_action("Actualizar todo", self.update_orchestrator.update_all, self._format_all_result)
+
+    def _run_update_action(self, title: str, action, formatter) -> None:
+        messagebox.showinfo(title, f"Inicio de actualización: {title}.", parent=self)
+        self._set_update_actions_state("disabled")
+
+        def worker() -> None:
+            result = action()
+            self.after(0, lambda: self._finish_update_action(title, result, formatter))
+
+        threading.Thread(target=worker, name=f"{title}Worker", daemon=True).start()
+
+    def _finish_update_action(self, title: str, result: dict, formatter) -> None:
+        self._set_update_actions_state("normal")
+        ok, message = formatter(result)
+        (messagebox.showinfo if ok else messagebox.showwarning)(title, message, parent=self)
+
+    def _set_update_actions_state(self, state: str) -> None:
+        for index in range(3):
+            self.actualizaciones_menu.entryconfig(index, state=state)
+
+    @staticmethod
+    def _format_runtime_result(result: dict) -> tuple[bool, str]:
+        ok = bool(result.get("ok"))
+        if ok:
+            return True, "Resultado final: la foto local se actualizó correctamente."
+        return False, "Resultado final: no se pudo actualizar completamente la foto local. Revisa el log."
+
+    @staticmethod
+    def _format_legacy_result(result: dict) -> tuple[bool, str]:
+        ok_count = int(result.get("ok_count", 0))
+        fail_count = int(result.get("fail_count", 0))
+        total = int(result.get("total", ok_count + fail_count))
+        ok = fail_count == 0 and not result.get("error")
+        suffix = "" if ok else "\nHay errores; revisa el log."
+        return ok, f"Resultado final: tablas legacy activas procesadas.\nCorrectos: {ok_count}\nFallidos: {fail_count}\nTotal: {total}{suffix}"
+
+    def _format_all_result(self, result: dict) -> tuple[bool, str]:
+        legacy_ok, legacy_msg = self._format_legacy_result(result.get("legacy", {}))
+        runtime_ok, runtime_msg = self._format_runtime_result(result.get("runtime", {}))
+        ok = legacy_ok and runtime_ok
+        suffix = "" if ok else "\nHay errores; revisa el log."
+        return ok, f"Resultado final: actualización completa.\n\n{legacy_msg}\n\n{runtime_msg}{suffix}"
 
     def _show_screen(self, screen: ttk.Frame) -> None:
         if self.current_screen is not None:
