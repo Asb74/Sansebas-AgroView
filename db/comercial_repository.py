@@ -1,9 +1,10 @@
-﻿import logging
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
 
 from config import DB_DIR, DB_PEDIDOS
+from db.connection import get_runtime_database_path
 from db.query_filters import build_pedidos_filters, build_pedidos_where, pedidos_base_where
 
 logger = logging.getLogger(__name__)
@@ -15,8 +16,8 @@ class ComercialRepository:
     TABLE_RANKING_SETTINGS = "RankingClienteSettings"
 
     def __init__(self, db_pedidos: str | None = None, db_fruta: str | None = None) -> None:
-        self.db_pedidos = Path(db_pedidos or (Path(DB_DIR) / DB_PEDIDOS))
-        self.db_fruta = Path(db_fruta or (Path(DB_DIR) / "DBfruta.sqlite"))
+        self.db_pedidos = Path(db_pedidos) if db_pedidos else get_runtime_database_path(DB_PEDIDOS)
+        self.db_fruta = Path(db_fruta) if db_fruta else get_runtime_database_path("DBfruta.sqlite")
         self.db_calc = Path(DB_DIR) / "DBAgroViewCalc.sqlite"
         self._warned_missing_columns: set[str] = set()
         self._calc_price_col: str | None = None

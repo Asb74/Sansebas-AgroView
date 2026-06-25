@@ -6,8 +6,8 @@ from pathlib import Path
 import re
 import sqlite3
 
-from config import DB_DIR, DB_PEDIDOS
-from db.connection import get_connection
+from config import DB_PEDIDOS
+from db.connection import get_connection, get_runtime_database_path
 
 DEFAULT_GENERAL_SETTINGS = {
     "horas_turno": 8.0,
@@ -1088,7 +1088,7 @@ class ProductionSettingsRepository:
             )
 
     def load_mconfecciones_from_dbpedidos(self) -> list[dict]:
-        db_path = Path(DB_DIR) / DB_PEDIDOS
+        db_path = get_runtime_database_path(DB_PEDIDOS)
         if not db_path.exists():
             return []
         with sqlite3.connect(db_path.as_posix()) as conn:

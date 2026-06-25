@@ -5,6 +5,8 @@ from pathlib import Path
 CENTRAL_SQLITE_DIR = r"\\Personal\C\BasesSQLite"
 RUNTIME_SQLITE_DIR = r"C:\Sansebas AgroView\runtime_db"
 RUNTIME_SNAPSHOT_FILE = str(Path(RUNTIME_SQLITE_DIR) / "snapshot_info.txt")
+RUNTIME_SNAPSHOTS_DIR = Path(RUNTIME_SQLITE_DIR) / "snapshots"
+CURRENT_SNAPSHOT_FILE = Path(RUNTIME_SQLITE_DIR) / "current_snapshot.txt"
 
 DB_PEDIDOS = "DBPedidos.sqlite"
 DB_FRUTA = "DBfruta.sqlite"

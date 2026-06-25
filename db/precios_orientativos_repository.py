@@ -1,12 +1,13 @@
-﻿import logging
+import logging
 import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from config import DB_DIR, DB_PEDIDOS
+from config import DB_PEDIDOS
 from db.agroview_calc_repository import AgroviewCalcRepository
+from db.connection import get_runtime_database_path
 from db.query_filters import build_pedidos_filters, build_pedidos_where, pedidos_base_where
 
 logger = logging.getLogger(__name__)
@@ -30,8 +31,8 @@ class PreciosOrientativosRepository:
     }
 
     def __init__(self, db_path: Path | None = None, db_fruta_path: Path | None = None) -> None:
-        self.db_path = db_path or (Path(DB_DIR) / DB_PEDIDOS)
-        self.db_fruta_path = db_fruta_path or (Path(DB_DIR) / "DBfruta.sqlite")
+        self.db_path = db_path or get_runtime_database_path(DB_PEDIDOS)
+        self.db_fruta_path = db_fruta_path or get_runtime_database_path("DBfruta.sqlite")
         self.calc_repo = AgroviewCalcRepository()
         self.calc_repo.initialize()
         logger.info("Ruta DBPedidos.sqlite: %s", self.db_path)

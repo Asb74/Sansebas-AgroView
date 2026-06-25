@@ -3,6 +3,7 @@ import threading
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from services.legacy_sync_service import LegacySyncService
+from services.runtime_database_service import RuntimeDatabaseService
 from services.update_orchestrator_service import UpdateOrchestratorService
 from widgets.screen_header import ScreenHeader
 
@@ -187,16 +188,10 @@ class LegacySyncSettingsScreen(ttk.Frame):
     def _format_runtime_result(result: dict) -> tuple[bool, str]:
         ok = bool(result.get("ok"))
         if ok:
-            return True, "Resultado final: la foto local se actualizó correctamente."
-        if result.get("error_type") == "runtime_databases_locked":
-            locked = ", ".join(result.get("locked_databases", [])) or "desconocidas"
-            return (
-                False,
-                "No se pudo actualizar la foto local porque hay bases de datos en uso.\n"
-                "Cierre las pantallas abiertas o reinicie la aplicación y vuelva a intentarlo.\n"
-                f"Bases bloqueadas: {locked}",
-            )
-        return False, "Resultado final: no se pudo actualizar completamente la foto local. Revisa el log."
+            return True, RuntimeDatabaseService.SUCCESS_MESSAGE
+        if result.get("using_previous_snapshot"):
+            return False, RuntimeDatabaseService.WARNING_MESSAGE
+        return False, RuntimeDatabaseService.ERROR_MESSAGE
 
     @staticmethod
     def _format_legacy_result(result: dict) -> tuple[bool, str]:
@@ -212,13 +207,11 @@ class LegacySyncSettingsScreen(ttk.Frame):
         runtime_ok, runtime_msg = self._format_runtime_result(result.get("runtime", {}))
         ok = legacy_ok and runtime_ok
         if result.get("partial"):
-            locked = ", ".join(result.get("runtime", {}).get("locked_databases", [])) or "desconocidas"
             return (
                 False,
                 "Resultado final: actualización parcial.\n\n"
                 f"{legacy_msg}\n\n"
-                "Las tablas centrales se actualizaron, pero no se pudo refrescar la foto local porque hay bases en uso.\n"
-                f"Bases bloqueadas: {locked}",
+                f"{runtime_msg}",
             )
         suffix = "" if ok else "\nHay errores; revisa el log."
         return ok, f"Resultado final: actualización completa.\n\n{legacy_msg}\n\n{runtime_msg}{suffix}"

@@ -26,3 +26,9 @@ def get_connection() -> sqlite3.Connection:
     except sqlite3.Error as exc:
         logger.exception("Error al conectar con SQLite: %s", exc)
         raise
+
+
+def get_runtime_database_path(db_name: str) -> Path:
+    from services.runtime_database_service import RuntimeDatabaseService
+
+    return RuntimeDatabaseService().get_runtime_path(db_name)
