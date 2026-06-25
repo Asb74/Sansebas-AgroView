@@ -500,6 +500,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
                     self.stock_campo_rows, updated, update_warning = self.service.load_stock_campo(payload)
                     self._cache_set("stock_campo", (self.stock_campo_rows, updated, update_warning))
                 except Exception as exc:
+                    logger.exception("Error cargando stock campo")
                     self.stock_campo_rows = []
                     messagebox.showwarning("Planificación diaria", f"No se pudo cargar stock campo: {exc}")
         elif tab_activa == "Stock almacén":
