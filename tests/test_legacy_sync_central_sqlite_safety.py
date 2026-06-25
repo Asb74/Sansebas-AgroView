@@ -66,3 +66,46 @@ def test_safe_replace_table_from_csv_replaces_after_valid_staging(tmp_path):
         backups = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'backup_Pedidos_%'").fetchall()
     assert rows == [('2', 'Nuevo'), ('3', 'Otro')]
     assert backups == []
+
+
+def test_safe_replace_partition_from_staging_replaces_only_requested_campaign(tmp_path):
+    service = LegacySyncService.__new__(LegacySyncService)
+    target = tmp_path / "DBPedidos.sqlite"
+    staging = tmp_path / "staging.sqlite"
+    with sqlite3.connect(target) as conn:
+        conn.execute('CREATE TABLE Pedidos (Id TEXT, "Campaña" TEXT, Nombre TEXT)')
+        conn.execute('INSERT INTO Pedidos VALUES (?, ?, ?)', ('old-2025', '2025', 'Anterior 2025'))
+        conn.execute('INSERT INTO Pedidos VALUES (?, ?, ?)', ('old-2026', '2026', 'Anterior 2026'))
+    with sqlite3.connect(staging) as conn:
+        conn.execute('CREATE TABLE Pedidos (Id TEXT, "Campaña" TEXT, Nombre TEXT)')
+        conn.execute('INSERT INTO Pedidos VALUES (?, ?, ?)', ('new-2026', '2026', 'Nuevo 2026'))
+
+    result = service.safe_replace_partition_from_staging(staging, target, "Pedidos", "Campaña", "2026")
+
+    assert result["RegistrosBorradosParticion"] == 1
+    assert result["RegistrosInsertadosParticion"] == 1
+    with sqlite3.connect(target) as conn:
+        rows = conn.execute('SELECT Id, "Campaña", Nombre FROM Pedidos ORDER BY Id').fetchall()
+    assert rows == [('new-2026', '2026', 'Nuevo 2026'), ('old-2025', '2025', 'Anterior 2025')]
+
+
+def test_safe_replace_partition_from_staging_keeps_destination_when_staging_empty(tmp_path):
+    service = LegacySyncService.__new__(LegacySyncService)
+    target = tmp_path / "DBPedidos.sqlite"
+    staging = tmp_path / "staging.sqlite"
+    with sqlite3.connect(target) as conn:
+        conn.execute('CREATE TABLE Pedidos (Id TEXT, Campana TEXT, Nombre TEXT)')
+        conn.execute('INSERT INTO Pedidos VALUES (?, ?, ?)', ('old-2026', '2026', 'Anterior 2026'))
+    with sqlite3.connect(staging) as conn:
+        conn.execute('CREATE TABLE Pedidos (Id TEXT, Campana TEXT, Nombre TEXT)')
+
+    try:
+        service.safe_replace_partition_from_staging(staging, target, "Pedidos", "Campana", "2026")
+    except ValueError as exc:
+        assert "staging" in str(exc).lower()
+    else:
+        raise AssertionError("Expected ValueError")
+
+    with sqlite3.connect(target) as conn:
+        rows = conn.execute('SELECT Id, Campana, Nombre FROM Pedidos').fetchall()
+    assert rows == [('old-2026', '2026', 'Anterior 2026')]
