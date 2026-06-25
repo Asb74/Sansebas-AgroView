@@ -6,7 +6,7 @@ from typing import Any
 
 from openpyxl import load_workbook
 
-from config import DB_DIR, DB_PEDIDOS
+from config import DB_PEDIDOS
 from db.connection import get_runtime_database_path
 
 
@@ -101,7 +101,7 @@ class ForfaitRepository:
     }
 
     def __init__(self, db_calc: str | None = None, db_pedidos: str | None = None) -> None:
-        self.db_calc = Path(db_calc or (Path(DB_DIR) / "DBAgroViewCalc.sqlite"))
+        self.db_calc = Path(db_calc) if db_calc else get_runtime_database_path("DBAgroViewCalc.sqlite")
         self.db_pedidos = Path(db_pedidos) if db_pedidos else get_runtime_database_path(DB_PEDIDOS)
         self.initialize()
 

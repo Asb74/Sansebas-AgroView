@@ -3,7 +3,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from config import DB_DIR
+from db.connection import get_runtime_database_path
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ class AgroviewCalcRepository:
     }
 
     def __init__(self, db_path: Path | None = None) -> None:
-        self.db_path = db_path or (Path(DB_DIR) / self.DB_FILE)
+        self.db_path = db_path or get_runtime_database_path(self.DB_FILE)
 
     def initialize(self) -> None:
         logger.info("Ruta DBAgroViewCalc.sqlite: %s", self.db_path)

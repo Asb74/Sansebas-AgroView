@@ -24,7 +24,7 @@ class UpdateOrchestratorService:
         logger.info("Inicio actualización foto local")
         try:
             ok, errors = self.runtime_database_service.prepare_runtime_databases(force=True)
-            result = {"ok": ok, "errors": errors, "updated": ok, "using_previous_snapshot": (not ok and self.runtime_database_service.get_current_snapshot_dir() is not None)}
+            result = {"ok": ok, "errors": errors, "updated": ok, "using_previous_snapshot": (not ok and self.runtime_database_service.has_current_snapshot())}
             if ok:
                 logger.info("Fin actualización foto local OK")
             else:

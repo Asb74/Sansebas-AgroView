@@ -32,30 +32,26 @@ class RuntimeDatabaseService:
         self.current_snapshot_file = Path(CURRENT_SNAPSHOT_FILE)
         self.snapshot_file = self.current_snapshot_file
 
-    def get_current_snapshot_dir(self) -> Path | None:
-        if self.current_snapshot_file.exists():
-            snapshot_name = self.current_snapshot_file.read_text(encoding="utf-8").strip()
-            if snapshot_name:
-                snapshot_dir = Path(snapshot_name)
-                if not snapshot_dir.is_absolute():
-                    snapshot_dir = self.snapshots_dir / snapshot_name
-                if self._is_valid_snapshot(snapshot_dir):
-                    return snapshot_dir
-                logger.warning("Snapshot activo inválido o incompleto: %s", snapshot_dir)
-        latest = self._get_latest_valid_snapshot()
-        if latest is not None:
-            logger.warning("Usando último snapshot válido: %s", latest)
-        return latest
+    def get_current_snapshot_dir(self) -> Path:
+        snapshot_dir = self._resolve_current_snapshot_dir()
+        if snapshot_dir is not None:
+            return snapshot_dir
+        ok, _errors = self.prepare_runtime_databases()
+        if ok:
+            snapshot_dir = self._resolve_current_snapshot_dir()
+        if snapshot_dir is None:
+            logger.error("No hay snapshot local activo disponible")
+            raise RuntimeError("No hay snapshot local activo disponible")
+        return snapshot_dir
 
     def get_runtime_path(self, db_name: str) -> Path:
         snapshot_dir = self.get_current_snapshot_dir()
-        if snapshot_dir is None:
-            ok, _errors = self.prepare_runtime_databases()
-            if ok:
-                snapshot_dir = self.get_current_snapshot_dir()
-        if snapshot_dir is None:
-            raise RuntimeError(self.ERROR_MESSAGE)
-        return snapshot_dir / db_name
+        path = snapshot_dir / db_name
+        logger.info("Ruta SQLite runtime resuelta: %s", path)
+        return path
+
+    def has_current_snapshot(self) -> bool:
+        return self._resolve_current_snapshot_dir() is not None
 
     def prepare_runtime_databases(self, force: bool = False) -> tuple[bool, list[str]]:
         del force  # Se conserva por compatibilidad de llamadas existentes.
@@ -69,7 +65,7 @@ class RuntimeDatabaseService:
             latest = self._get_latest_valid_snapshot()
             if latest is not None:
                 logger.warning("Usando último snapshot válido: %s", latest)
-                if not self.get_current_snapshot_dir():
+                if self._resolve_current_snapshot_dir() is None:
                     try:
                         self.activate_snapshot(latest)
                     except Exception:
@@ -141,6 +137,21 @@ class RuntimeDatabaseService:
         for old in valid[max(keep, 1):]:
             shutil.rmtree(old, ignore_errors=True)
             logger.info("Snapshot antiguo eliminado: %s", old)
+
+    def _resolve_current_snapshot_dir(self) -> Path | None:
+        if self.current_snapshot_file.exists():
+            snapshot_name = self.current_snapshot_file.read_text(encoding="utf-8").strip()
+            if snapshot_name:
+                snapshot_dir = Path(snapshot_name)
+                if not snapshot_dir.is_absolute():
+                    snapshot_dir = self.snapshots_dir / snapshot_name
+                if self._is_valid_snapshot(snapshot_dir):
+                    return snapshot_dir
+                logger.warning("Snapshot activo inválido o incompleto: %s", snapshot_dir)
+        latest = self._get_latest_valid_snapshot()
+        if latest is not None:
+            logger.warning("Usando último snapshot válido: %s", latest)
+        return latest
 
     def _write_snapshot_info(self, snapshot_dir: Path) -> None:
         now = datetime.now().isoformat(timespec="seconds")

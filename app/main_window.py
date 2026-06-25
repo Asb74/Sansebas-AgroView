@@ -45,7 +45,7 @@ class MainWindow(tk.Tk):
         ok, errors = self.runtime_db_service.prepare_runtime_databases()
         if ok:
             pass
-        elif self.runtime_db_service.get_current_snapshot_dir() is not None:
+        elif self.runtime_db_service.has_current_snapshot():
             messagebox.showwarning("AgroView", self.runtime_db_service.WARNING_MESSAGE)
         else:
             messagebox.showerror("AgroView", self.runtime_db_service.ERROR_MESSAGE)
