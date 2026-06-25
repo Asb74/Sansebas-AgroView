@@ -3011,6 +3011,83 @@ class PlanningRepository:
         ymd_dmy = f"substr({raw},7,4)||'-'||substr({raw},4,2)||'-'||substr({raw},1,2)"
         return f"CASE WHEN length({raw}) >= 10 AND substr({raw},5,1)='-' THEN {ymd_iso} WHEN length({raw}) >= 10 AND substr({raw},3,1)='/' THEN {ymd_dmy} ELSE {raw} END"
 
+
+    @staticmethod
+    def _format_sql_for_log(query: str) -> str:
+        return " ".join((query or "").split())
+
+    @staticmethod
+    def _guess_fecha_salida_format(samples: list[Any]) -> dict[str, int]:
+        patterns = {
+            "YYYY-MM-DD": re.compile(r"^\d{4}-\d{2}-\d{2}$"),
+            "YYYY-MM-DD datetime": re.compile(r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}"),
+            "DD/MM/YYYY": re.compile(r"^\d{2}/\d{2}/\d{4}$"),
+            "DD/MM/YYYY datetime": re.compile(r"^\d{2}/\d{2}/\d{4}\s+\d{1,2}:\d{2}"),
+            "Access datetime": re.compile(r"^\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}\s*(AM|PM)?$", re.IGNORECASE),
+        }
+        counts: Counter[str] = Counter()
+        for sample in samples:
+            text = str(sample or "").strip()
+            if not text:
+                counts["vacío"] += 1
+                continue
+            matched = False
+            for label, pattern in patterns.items():
+                if pattern.match(text):
+                    counts[label] += 1
+                    matched = True
+                    break
+            if not matched:
+                counts["otro formato"] += 1
+        return dict(counts)
+
+    def _log_pedidos_diagnostics(self, conn: sqlite3.Connection, pedidos_path: Path, filters: dict, modo_pedidos: str, final_query: str | None = None, final_params: list[Any] | None = None) -> None:
+        try:
+            exists = pedidos_path.exists()
+            size = pedidos_path.stat().st_size if exists else 0
+            logger.info("[DIAG Pedidos.DB] path=%s exists=%s size_bytes=%s snapshot=%s", pedidos_path, exists, size, self.base_dir)
+            tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").fetchall()]
+            logger.info("[DIAG Pedidos.DB] tables=%s", tables)
+            if "Pedidos" not in tables:
+                logger.warning("[DIAG Pedidos.DB] tabla Pedidos no encontrada")
+                return
+
+            def scalar(sql: str, params: list[Any] | tuple[Any, ...] = ()) -> Any:
+                return conn.execute(sql, params).fetchone()[0]
+
+            total = scalar('SELECT COUNT(*) FROM "Pedidos"')
+            logger.info("[DIAG Pedidos.Count] total=%s", total)
+            logger.info("[DIAG Pedidos.CountByCampana] rows=%s", [dict(r) for r in conn.execute('SELECT COALESCE(CAST("Campaña" AS TEXT), "<NULL>") AS campana, COUNT(*) AS rows FROM "Pedidos" GROUP BY COALESCE(CAST("Campaña" AS TEXT), "<NULL>") ORDER BY rows DESC LIMIT 20').fetchall()])
+            logger.info("[DIAG Pedidos.CountByCultivo] rows=%s", [dict(r) for r in conn.execute('SELECT COALESCE(CAST("Cultivo" AS TEXT), "<NULL>") AS cultivo, COUNT(*) AS rows FROM "Pedidos" GROUP BY COALESCE(CAST("Cultivo" AS TEXT), "<NULL>") ORDER BY rows DESC LIMIT 20').fetchall()])
+            logger.info("[DIAG Pedidos.CountByEmpresa] rows=%s", [dict(r) for r in conn.execute('SELECT COALESCE(CAST("EMPRESA" AS TEXT), "<NULL>") AS empresa, COUNT(*) AS rows FROM "Pedidos" GROUP BY COALESCE(CAST("EMPRESA" AS TEXT), "<NULL>") ORDER BY rows DESC LIMIT 20').fetchall()])
+
+            base_where = [
+                'COALESCE("Cancelado", 0) = 0',
+                "UPPER(TRIM(COALESCE(\"IdPedidoLora\", ''))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')",
+            ]
+            params: list[Any] = []
+            for field, col in (("campana", '"Campaña"'), ("cultivo", '"Cultivo"'), ("empresa", '"EMPRESA"')):
+                values = self._normalize_filter_values(filters.get(field))
+                if values:
+                    base_where.append(f"UPPER(TRIM(COALESCE({col}, ''))) IN ({','.join(['UPPER(TRIM(?))'] * len(values))})")
+                    params.extend(values)
+            where_sql = " AND ".join(base_where)
+            camp_cult_emp_count = scalar(f'SELECT COUNT(*) FROM "Pedidos" WHERE {where_sql}', params)
+            logger.info("[DIAG Pedidos.FilterCount] campana+cultivo+empresa rows=%s params=%s", camp_cult_emp_count, params)
+            fecha_expr = self._fecha_expr_sql("p", "FechaSalida")
+            aliased_where_sql = where_sql.replace(chr(34), "p." + chr(34))
+            mode_sql = f"SELECT COUNT(*) FROM \"Pedidos\" p WHERE {aliased_where_sql} AND date({fecha_expr}) BETWEEN date('now') AND date('now', '+10 days')"
+            logger.info("[DIAG Pedidos.FilterCount] campana+cultivo+empresa+10_dias rows=%s", scalar(mode_sql, params))
+            future_sql = f"SELECT COUNT(*) FROM \"Pedidos\" p WHERE date({fecha_expr}) >= date('now')"
+            next_10_sql = f"SELECT COUNT(*) FROM \"Pedidos\" p WHERE date({fecha_expr}) >= date('now') AND date({fecha_expr}) <= date('now', '+10 days')"
+            logger.info("[DIAG Pedidos.Fechas] min=%s max=%s futuros=%s proximos_10_dias=%s", scalar('SELECT MIN("FechaSalida") FROM "Pedidos"'), scalar('SELECT MAX("FechaSalida") FROM "Pedidos"'), scalar(future_sql), scalar(next_10_sql))
+            samples = [r[0] for r in conn.execute('SELECT "FechaSalida" FROM "Pedidos" WHERE "FechaSalida" IS NOT NULL AND TRIM(CAST("FechaSalida" AS TEXT)) <> "" LIMIT 50').fetchall()]
+            logger.info("[DIAG Pedidos.FechaSalidaFormat] detected=%s samples=%s", self._guess_fecha_salida_format(samples), samples[:10])
+            if final_query is not None:
+                logger.info("[DIAG Pedidos.SQL] modo=%s sql=%s params=%s", modo_pedidos, self._format_sql_for_log(final_query), final_params or [])
+        except Exception:
+            logger.exception("Error ejecutando diagnóstico de pedidos pendientes")
+
     def get_pedidos_pendientes(self, filters: dict, modo_pedidos: str = "10_dias") -> tuple[list[dict], dict[str, float]]:
         logger.debug("Cargando pedidos pendientes. Modo=%s Filters=%s", modo_pedidos, filters)
         t0_total = time.perf_counter()
@@ -3018,8 +3095,7 @@ class PlanningRepository:
         filters_hash = _trace_filters("Pedidos.Query", filters, {"modo_pedidos": modo_pedidos})
         logger.debug("get_pedidos_pendientes: inicio")
         pedidos_path = self._db_path(DB_PEDIDOS)
-        logger.debug("Ruta DBPedidos.sqlite usada: %s", pedidos_path)
-        logger.debug("DBPedidos.sqlite existe: %s", pedidos_path.exists())
+        logger.info("[DIAG Pedidos.DB] path=%s exists=%s size_bytes=%s", pedidos_path, pedidos_path.exists(), pedidos_path.stat().st_size if pedidos_path.exists() else 0)
         kpi_vacio = {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Kg terminado/completo total": 0.0, "Merma kg total": 0.0, "% merma total": 0.0, "Nº pedidos": 0, "Nº pedidos pendientes": 0, "Nº pedidos terminados": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0, "Nº líneas sin confección estimadas": 0}
         if not pedidos_path.exists():
             logger.warning("No existe DBPedidos.sqlite en la ruta esperada")
@@ -3042,6 +3118,7 @@ class PlanningRepository:
             pedidos_cols = [r["name"] for r in conn.execute('PRAGMA table_info("Pedidos")').fetchall()]
             if not pedidos_cols:
                 logger.warning("No existe la tabla Pedidos en DBPedidos.sqlite")
+                self._log_pedidos_diagnostics(conn, pedidos_path, filters, modo_pedidos)
                 return [], kpi_vacio
             self._ensure_planning_indexes(conn)
 
@@ -3265,6 +3342,10 @@ class PlanningRepository:
                          p."IdPedidoLora" ASC,
                          p."Linea" ASC
             """
+            logger.info("[DIAG Pedidos.SQL] modo=%s sql=%s params=%s", modo_pedidos, self._format_sql_for_log(query), params)
+            run_full_diagnostics = logger.isEnabledFor(logging.DEBUG) or os.environ.get("PLANNING_PEDIDOS_DIAGNOSTICS") == "1"
+            if run_full_diagnostics:
+                self._log_pedidos_diagnostics(conn, pedidos_path, filters, modo_pedidos, query, params)
             logger.debug("get_pedidos_pendientes: después de pedidos_filtrados (query construida)")
             query_t0 = time.perf_counter()
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
@@ -3293,6 +3374,8 @@ class PlanningRepository:
             logger.debug("Pedidos pendientes finales: %s", len(rows))
             if not rows:
                 logger.warning("No se encontraron pedidos pendientes con los filtros aplicados.")
+                if not run_full_diagnostics:
+                    self._log_pedidos_diagnostics(conn, pedidos_path, filters, modo_pedidos, query, params)
                 logger.info("[PERF Repo.Pedidos.KPI] tiempo=%.3fs", 0.0)
                 logger.info("[PERF Repo.Pedidos.Total] tiempo=%.3fs", time.perf_counter() - t0_total)
                 logger.info("[TRACE Pedidos.Query.End] hash=%s rows=%s tiempo=%.3fs", filters_hash, 0, time.perf_counter() - t0_total)

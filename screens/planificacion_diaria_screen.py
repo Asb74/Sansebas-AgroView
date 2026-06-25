@@ -397,6 +397,23 @@ class PlanificacionDiariaScreen(ttk.Frame):
         )) + (("sim_policy", stable(policy)),)
 
 
+
+    def _snapshot_cache_identity(self) -> tuple[str, str, str]:
+        try:
+            info = self.runtime_db_service.get_snapshot_info()
+        except Exception:
+            logging.getLogger(__name__).exception("No se pudo obtener identidad del snapshot para caché")
+            return ("", "", "")
+        return (
+            str(info.get("path") or ""),
+            str(info.get("timestamp") or ""),
+            str(info.get("label") or ""),
+        )
+
+    def clear_planning_cache(self, motivo: str = "manual") -> None:
+        self._invalidate_planning_cache(motivo)
+        self.service.invalidate_planning_filter_master_cache()
+
     def _get_filters_hash(self, payload: dict | None = None, *, extra: dict | None = None) -> str:
         normalized = self._get_filters_key(payload)
         if extra:
@@ -451,16 +468,22 @@ class PlanificacionDiariaScreen(ttk.Frame):
     def _get_pedidos_pendientes_cached(self, payload: dict, modo_pedidos: str) -> tuple[list[dict], dict]:
         logger = logging.getLogger(__name__)
         cache = self._planning_cache.setdefault("pedidos_pendientes", {})
-        cache_key = self._get_filters_hash(payload, extra={"modo_pedidos": modo_pedidos})
+        snapshot_identity = self._snapshot_cache_identity()
+        cache_key = self._get_filters_hash(payload, extra={
+            "modo_pedidos": modo_pedidos,
+            "snapshot_path": snapshot_identity[0],
+            "snapshot_timestamp": snapshot_identity[1],
+            "snapshot_label": snapshot_identity[2],
+        })
         cached = cache.get(cache_key)
         if cached is not None:
             rows = cached[0] if isinstance(cached, tuple) and cached else []
-            logger.info("[CACHE Pedidos] HIT hash=%s rows=%s", cache_key, len(rows))
+            logger.info("[CACHE Pedidos] HIT hash=%s rows=%s snapshot=%s", cache_key, len(rows), snapshot_identity)
             return self._copy_cached_result(cached)
-        logger.info("[CACHE Pedidos] MISS hash=%s", cache_key)
+        logger.info("[CACHE Pedidos] MISS hash=%s snapshot=%s", cache_key, snapshot_identity)
         result = self.service.load_pedidos_pendientes(payload, modo_pedidos)
         cache[cache_key] = self._copy_cached_result(result)
-        logger.info("[CACHE Pedidos] STORE hash=%s rows=%s", cache_key, len(result[0] if result else []))
+        logger.info("[CACHE Pedidos] STORE hash=%s rows=%s snapshot=%s", cache_key, len(result[0] if result else []), snapshot_identity)
         return self._copy_cached_result(result)
 
     def _balance_preloaded_context(self) -> dict:
@@ -1241,7 +1264,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.snapshot_info_var.set(info.get("label", "Foto de datos: No disponible"))
 
     def _actualizar_foto_local(self) -> None:
-        self.service.invalidate_planning_filter_master_cache()
+        self.clear_planning_cache("inicio_actualizar_foto_local")
         self._btn_actualizar_foto.configure(state="disabled", text="Actualizando foto...")
         messagebox.showinfo("Actualizar foto local", "Inicio de actualización: Actualizar foto local.", parent=self)
 
@@ -1263,6 +1286,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         else:
             messagebox.showinfo("Actualizar foto local", self.runtime_db_service.SUCCESS_MESSAGE, parent=self)
         self._refresh_snapshot_info_label()
+        self.clear_planning_cache("fin_actualizar_foto_local")
         self._reload_with_invalidated_cache("actualizar_foto_local", save_filters=True)
 
     def _on_tab_changed(self, _event=None) -> None:
