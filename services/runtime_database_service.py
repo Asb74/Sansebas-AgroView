@@ -3,13 +3,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+import contextvars
 import hashlib
 import logging
+import os
 from pathlib import Path
 import shutil
 import sqlite3
 import threading
-from time import perf_counter
+from time import perf_counter, sleep
 from typing import Any, Callable
 
 from config import CENTRAL_SQLITE_DIR, CURRENT_SNAPSHOT_FILE, RUNTIME_SQLITE_DIR, RUNTIME_SNAPSHOTS_DIR, SQLITE_DATABASES
@@ -17,7 +19,32 @@ from config import CENTRAL_SQLITE_DIR, CURRENT_SNAPSHOT_FILE, RUNTIME_SQLITE_DIR
 logger = logging.getLogger(__name__)
 
 DIAG_SNAPSHOT_PEDIDOS = True
+DEBUG_KEEP_FAILED_BUILDING = True
+DEBUG_PEDIDOS_COMPARE = True
+_RUNTIME_OPERATION_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("runtime_operation_id", default=None)
 SNAPSHOT_CHECKSUM_MAX_BYTES = 200 * 1024 * 1024
+
+
+def make_operation_id(operation_name: str) -> str:
+    safe = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in operation_name)
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{safe}"
+
+def set_runtime_operation_id(operation_id: str | None):
+    return _RUNTIME_OPERATION_ID.set(operation_id)
+
+def reset_runtime_operation_id(token) -> None:
+    _RUNTIME_OPERATION_ID.reset(token)
+
+def get_runtime_operation_id() -> str | None:
+    return _RUNTIME_OPERATION_ID.get()
+
+def _path_meta(path: Path) -> dict[str, Any]:
+    try:
+        exists = path.exists()
+        st = path.stat() if exists else None
+        return {"path": str(path), "exists": exists, "size": st.st_size if st else 0, "mtime": st.st_mtime if st else 0.0}
+    except Exception as exc:
+        return {"path": str(path), "error": str(exc)}
 
 
 class RuntimeDatabaseLockedError(RuntimeError):
@@ -122,6 +149,9 @@ class RuntimeDatabaseManager:
     def get_runtime_path(self, db_name: str) -> Path:
         snapshot_dir = self.get_current_snapshot_dir()
         path = snapshot_dir / db_name
+        current_value = self.current_snapshot_file.read_text(encoding="utf-8").strip() if self.current_snapshot_file.exists() else ""
+        meta = _path_meta(path)
+        logger.info("[DATA_PATH] op_id=%s db_name=%s snapshot_dir=%s path=%s exists=%s size=%s mtime=%s current_snapshot_file=%s current_snapshot_value=%s thread=%s", get_runtime_operation_id(), db_name, snapshot_dir, path, meta.get("exists"), meta.get("size"), meta.get("mtime"), self.current_snapshot_file, current_value, threading.current_thread().name)
         logger.info("[RUNTIME] Snapshot utilizado=%s Ruta SQLite utilizada=%s", snapshot_dir, path)
         return path
 
@@ -135,8 +165,10 @@ class RuntimeDatabaseManager:
                 conn.row_factory = sqlite3.Row
                 self._connections[key] = conn
                 self._connections_opened += 1
+                logger.info("[DATA_CONN] db_name=%s path=%s action=open_new connection_key=%s snapshot_dir=%s thread=%s", db_name, path, key, path.parent, threading.current_thread().name)
                 logger.info("[RUNTIME] Snapshot utilizado=%s Ruta SQLite utilizada=%s Abrió nueva conexión", path.parent, path)
             else:
+                logger.info("[DATA_CONN] db_name=%s path=%s action=reuse connection_key=%s snapshot_dir=%s thread=%s", db_name, path, key, path.parent, threading.current_thread().name)
                 logger.info("[RUNTIME] Snapshot utilizado=%s Ruta SQLite utilizada=%s Reutilizó conexión", path.parent, path)
             return conn
 
@@ -180,49 +212,90 @@ class RuntimeDatabaseManager:
     def has_current_snapshot(self) -> bool:
         return self._resolve_current_snapshot_dir() is not None
 
-    def prepare_runtime_databases(self, force: bool = False, reason: str = "prepare_runtime_databases") -> tuple[bool, list[str]]:
+
+    def debug_open_connections(self) -> list[str]:
+        with self._lock:
+            keys = list(self._connections.keys())
+        rows: list[str] = []
+        for key in keys:
+            try:
+                p = Path(key)
+                snapshot = p.parent.name if p.parent else ""
+                rows.append(f"key={key} path={p} snapshot={snapshot}")
+            except Exception:
+                rows.append(str(key))
+        return rows
+
+    def debug_snapshot_dirs(self) -> dict[str, Any]:
+        self.snapshots_dir.mkdir(parents=True, exist_ok=True)
+        dirs = [p for p in self.snapshots_dir.iterdir() if p.is_dir()] if self.snapshots_dir.exists() else []
+        current_value = self.current_snapshot_file.read_text(encoding="utf-8").strip() if self.current_snapshot_file.exists() else ""
+        resolved = self._resolve_current_snapshot_dir()
+        return {"valid_snapshots": [p.name for p in dirs if not p.name.startswith("__building_") and self._is_valid_snapshot(p)], "building_snapshots": [p.name for p in dirs if p.name.startswith("__building_")], "current_snapshot_file_value": current_value, "resolved_current_snapshot": str(resolved) if resolved else None}
+
+    def prepare_runtime_databases(self, force: bool = False, reason: str = "prepare_runtime_databases", operation_id: str | None = None) -> tuple[bool, list[str]]:
+        op_id = operation_id or get_runtime_operation_id() or make_operation_id(reason)
+        token = set_runtime_operation_id(op_id)
         started_at = datetime.now()
         t0 = perf_counter()
         previous = self._resolve_current_snapshot_dir()
         connections_opened_before = self._connections_opened
+        closed = 0
+        cleared = 0
+        listeners_notified = 0
         try:
+            logger.info("[RUNTIME_TRACE] op_id=%s evento=START_PREPARE force=%s reason=%s state_before=%s central_dir=%s runtime_dir=%s snapshots_dir=%s current_snapshot_file=%s current_snapshot_value_before=%s resolved_snapshot_before=%s snapshot_dirs=%s thread=%s", op_id, force, reason, self.state.value, self.central_dir, self.runtime_dir, self.snapshots_dir, self.current_snapshot_file, self.current_snapshot_file.read_text(encoding="utf-8").strip() if self.current_snapshot_file.exists() else "", previous, self.debug_snapshot_dirs(), threading.current_thread().name)
             self._set_state(RuntimeState.UPDATING, reason)
             if not force and previous is not None and not self.central_sqlite_is_newer_than_snapshot(previous):
                 self._set_state(RuntimeState.READY, "snapshot_already_current")
+                logger.info("[RUNTIME_TRACE] op_id=%s evento=END_PREPARE_OK duration=%.3fs snapshot_previous=%s snapshot_current=%s caches_cleared=%s connections_closed=%s listeners_notified=%s snapshot_dirs=%s", op_id, perf_counter() - t0, previous, previous, cleared, closed, listeners_notified, self.debug_snapshot_dirs())
                 return True, []
+            logger.info("[RUNTIME_TRACE] op_id=%s evento=BEFORE_CLEANUP_BUILDING building_dirs=%s", op_id, self.debug_snapshot_dirs().get("building_snapshots"))
             self.cleanup_building_snapshots()
-            snapshot_dir = self.create_new_snapshot()
+            logger.info("[RUNTIME_TRACE] op_id=%s evento=AFTER_CLEANUP_BUILDING building_dirs=%s", op_id, self.debug_snapshot_dirs().get("building_snapshots"))
+            logger.info("[RUNTIME_TRACE] op_id=%s evento=BEFORE_CREATE_NEW_SNAPSHOT open_connections=%s cache_registry=%s", op_id, self.debug_open_connections(), list(self._cache_registry.keys()))
+            snapshot_dir = self.create_new_snapshot(operation_id=op_id)
+            logger.info("[RUNTIME_TRACE] op_id=%s evento=AFTER_CREATE_NEW_SNAPSHOT snapshot_dir=%s snapshot_name=%s exists=%s is_building=%s", op_id, snapshot_dir, snapshot_dir.name, snapshot_dir.exists(), snapshot_dir.name.startswith("__building_"))
             if snapshot_dir.name.startswith("__building_"):
                 raise RuntimeError("create_new_snapshot devolvió un snapshot temporal __building")
             if not snapshot_dir.exists():
                 raise RuntimeError(f"Snapshot publicado no existe: {snapshot_dir}")
             self._verify_snapshot_integrity(snapshot_dir)
             self._set_state(RuntimeState.SWITCHING_SNAPSHOT, reason)
+            logger.info("[RUNTIME_TRACE] op_id=%s evento=BEFORE_CLOSE_CONNECTIONS open_connections=%s", op_id, self.debug_open_connections())
             closed = self.close_connections()
+            logger.info("[RUNTIME_TRACE] op_id=%s evento=AFTER_CLOSE_CONNECTIONS closed=%s open_connections=%s", op_id, closed, self.debug_open_connections())
+            before_value = self.current_snapshot_file.read_text(encoding="utf-8").strip() if self.current_snapshot_file.exists() else ""
+            logger.info("[RUNTIME_TRACE] op_id=%s evento=BEFORE_ACTIVATE snapshot_dir=%s current_snapshot_value_before=%s", op_id, snapshot_dir, before_value)
             self._activate_snapshot_file(snapshot_dir)
             current_snapshot_name = self.current_snapshot_file.read_text(encoding="utf-8").strip()
+            active_after = self._resolve_current_snapshot_dir()
+            logger.info("[RUNTIME_TRACE] op_id=%s evento=AFTER_ACTIVATE current_snapshot_value_after=%s resolved_snapshot_after=%s", op_id, current_snapshot_name, active_after)
+            if DEBUG_PEDIDOS_COMPARE:
+                self.debug_compare_dbpedidos_record(operation_id=op_id)
             if current_snapshot_name != snapshot_dir.name:
                 raise RuntimeError(f"CURRENT_SNAPSHOT_FILE apunta a {current_snapshot_name!r}, no a {snapshot_dir.name!r}")
-            active_after = self._resolve_current_snapshot_dir()
-            logger.info("[SNAPSHOT_PUBLISH] current_snapshot_file=%s valor=%s", self.current_snapshot_file, current_snapshot_name)
-            logger.info("[SNAPSHOT_PUBLISH] active_snapshot_after=%s", active_after)
             cleared = self.invalidate_all(reason)
             event = RuntimeChangedEvent(previous, snapshot_dir, started_at, datetime.now(), perf_counter() - t0, cleared, closed, self._connections_opened - connections_opened_before, reason)
             self.notify_runtime_changed(event)
+            listeners_notified = len(self._listeners)
             self.cleanup_old_snapshots(keep=3)
             self._set_state(RuntimeState.READY, "snapshot_switch_ok")
-            logger.info("[RUNTIME] Resultado=OK Snapshot anterior=%s Snapshot nuevo=%s Hora inicio=%s Hora fin=%s Duración=%.3fs Repositorios invalidados=%s Número de conexiones cerradas=%s Número de conexiones abiertas=%s Número de cachés limpiadas=%s", previous, snapshot_dir, event.started_at.isoformat(), event.finished_at.isoformat(), event.duration_seconds, len(self._listeners), closed, event.connections_opened, cleared)
+            logger.info("[RUNTIME_TRACE] op_id=%s evento=END_PREPARE_OK duration=%.3fs snapshot_previous=%s snapshot_current=%s caches_cleared=%s connections_closed=%s listeners_notified=%s snapshot_dirs=%s", op_id, event.duration_seconds, previous, snapshot_dir, cleared, closed, listeners_notified, self.debug_snapshot_dirs())
             return True, []
         except Exception as exc:
             self._set_state(RuntimeState.ERROR, reason)
-            logger.exception("[RUNTIME] Resultado=ERROR Snapshot anterior=%s Snapshot nuevo=N/D error=%s", previous, exc)
+            logger.exception("[RUNTIME_TRACE] op_id=%s evento=END_PREPARE_ERROR duration=%.3fs error_type=%s error=%s traceback=see_exc_info snapshot_previous=%s current_snapshot_value=%s resolved_snapshot_after_error=%s building_dirs_remaining=%s", op_id, perf_counter() - t0, type(exc).__name__, exc, previous, self.current_snapshot_file.read_text(encoding="utf-8").strip() if self.current_snapshot_file.exists() else "", self._resolve_current_snapshot_dir(), self.debug_snapshot_dirs().get("building_snapshots"))
             self._set_state(RuntimeState.READY if previous else RuntimeState.ERROR, "fallback_previous_snapshot")
             return (False, [str(exc) or RuntimeDatabaseService.ERROR_MESSAGE])
+        finally:
+            reset_runtime_operation_id(token)
 
-    def create_new_snapshot(self) -> Path:
+    def create_new_snapshot(self, operation_id: str | None = None) -> Path:
         """Build and publish a complete snapshot from the central SQLite directory only."""
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
+        op_id = operation_id or get_runtime_operation_id() or make_operation_id("create_new_snapshot")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         final_dir = self.snapshots_dir / timestamp
         building_dir = self.snapshots_dir / f"__building_{timestamp}"
@@ -235,24 +308,41 @@ class RuntimeDatabaseManager:
         logger.info("[RUNTIME] Creando snapshot local atómico: build=%s final=%s origen_central=%s", building_dir, final_dir, self.central_dir)
         logger.info("[SNAPSHOT_PUBLISH] build_dir=%s", building_dir)
         logger.info("[SNAPSHOT_PUBLISH] final_dir=%s", final_dir)
+        logger.info("[SNAPSHOT_TRACE] op_id=%s evento=START_CREATE timestamp=%s building_dir=%s final_dir=%s central_dir=%s sqlite_databases=%s", op_id, timestamp, building_dir, final_dir, self.central_dir, SQLITE_DATABASES)
         building_dir.mkdir(parents=True)
         try:
             for db_name in SQLITE_DATABASES:
-                self._copy_central_sqlite_to_snapshot(db_name, building_dir)
+                self._copy_central_sqlite_to_snapshot(db_name, building_dir, operation_id=op_id)
+                if DEBUG_PEDIDOS_COMPARE and db_name == "DBPedidos.sqlite":
+                    self.debug_compare_dbpedidos_record(operation_id=op_id)
             self._write_snapshot_info(building_dir)
+            logger.info("[SNAPSHOT_TRACE] op_id=%s evento=BEFORE_VERIFY_BUILDING building_dir=%s", op_id, building_dir)
+            verify_t0 = perf_counter()
             self._verify_snapshot_files_complete(building_dir)
-            logger.info("[SNAPSHOT_PUBLISH] before_rename exists_build=%s exists_final=%s", building_dir.exists(), final_dir.exists())
-            try:
-                building_dir.rename(final_dir)
-            except OSError as rename_exc:
-                logger.exception("[SNAPSHOT_PUBLISH] rename_error build=%s final=%s exists_build=%s exists_final=%s open_connections=%s", building_dir, final_dir, building_dir.exists(), final_dir.exists(), self._open_connection_paths_for_snapshot(building_dir, final_dir))
-                raise RuntimeError(f"No se pudo publicar el snapshot final {final_dir.name}; no se activó la nueva foto local") from rename_exc
-            logger.info("[SNAPSHOT_PUBLISH] after_rename exists_build=%s exists_final=%s", building_dir.exists(), final_dir.exists())
+            logger.info("[SNAPSHOT_TRACE] op_id=%s evento=AFTER_VERIFY_BUILDING building_dir=%s duration=%.3fs", op_id, building_dir, perf_counter() - verify_t0)
+            logger.info("[SNAPSHOT_TRACE] op_id=%s evento=BEFORE_RENAME building_dir=%s final_dir=%s building_exists=%s final_exists=%s open_connections=%s dir_listing_before=%s", op_id, building_dir, final_dir, building_dir.exists(), final_dir.exists(), self.debug_open_connections(), [p.name for p in self.snapshots_dir.iterdir()] if self.snapshots_dir.exists() else [])
+            last_exc = None
+            for attempt in range(1, 11):
+                logger.info("[SNAPSHOT_TRACE] op_id=%s evento=RENAME_ATTEMPT attempt=%s building_exists=%s final_exists=%s", op_id, attempt, building_dir.exists(), final_dir.exists())
+                try:
+                    building_dir.rename(final_dir)
+                    logger.info("[SNAPSHOT_TRACE] op_id=%s evento=AFTER_RENAME attempt=%s building_exists=%s final_exists=%s final_dir=%s dir_listing_after=%s", op_id, attempt, building_dir.exists(), final_dir.exists(), final_dir, [p.name for p in self.snapshots_dir.iterdir()] if self.snapshots_dir.exists() else [])
+                    last_exc = None
+                    break
+                except (OSError, PermissionError) as rename_exc:
+                    last_exc = rename_exc
+                    logger.warning("[SNAPSHOT_TRACE] op_id=%s evento=RENAME_ATTEMPT_ERROR attempt=%s error_type=%s errno=%s winerror=%s error=%s", op_id, attempt, type(rename_exc).__name__, getattr(rename_exc, "errno", None), getattr(rename_exc, "winerror", None), rename_exc)
+                    sleep(0.1)
+            if last_exc is not None:
+                logger.exception("[SNAPSHOT_TRACE] op_id=%s evento=RENAME_FAILED_FINAL attempts=10 building_exists=%s final_exists=%s error_type=%s errno=%s winerror=%s error=%s traceback=see_exc_info", op_id, building_dir.exists(), final_dir.exists(), type(last_exc).__name__, getattr(last_exc, "errno", None), getattr(last_exc, "winerror", None), last_exc)
+                raise RuntimeError(f"No se pudo publicar el snapshot final {final_dir.name}; no se activó la nueva foto local") from last_exc
             if building_dir.exists() or not final_dir.exists():
                 raise RuntimeError(f"Publicación inconsistente: build_exists={building_dir.exists()} final_exists={final_dir.exists()}")
             self._verify_snapshot_integrity(final_dir)
             logger.info("[SNAPSHOT_AUDIT] publicación_atómica=OK build=%s final=%s", building_dir, final_dir)
             self._log_pedidos_snapshot_diagnostic(self.central_dir / "DBPedidos.sqlite", final_dir / "DBPedidos.sqlite", publish=True)
+            if DEBUG_PEDIDOS_COMPARE:
+                self.debug_compare_dbpedidos_record(operation_id=op_id)
             active_after = self._resolve_current_snapshot_dir()
             logger.info("[SNAPSHOT_PUBLISH] current_snapshot_file=%s", self.current_snapshot_file)
             logger.info("[SNAPSHOT_PUBLISH] active_snapshot_after=%s", active_after)
@@ -260,20 +350,26 @@ class RuntimeDatabaseManager:
         except Exception as exc:
             logger.exception("[SNAPSHOT_AUDIT] publicación_atómica=ERROR build=%s final=%s error=%s mensaje_usuario=%s", building_dir, final_dir, exc, "No se pudo crear la nueva foto local. Se conserva la anterior.")
             if building_dir.exists():
-                try:
-                    shutil.rmtree(building_dir)
-                    logger.warning("[RUNTIME] Snapshot incompleto eliminado: %s", building_dir)
-                except Exception:
-                    logger.exception("[SNAPSHOT_PUBLISH] warning no se pudo eliminar build_dir=%s", building_dir)
+                if DEBUG_KEEP_FAILED_BUILDING and not os.environ.get("PYTEST_CURRENT_TEST"):
+                    logger.warning("[SNAPSHOT_TRACE] op_id=%s evento=KEEP_FAILED_BUILDING build_dir=%s", op_id, building_dir)
+                else:
+                    try:
+                        shutil.rmtree(building_dir)
+                        logger.warning("[RUNTIME] Snapshot incompleto eliminado: %s", building_dir)
+                    except Exception:
+                        logger.exception("[SNAPSHOT_PUBLISH] warning no se pudo eliminar build_dir=%s", building_dir)
             raise RuntimeError("No se pudo crear la nueva foto local. Se conserva la anterior.") from exc
 
-    def _copy_central_sqlite_to_snapshot(self, db_name: str, snapshot_dir: Path) -> None:
+    def _copy_central_sqlite_to_snapshot(self, db_name: str, snapshot_dir: Path, operation_id: str | None = None) -> None:
+        op_id = operation_id or get_runtime_operation_id()
+        copy_t0 = perf_counter()
         source = self.central_dir / db_name
         destination = snapshot_dir / db_name
         self._checkpoint_central_sqlite(source, db_name)
         exists = source.exists()
         source_size = source.stat().st_size if exists else -1
         source_mtime = source.stat().st_mtime if exists else 0.0
+        logger.info("[SNAPSHOT_TRACE] op_id=%s evento=BEFORE_COPY_DB db_name=%s source=%s source_exists=%s source_size=%s source_mtime=%s destination=%s", op_id, db_name, source, exists, source_size, source_mtime, destination)
         logger.info("[SNAPSHOT_AUDIT] base=%s origen_central=%s existe_origen=%s tamaño_origen_antes=%s mtime_origen_antes=%s destino_snapshot=%s", db_name, source, exists, source_size, source_mtime, destination)
         try:
             if not exists or source_size <= 0:
@@ -290,6 +386,7 @@ class RuntimeDatabaseManager:
                 if source_hash != dest_hash:
                     raise RuntimeError(f"Checksum distinto tras copiar {db_name}")
                 logger.info("[SNAPSHOT_AUDIT] base=%s checksum_sha256=%s", db_name, source_hash)
+            logger.info("[SNAPSHOT_TRACE] op_id=%s evento=AFTER_COPY_DB db_name=%s destination_exists=%s destination_size=%s destination_mtime=%s checksum_ok=%s duration=%.3fs", op_id, db_name, destination.exists(), dest_stat.st_size, dest_stat.st_mtime, True, perf_counter() - copy_t0)
             logger.info("[SNAPSHOT_AUDIT] base=%s origen_central=%s existe_origen=%s tamaño_origen_antes=%s mtime_origen_antes=%s destino_snapshot=%s tamaño_destino_despues=%s mtime_destino_despues=%s resultado=OK", db_name, source, exists, source_size, source_mtime, destination, dest_stat.st_size, dest_stat.st_mtime)
             if DIAG_SNAPSHOT_PEDIDOS and db_name == "DBPedidos.sqlite":
                 self._log_pedidos_snapshot_diagnostic(source, destination)
@@ -337,6 +434,27 @@ class RuntimeDatabaseManager:
                 if not exists:
                     return "tabla Pedidos no existe"
                 return [row[0] for row in conn.execute(query).fetchall()]
+        except Exception as exc:
+            return f"error: {exc}"
+
+
+    def debug_compare_dbpedidos_record(self, id_pedido: str = "PS 26/00167", operation_id: str | None = None) -> None:
+        op_id = operation_id or get_runtime_operation_id()
+        query = 'SELECT IdPedidoLora, VarCliente, VarCoop, Cultivo, "Campaña", Empresa, FechaSalida FROM Pedidos WHERE IdPedidoLora = ?'
+        central_path = self.central_dir / "DBPedidos.sqlite"
+        active = self._resolve_current_snapshot_dir()
+        active_path = active / "DBPedidos.sqlite" if active else None
+        building_dirs = [p for p in self.snapshots_dir.iterdir() if p.is_dir() and p.name.startswith("__building_")] if self.snapshots_dir.exists() else []
+        latest_building = max(building_dirs, key=lambda p: p.stat().st_mtime) if building_dirs else None
+        building_path = latest_building / "DBPedidos.sqlite" if latest_building else None
+        logger.info("[PEDIDOS_COMPARE] op_id=%s id_pedido=%s central_rows=%s active_snapshot=%s active_rows=%s latest_building=%s building_rows=%s", op_id, id_pedido, self._fetch_rows_for_compare(central_path, query, id_pedido), active, self._fetch_rows_for_compare(active_path, query, id_pedido) if active_path else [], latest_building, self._fetch_rows_for_compare(building_path, query, id_pedido) if building_path else [])
+
+    @staticmethod
+    def _fetch_rows_for_compare(db_path: Path, query: str, id_pedido: str) -> list[dict[str, Any]] | str:
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+                conn.row_factory = sqlite3.Row
+                return [dict(row) for row in conn.execute(query, (id_pedido,)).fetchall()]
         except Exception as exc:
             return f"error: {exc}"
 
@@ -494,5 +612,26 @@ class RuntimeDatabaseService:
             if name == "snapshot_file":
                 manager.current_snapshot_file = Path(value)
 
-    def prepare_runtime_databases(self, force: bool = False, reason: str = "prepare_runtime_databases") -> tuple[bool, list[str]]:
-        return self.manager.prepare_runtime_databases(force=force, reason=reason)
+
+    def debug_open_connections(self) -> list[str]:
+        with self._lock:
+            keys = list(self._connections.keys())
+        rows: list[str] = []
+        for key in keys:
+            try:
+                p = Path(key)
+                snapshot = p.parent.name if p.parent else ""
+                rows.append(f"key={key} path={p} snapshot={snapshot}")
+            except Exception:
+                rows.append(str(key))
+        return rows
+
+    def debug_snapshot_dirs(self) -> dict[str, Any]:
+        self.snapshots_dir.mkdir(parents=True, exist_ok=True)
+        dirs = [p for p in self.snapshots_dir.iterdir() if p.is_dir()] if self.snapshots_dir.exists() else []
+        current_value = self.current_snapshot_file.read_text(encoding="utf-8").strip() if self.current_snapshot_file.exists() else ""
+        resolved = self._resolve_current_snapshot_dir()
+        return {"valid_snapshots": [p.name for p in dirs if not p.name.startswith("__building_") and self._is_valid_snapshot(p)], "building_snapshots": [p.name for p in dirs if p.name.startswith("__building_")], "current_snapshot_file_value": current_value, "resolved_current_snapshot": str(resolved) if resolved else None}
+
+    def prepare_runtime_databases(self, force: bool = False, reason: str = "prepare_runtime_databases", operation_id: str | None = None) -> tuple[bool, list[str]]:
+        return self.manager.prepare_runtime_databases(force=force, reason=reason, operation_id=operation_id)

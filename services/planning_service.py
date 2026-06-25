@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import logging
+import threading
 from datetime import datetime
 from pathlib import Path
 import re
@@ -12,6 +14,8 @@ from openpyxl.styles import Font
 from db.planning_repository import PlanningRepository
 from services.legacy_sync_service import LegacySyncService
 
+logger = logging.getLogger(__name__)
+
 
 class PlanningService:
     def __init__(self) -> None:
@@ -19,9 +23,11 @@ class PlanningService:
         self.legacy_sync = LegacySyncService()
 
     def load_stock_campo(self, filters: dict) -> tuple[list[dict], str | None, bool]:
+        logger.info("[PLANNING_READ] funcion=load_stock_campo db_name=delegated path=repo exists=unknown size=unknown mtime=unknown snapshot_info=%s filters=%s thread=%s", self.repo._snapshot_info_for_log(), filters, threading.current_thread().name)
         return self.repo.get_stock_campo(filters)
 
     def load_stock_almacen(self, filters: dict) -> tuple[list[dict], str | None]:
+        logger.info("[PLANNING_READ] funcion=load_stock_almacen db_name=delegated path=repo exists=unknown size=unknown mtime=unknown snapshot_info=%s filters=%s thread=%s", self.repo._snapshot_info_for_log(), filters, threading.current_thread().name)
         return self.repo.get_stock_almacen(filters)
 
     def load_stock_almacen_detalle_palets(self, filters: dict) -> list[dict]:
@@ -34,9 +40,11 @@ class PlanningService:
         return self.repo.get_aprovechamiento_volcado(filters, today=today)
 
     def load_pedidos_pendientes(self, filters: dict, modo_pedidos: str = "10_dias") -> tuple[list[dict], dict]:
+        logger.info("[PLANNING_READ] funcion=load_pedidos_pendientes db_name=delegated path=repo exists=unknown size=unknown mtime=unknown snapshot_info=%s filters=%s thread=%s", self.repo._snapshot_info_for_log(), {**(filters or {}), "modo_pedidos": modo_pedidos}, threading.current_thread().name)
         return self.repo.get_pedidos_pendientes(filters, modo_pedidos=modo_pedidos)
 
     def load_balance_planificacion(self, filters: dict, policy: dict | None = None, preloaded: dict | None = None) -> list[dict]:
+        logger.info("[PLANNING_READ] funcion=load_balance_planificacion db_name=delegated path=repo exists=unknown size=unknown mtime=unknown snapshot_info=%s filters=%s thread=%s", self.repo._snapshot_info_for_log(), filters, threading.current_thread().name)
         return self.repo.get_balance_planificacion(filters, policy=policy, preloaded=preloaded)
 
     def get_balance_cobertura_detalle(self, filters: dict, balance_row: dict, policy: dict | None = None) -> list[dict]:

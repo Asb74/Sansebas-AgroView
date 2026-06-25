@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime
 import logging
+import threading
 from typing import Any
 
 from config import DB_LOTEADO
 from services.legacy_sync_service import CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE, LegacySyncService
-from services.runtime_database_service import RuntimeDatabaseLockedError, RuntimeDatabaseService
+from services.runtime_database_service import RuntimeDatabaseLockedError, RuntimeDatabaseService, make_operation_id
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +27,10 @@ class UpdateOrchestratorService:
 
     def update_local_snapshot_only(self) -> dict[str, Any]:
         """SQLite central -> snapshot local. No lee Access ni ejecuta legacy."""
+        op_id = make_operation_id("update_local_snapshot_only")
+        self._log_start(op_id, "update_local_snapshot_only", True, None, None)
         logger.info("Actualización foto local iniciada (solo SQLite central -> snapshot local)")
-        result = self._create_snapshot(force=True, cache_reason="update_local_snapshot_only")
+        result = self._create_snapshot(force=True, cache_reason="update_local_snapshot_only", operation_id=op_id)
         if result.get("ok"):
             logger.info("Actualización foto local finalizada OK")
         else:
@@ -38,12 +42,15 @@ class UpdateOrchestratorService:
 
     def update_from_access_then_snapshot(self) -> dict[str, Any]:
         """Access -> SQLite central con staging seguro -> snapshot local."""
+        op_id = make_operation_id("update_from_access_then_snapshot")
+        self._log_start(op_id, "update_from_access_then_snapshot", True, None, None)
         logger.info("Actualización desde Access iniciada (todas las tablas activas)")
-        legacy = self.update_legacy_active(snapshot_after=False)
+        legacy = self.update_legacy_active(snapshot_after=False, operation_id=op_id)
+        logger.info("[ORCH] op_id=%s evento=LEGACY_RESULT metodo=update_from_access_then_snapshot ok_count=%s fail_count=%s total=%s blocked=%s partial=%s", op_id, legacy.get("ok_count"), legacy.get("fail_count"), legacy.get("total"), legacy.get("blocked"), legacy.get("partial"))
         if legacy.get("blocked"):
             logger.warning("Actualización desde Access detenida: legacy bloqueado por seguridad")
             return {"ok": False, "partial": False, "blocked": True, "stopped": True, "legacy": legacy, "runtime": {"ok": False, "skipped": True}}
-        runtime = self._create_snapshot_after_legacy(legacy, "update_from_access_then_snapshot")
+        runtime = self._create_snapshot_after_legacy(legacy, "update_from_access_then_snapshot", operation_id=op_id)
         ok = bool(legacy.get("ok")) and bool(runtime.get("ok"))
         partial = (not ok) and int(legacy.get("ok_count", 0) or 0) > 0 and bool(runtime.get("ok"))
         partial = partial or (bool(legacy.get("ok")) and bool(runtime.get("using_previous_snapshot")))
@@ -51,13 +58,18 @@ class UpdateOrchestratorService:
         return {"ok": ok, "partial": partial, "legacy": legacy, "runtime": runtime, "message": ACCESS_UPDATE_SUCCESS_MESSAGE if ok else ""}
 
     def update_selected_legacy_then_snapshot(self, setting_id: int) -> dict[str, Any]:
+        op_id = make_operation_id("update_selected_legacy_then_snapshot")
+        self._log_start(op_id, "update_selected_legacy_then_snapshot", True, True, setting_id)
         logger.info("Tabla legacy ejecutada. setting_id=%s", setting_id)
         ok, msg = self.legacy_sync_service.sync_setting(setting_id)
         legacy = {"ok": ok, "message": msg, "results": [(setting_id, ok, msg)], "ok_count": 1 if ok else 0, "fail_count": 0 if ok else 1, "total": 1}
-        runtime = self._create_snapshot_after_legacy(legacy, f"update_selected_legacy_then_snapshot:{setting_id}") if ok else {"ok": False, "skipped": True}
+        logger.info("[ORCH] op_id=%s evento=SELECTED_LEGACY_RESULT setting_id=%s legacy_ok=%s legacy_message=%s calls_snapshot=%s", op_id, setting_id, ok, msg, ok)
+        runtime = self._create_snapshot_after_legacy(legacy, f"update_selected_legacy_then_snapshot:{setting_id}", operation_id=op_id) if ok else {"ok": False, "skipped": True}
         return {"ok": bool(ok and runtime.get("ok")), "legacy": legacy, "runtime": runtime, "message": msg}
 
-    def update_legacy_active(self, snapshot_after: bool = False) -> dict[str, Any]:
+    def update_legacy_active(self, snapshot_after: bool = False, operation_id: str | None = None) -> dict[str, Any]:
+        op_id = operation_id or make_operation_id("update_legacy_active")
+        self._log_start(op_id, "update_legacy_active", None, snapshot_after, None)
         logger.info("Inicio actualización legacy activas")
         try:
             get_blocked_settings = getattr(self.legacy_sync_service, "get_central_sqlite_blocked_settings", None)
@@ -71,7 +83,7 @@ class UpdateOrchestratorService:
             fail_count = len(results) - ok_count
             result: dict[str, Any] = {"ok": fail_count == 0, "results": results, "ok_count": ok_count, "fail_count": fail_count, "total": len(results)}
             if snapshot_after and (result["ok"] or ok_count > 0):
-                result["runtime"] = self._create_snapshot_after_legacy(result, "update_legacy_active")
+                result["runtime"] = self._create_snapshot_after_legacy(result, "update_legacy_active", operation_id=op_id)
                 result["partial"] = (not result["ok"]) and ok_count > 0 and bool(result["runtime"].get("ok"))
                 result["ok"] = bool(result["ok"] and result["runtime"].get("ok"))
             logger.info("Fin actualización legacy activas. OK=%s Fallidas=%s Total=%s", ok_count, fail_count, len(results))
@@ -84,24 +96,34 @@ class UpdateOrchestratorService:
         logger.info("Inicio actualización completa")
         return self.update_from_access_then_snapshot()
 
-    def _create_snapshot_after_legacy(self, legacy: dict[str, Any], reason: str) -> dict[str, Any]:
+
+    def _log_start(self, op_id: str, metodo: str, force: Any, snapshot_after: Any, setting_id: Any) -> None:
+        logger.info("[ORCH] op_id=%s evento=START metodo=%s force=%s snapshot_after=%s setting_id=%s thread=%s timestamp=%s", op_id, metodo, force, snapshot_after, setting_id, threading.current_thread().name, datetime.now().isoformat())
+
+    def _create_snapshot_after_legacy(self, legacy: dict[str, Any], reason: str, operation_id: str | None = None) -> dict[str, Any]:
         if not legacy.get("ok") and int(legacy.get("ok_count", 0) or 0) <= 0:
             logger.warning("Snapshot después de legacy omitido porque no hay sincronizaciones válidas. reason=%s", reason)
             return {"ok": False, "skipped": True}
         logger.info("Snapshot creado después de legacy iniciado. reason=%s", reason)
-        runtime = self._create_snapshot(force=True, cache_reason=reason)
+        runtime = self._create_snapshot(force=True, cache_reason=reason, operation_id=operation_id)
         logger.info("Snapshot creado después de legacy finalizado. reason=%s ok=%s", reason, runtime.get("ok"))
         return runtime
 
-    def _create_snapshot(self, force: bool, cache_reason: str) -> dict[str, Any]:
+    def _create_snapshot(self, force: bool, cache_reason: str, operation_id: str | None = None) -> dict[str, Any]:
+        op_id = operation_id or make_operation_id(cache_reason)
         try:
-            ok, errors = self.runtime_database_service.prepare_runtime_databases(force=force, reason=cache_reason)
+            active_before = self.runtime_database_service.get_current_snapshot_dir() if self.runtime_database_service.has_current_snapshot() else None
+            current_snapshot_file = self.runtime_database_service.current_snapshot_file
+            current_before = current_snapshot_file.read_text(encoding="utf-8").strip() if current_snapshot_file.exists() else ""
+            logger.info("[ORCH] op_id=%s evento=BEFORE_PREPARE_RUNTIME reason=%s current_snapshot_file=%s current_snapshot_value=%s active_snapshot_before=%s", op_id, cache_reason, current_snapshot_file, current_before, active_before)
+            ok, errors = self.runtime_database_service.prepare_runtime_databases(force=force, reason=cache_reason, operation_id=op_id)
             active_snapshot = self.runtime_database_service.get_current_snapshot_dir() if ok else None
             current_snapshot_value = ""
             current_snapshot_file = self.runtime_database_service.current_snapshot_file
             if current_snapshot_file.exists():
                 current_snapshot_value = current_snapshot_file.read_text(encoding="utf-8").strip()
             planning_repository_path = active_snapshot / DB_LOTEADO if active_snapshot is not None else None
+            logger.info("[ORCH] op_id=%s evento=AFTER_PREPARE_RUNTIME ok=%s errors=%s active_snapshot_after=%s current_snapshot_value=%s using_previous_snapshot=%s", op_id, ok, errors, active_snapshot, current_snapshot_value, (not ok and self.runtime_database_service.has_current_snapshot()))
             logger.info(
                 "[SNAPSHOT_PUBLISH] orchestrator runtime_ok=%s active_snapshot=%s current_snapshot_file=%s current_snapshot_value=%s planning_repository_path=%s",
                 ok,

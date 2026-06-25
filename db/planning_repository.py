@@ -12,12 +12,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
 import time
+import threading
 from typing import Any
 
 from config import DB_CALIDAD, DB_EEPPL, DB_FRUTA, DB_LOTEADO, DB_PEDIDOS
 from db.connection import get_connection
 from services.runtime_cache_service import register_runtime_cache
-from services.runtime_database_service import RuntimeDatabaseService
+from services.runtime_database_service import DEBUG_PEDIDOS_COMPARE, RuntimeDatabaseService
 from services.pedidos_previstos_service import cargar_pedidos_previstos_filtrados
 from utils.number_utils import to_float_safe
 
@@ -287,6 +288,17 @@ class PlanningRepository:
             raise RuntimeError("No hay snapshot local activo disponible")
         return resolved
 
+
+    def _snapshot_info_for_log(self) -> dict[str, Any]:
+        try:
+            return self.runtime_db_service.debug_snapshot_dirs()
+        except Exception as exc:
+            return {"error": str(exc), "base_dir": str(getattr(self, "base_dir", ""))}
+
+    def _log_planning_read(self, funcion: str, db_name: str, path: Path, filters: dict | None = None) -> None:
+        meta = {"exists": path.exists(), "size": path.stat().st_size if path.exists() else 0, "mtime": path.stat().st_mtime if path.exists() else 0.0}
+        logger.info("[PLANNING_READ] funcion=%s db_name=%s path=%s exists=%s size=%s mtime=%s snapshot_info=%s filters=%s thread=%s", funcion, db_name, path, meta["exists"], meta["size"], meta["mtime"], self._snapshot_info_for_log(), filters or {}, threading.current_thread().name)
+
     def _db_path(self, filename: str) -> Path:
         if self._explicit_base_dir is None and not (os.environ.get("PYTEST_CURRENT_TEST") and self.base_dir.name == ".pytest_missing_snapshot"):
             path = self.runtime_db_service.get_runtime_path(filename)
@@ -294,6 +306,7 @@ class PlanningRepository:
         else:
             path = self.base_dir / filename
         logger.info("[RUNTIME] PlanningRepository Snapshot utilizado=%s Ruta SQLite utilizada=%s", path.parent, path)
+        self._log_planning_read(inspect.stack()[1].function if len(inspect.stack()) > 1 else "<unknown>", filename, path, None)
         return path
 
     @staticmethod
@@ -2990,6 +3003,8 @@ class PlanningRepository:
                 GROUP BY ldo.CULTIVO, ldo.""" + f'"{camp_col}"' + """, l.Variedad, l.Calibre,
                          l.Lote, mc.MARCA, l.IdConfeccion, l.Confeccion, mv.GRUPO, mv.SUBGRUPO
             """
+            sql_hash = hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
+            logger.info("[PEDIDOS_READ] snapshot_path=%s DBPedidos_path=%s DBEEPPL_path=%s bdloteado_path=%s filters=%s modo_pedidos=%s sql_hash=%s params=%s", pedidos_path.parent, pedidos_path, db_eepl, db_loteado, filters, modo_pedidos, sql_hash, params)
             query_t0 = time.perf_counter()
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
             logger.info("[PERF Repo.StockAlmacen.Query] tiempo=%.3fs rows=%s", time.perf_counter() - query_t0, len(rows))
@@ -3163,7 +3178,13 @@ class PlanningRepository:
         _trace_stack("Pedidos.Query")
         filters_hash = _trace_filters("Pedidos.Query", filters, {"modo_pedidos": modo_pedidos})
         logger.debug("get_pedidos_pendientes: inicio")
+        if DEBUG_PEDIDOS_COMPARE:
+            try:
+                self.runtime_db_service.debug_compare_dbpedidos_record()
+            except Exception:
+                logger.exception("[PEDIDOS_COMPARE] error antes de get_pedidos_pendientes")
         pedidos_path = self._db_path(DB_PEDIDOS)
+        self._log_planning_read("get_pedidos_pendientes", DB_PEDIDOS, pedidos_path, filters)
         logger.info("[DIAG Pedidos.DB] path=%s exists=%s size_bytes=%s", pedidos_path, pedidos_path.exists(), pedidos_path.stat().st_size if pedidos_path.exists() else 0)
         kpi_vacio = {"Kg pedido teórico total": 0.0, "Kg hecho real total": 0.0, "Kg pendiente total": 0.0, "Kg terminado/completo total": 0.0, "Merma kg total": 0.0, "% merma total": 0.0, "Nº pedidos": 0, "Nº pedidos pendientes": 0, "Nº pedidos terminados": 0, "Nº líneas": 0, "Nº líneas sin datos": 0, "Nº líneas parciales": 0, "Nº líneas sin confección estimadas": 0}
         if not pedidos_path.exists():
@@ -3181,6 +3202,7 @@ class PlanningRepository:
             db_loteado = self._db_path(DB_LOTEADO)
             conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
             conn.execute(f"ATTACH DATABASE '{db_loteado.as_posix()}' AS bdloteado")
+            logger.info("[PEDIDOS_READ] snapshot_path=%s DBPedidos_path=%s DBEEPPL_path=%s bdloteado_path=%s filters=%s modo_pedidos=%s sql_hash=pending params=pending", pedidos_path.parent, pedidos_path, db_eepl, db_loteado, filters, modo_pedidos)
             eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
             if "MVariedad" not in eepl_tables:
                 logger.warning("No existe tabla MVariedad en DBEEPPL.sqlite")
@@ -3420,6 +3442,8 @@ class PlanningRepository:
             if run_full_diagnostics:
                 self._log_pedidos_diagnostics(conn, pedidos_path, filters, modo_pedidos, query, params)
             logger.debug("get_pedidos_pendientes: después de pedidos_filtrados (query construida)")
+            sql_hash = hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
+            logger.info("[PEDIDOS_READ] snapshot_path=%s DBPedidos_path=%s DBEEPPL_path=%s bdloteado_path=%s filters=%s modo_pedidos=%s sql_hash=%s params=%s", pedidos_path.parent, pedidos_path, db_eepl, db_loteado, filters, modo_pedidos, sql_hash, params)
             query_t0 = time.perf_counter()
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
             logger.info("[PEDIDOS_QUERY] filas devueltas=%s", len(rows))
