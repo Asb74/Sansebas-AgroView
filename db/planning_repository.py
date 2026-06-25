@@ -15,7 +15,7 @@ import traceback
 from typing import Any
 
 from config import DB_CALIDAD, DB_DIR, DB_EEPPL, DB_FRUTA, DB_LOTEADO, DB_PEDIDOS
-from db.connection import get_connection
+from db.connection import get_connection, get_runtime_database_path
 from services.pedidos_previstos_service import cargar_pedidos_previstos_filtrados
 
 
@@ -150,8 +150,8 @@ def canonical_get(row: dict[str, Any], key: str, default: Any = "") -> Any:
 class PlanningRepository:
     MIN_PCT_APROVECHAMIENTO_LOTEADO = 10.0
 
-    def __init__(self, base_dir: str | Path = DB_DIR) -> None:
-        self.base_dir = Path(base_dir)
+    def __init__(self, base_dir: str | Path | None = None) -> None:
+        self.base_dir = Path(base_dir) if base_dir else None
         self.db_loteado = self._db_path(DB_LOTEADO)
         self._harvestsync_client = None
         self._harvestsync_unavailable = False
@@ -161,7 +161,13 @@ class PlanningRepository:
         self.ensure_aprovechamientos_estimados_schema()
 
     def _db_path(self, filename: str) -> Path:
-        return self.base_dir / filename
+        if self.base_dir is not None:
+            return self.base_dir / filename
+        try:
+            return get_runtime_database_path(filename)
+        except RuntimeError:
+            logger.warning("No hay snapshot runtime disponible; usando ruta legacy para %s", filename)
+            return Path(DB_DIR) / filename
 
     @staticmethod
     def cargar_mconfecciones(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:

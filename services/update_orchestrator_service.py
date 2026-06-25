@@ -24,7 +24,7 @@ class UpdateOrchestratorService:
         logger.info("Inicio actualización foto local")
         try:
             ok, errors = self.runtime_database_service.prepare_runtime_databases(force=True)
-            result = {"ok": ok, "errors": errors, "updated": ok}
+            result = {"ok": ok, "errors": errors, "updated": ok, "using_previous_snapshot": (not ok and self.runtime_database_service.get_current_snapshot_dir() is not None)}
             if ok:
                 logger.info("Fin actualización foto local OK")
             else:
@@ -64,11 +64,11 @@ class UpdateOrchestratorService:
         legacy = self.update_legacy_active()
         runtime = self.update_runtime_snapshot()
         ok = bool(legacy.get("ok")) and bool(runtime.get("ok"))
-        partial = bool(legacy.get("ok")) and runtime.get("error_type") == "runtime_databases_locked"
+        partial = bool(legacy.get("ok")) and bool(runtime.get("using_previous_snapshot"))
         if ok:
             logger.info("Fin actualización completa OK")
         elif partial:
-            logger.warning("Actualización parcial en Actualizar todo: legacy OK, foto local cancelada por bloqueo. Runtime=%s", runtime)
+            logger.warning("Actualización parcial en Actualizar todo: legacy OK, usando última foto local disponible. Runtime=%s", runtime)
         else:
             logger.warning("Fin actualización completa con errores. Legacy=%s Runtime=%s", legacy, runtime)
         return {"ok": ok, "partial": partial, "legacy": legacy, "runtime": runtime}
