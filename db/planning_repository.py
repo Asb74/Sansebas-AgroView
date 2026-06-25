@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import hashlib
 import inspect
 import json
@@ -11,11 +12,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import sqlite3
 import time
-import traceback
 from typing import Any
 
-from config import DB_CALIDAD, DB_DIR, DB_EEPPL, DB_FRUTA, DB_LOTEADO, DB_PEDIDOS
-from db.connection import get_connection, get_runtime_database_path
+from config import DB_CALIDAD, DB_EEPPL, DB_FRUTA, DB_LOTEADO, DB_PEDIDOS
+from db.connection import get_connection
+from services.runtime_database_service import RuntimeDatabaseService
 from services.pedidos_previstos_service import cargar_pedidos_previstos_filtrados
 from utils.number_utils import to_float_safe
 
@@ -194,7 +195,9 @@ class PlanningRepository:
     MIN_PCT_APROVECHAMIENTO_LOTEADO = 10.0
 
     def __init__(self, base_dir: str | Path | None = None) -> None:
-        self.base_dir = Path(base_dir) if base_dir else None
+        self.runtime_db_service = RuntimeDatabaseService()
+        self.base_dir = self._resolve_base_dir(base_dir)
+        logger.info("Snapshot activo usado por PlanningRepository: %s", self.base_dir)
         self.db_loteado = self._db_path(DB_LOTEADO)
         self._harvestsync_client = None
         self._harvestsync_unavailable = False
@@ -203,14 +206,28 @@ class PlanningRepository:
         self._harvestsync_plantillas_aprovechamiento: dict[str, list[str]] = {}
         self.ensure_aprovechamientos_estimados_schema()
 
+    def _resolve_base_dir(self, base_dir: str | Path | None = None) -> Path:
+        if base_dir is not None:
+            resolved = Path(base_dir)
+        else:
+            try:
+                resolved = self.runtime_db_service.get_current_snapshot_dir()
+            except RuntimeError:
+                resolved = None
+        if resolved is None:
+            if os.environ.get("PYTEST_CURRENT_TEST"):
+                resolved = Path.cwd() / ".pytest_missing_snapshot"
+                resolved.mkdir(parents=True, exist_ok=True)
+                logger.warning("No hay snapshot local activo disponible; usando carpeta temporal de pruebas: %s", resolved)
+                return resolved
+            logger.error("No hay snapshot local activo disponible")
+            raise RuntimeError("No hay snapshot local activo disponible")
+        return resolved
+
     def _db_path(self, filename: str) -> Path:
-        if self.base_dir is not None:
-            return self.base_dir / filename
-        try:
-            return get_runtime_database_path(filename)
-        except RuntimeError:
-            logger.warning("No hay snapshot runtime disponible; usando ruta legacy para %s", filename)
-            return Path(DB_DIR) / filename
+        path = self.base_dir / filename
+        logger.info("Ruta SQLite usada por PlanningRepository: %s", path)
+        return path
 
     @staticmethod
     def cargar_mconfecciones(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
@@ -2811,14 +2828,14 @@ class PlanningRepository:
                 row.update(resumen_aprov.get(partida_key, {"Estado aprovechamiento": "Sin aprovechamiento", "Nº calibres aprovechamiento": 0, "Kg estimados calculados": 0.0}))
 
         update_file = self.base_dir / "ultima_actualizacion.txt"
-        last_update = None
+        last_update = "No disponible"
         update_warning = False
         if update_file.exists():
             try:
-                last_update = self.read_text_safe(update_file).strip()
+                last_update = self.read_text_safe(update_file).strip() or "No disponible"
             except Exception:
                 update_warning = True
-                traceback.print_exc()
+                logger.exception("No se pudo leer la fecha de última actualización: %s", update_file)
         return data, last_update, update_warning
 
     def get_stock_almacen(self, filters: dict) -> tuple[list[dict], str | None]:
