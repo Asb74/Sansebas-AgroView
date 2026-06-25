@@ -2,7 +2,7 @@ import tkinter as tk
 import threading
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from services.legacy_sync_service import LegacySyncService
+from services.legacy_sync_service import CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE, LegacySyncService
 from services.runtime_database_service import RuntimeDatabaseService
 from services.update_orchestrator_service import UpdateOrchestratorService
 from widgets.screen_header import ScreenHeader
@@ -141,9 +141,16 @@ class LegacySyncSettingsScreen(ttk.Frame):
         sid = self._selected_id()
         if not sid:
             return
+        setting = next((r for r in self.service.get_settings() if int(r["Id"]) == sid), None)
+        if setting and self.service.setting_targets_central_sqlite(setting):
+            self._show_central_sqlite_block_warning()
+            return
         self._run_update_action("Actualizar seleccionada", lambda: self._sync_selected_worker(sid), self._format_single_sync_result)
 
     def _sync_active(self) -> None:
+        if self.service.get_central_sqlite_blocked_settings(active_only=True):
+            self._show_central_sqlite_block_warning()
+            return
         self._run_update_action("Actualizar tablas legacy activas", self.update_orchestrator.update_legacy_active, self._format_legacy_result)
 
     def _update_runtime_snapshot(self) -> None:
@@ -151,6 +158,13 @@ class LegacySyncSettingsScreen(ttk.Frame):
 
     def _update_all(self) -> None:
         self._run_update_action("Actualizar todo", self.update_orchestrator.update_all, self._format_all_result)
+
+    def _show_central_sqlite_block_warning(self) -> None:
+        messagebox.showwarning(
+            "Operación bloqueada",
+            f"Esta operación está bloqueada por seguridad porque modificaría la SQLite central.\n\n{CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE}",
+            parent=self,
+        )
 
     def _sync_selected_worker(self, setting_id: int) -> dict:
         ok, msg = self.service.sync_setting(setting_id)
@@ -198,7 +212,14 @@ class LegacySyncSettingsScreen(ttk.Frame):
         ok_count = int(result.get("ok_count", 0))
         fail_count = int(result.get("fail_count", 0))
         total = int(result.get("total", ok_count + fail_count))
-        ok = fail_count == 0 and not result.get("error")
+        blocked = bool(result.get("blocked"))
+        ok = fail_count == 0 and not result.get("error") and not blocked
+        if blocked:
+            return False, (
+                "Resultado final: actualización legacy detenida/bloqueada.\n"
+                "Esta operación está bloqueada por seguridad porque modificaría la SQLite central.\n"
+                f"{CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE}"
+            )
         suffix = "" if ok else "\nHay errores; revisa el log."
         return ok, f"Resultado final: tablas legacy activas procesadas.\nCorrectos: {ok_count}\nFallidos: {fail_count}\nTotal: {total}{suffix}"
 

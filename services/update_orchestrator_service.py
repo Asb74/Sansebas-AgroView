@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from services.legacy_sync_service import LegacySyncService
+from services.legacy_sync_service import CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE, LegacySyncService
 from services.runtime_database_service import RuntimeDatabaseLockedError, RuntimeDatabaseService
 
 logger = logging.getLogger(__name__)
@@ -46,6 +46,25 @@ class UpdateOrchestratorService:
     def update_legacy_active(self) -> dict[str, Any]:
         logger.info("Inicio actualización legacy activas")
         try:
+            get_blocked_settings = getattr(self.legacy_sync_service, "get_central_sqlite_blocked_settings", None)
+            blocked_settings = get_blocked_settings(active_only=True) if get_blocked_settings else []
+            if blocked_settings:
+                logger.error(
+                    "Actualización legacy bloqueada por seguridad. configuraciones=%s recomendacion=%s",
+                    [row.get("Nombre", "") for row in blocked_settings],
+                    "Usar sincronización segura/staging",
+                )
+                return {
+                    "ok": False,
+                    "blocked": True,
+                    "stopped": True,
+                    "results": [],
+                    "ok_count": 0,
+                    "fail_count": len(blocked_settings),
+                    "total": len(blocked_settings),
+                    "error": CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE,
+                    "blocked_settings": [row.get("Nombre", "") for row in blocked_settings],
+                }
             results = self.legacy_sync_service.sync_active_settings()
             ok_count = sum(1 for _, ok, _ in results if ok)
             fail_count = len(results) - ok_count
@@ -62,6 +81,9 @@ class UpdateOrchestratorService:
     def update_all(self) -> dict[str, Any]:
         logger.info("Inicio actualización completa")
         legacy = self.update_legacy_active()
+        if legacy.get("blocked"):
+            logger.warning("Actualizar todo detenido: legacy activas bloqueadas por seguridad. No se continúa con runtime.")
+            return {"ok": False, "partial": False, "blocked": True, "stopped": True, "legacy": legacy, "runtime": {"ok": False, "skipped": True}}
         runtime = self.update_runtime_snapshot()
         ok = bool(legacy.get("ok")) and bool(runtime.get("ok"))
         partial = bool(legacy.get("ok")) and bool(runtime.get("using_previous_snapshot"))
