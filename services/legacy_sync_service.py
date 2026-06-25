@@ -18,6 +18,38 @@ VALID_MODES = {"REEMPLAZAR_TABLA", "CREAR_O_REEMPLAZAR", "PLANIFICACION_HOY_EN_A
 logger = logging.getLogger(__name__)
 
 
+CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE = (
+    "Operación bloqueada: no se permite reemplazar tablas directamente sobre SQLite central."
+)
+CENTRAL_SQLITE_WRITE_BLOCK_RECOMMENDATION = "Usar sincronización segura/staging."
+
+
+def _normalize_path_for_safety(path: Path | str) -> str:
+    raw = str(path or "").strip().replace("/", "\\")
+    while "\\\\" in raw[2:]:
+        raw = raw[:2] + raw[2:].replace("\\\\", "\\")
+    return raw.rstrip("\\").casefold()
+
+
+def is_central_sqlite_path(path: Path) -> bool:
+    """Return True when *path* points inside CENTRAL_SQLITE_DIR.
+
+    Network UNC paths are best-effort here: on non-Windows hosts pathlib cannot
+    resolve them as UNC roots, so we compare normalized textual paths first and
+    use resolved paths as an additional fallback.
+    """
+    central = _normalize_path_for_safety(CENTRAL_SQLITE_DIR)
+    target = _normalize_path_for_safety(path)
+    if target == central or target.startswith(f"{central}\\"):
+        return True
+    try:
+        resolved_central = _normalize_path_for_safety(Path(CENTRAL_SQLITE_DIR).resolve(strict=False))
+        resolved_target = _normalize_path_for_safety(path.resolve(strict=False))
+        return resolved_target == resolved_central or resolved_target.startswith(f"{resolved_central}\\")
+    except Exception:
+        return False
+
+
 class LegacySyncService:
     def __init__(self) -> None:
         self.repository = LegacySyncRepository()
@@ -118,6 +150,28 @@ class LegacySyncService:
     def get_logs(self, limit: int = 100) -> list[dict[str, Any]]:
         return self.repository.get_logs(limit)
 
+    def setting_targets_central_sqlite(self, setting: dict[str, Any]) -> bool:
+        return is_central_sqlite_path(Path(str(setting.get("SqlitePath", ""))))
+
+    def get_central_sqlite_blocked_settings(self, active_only: bool = False) -> list[dict[str, Any]]:
+        settings = self.repository.get_active_settings() if active_only else self.repository.get_settings()
+        return [row for row in settings if self.setting_targets_central_sqlite(row)]
+
+    def _central_sqlite_block_error(self, setting: dict[str, Any], mode: str) -> str:
+        sqlite_path = Path(str(setting.get("SqlitePath", "")))
+        logger.error(
+            "Operación destructiva bloqueada sobre SQLite central. destino=%s modo=%s legacy=%s recomendacion=%s",
+            sqlite_path,
+            mode,
+            setting.get("Nombre", ""),
+            CENTRAL_SQLITE_WRITE_BLOCK_RECOMMENDATION,
+        )
+        return CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE
+
+    def _ensure_not_central_sqlite_write(self, setting: dict[str, Any], mode: str) -> None:
+        if self.setting_targets_central_sqlite(setting):
+            raise PermissionError(self._central_sqlite_block_error(setting, mode))
+
     def test_access_table(self, setting_id: int) -> tuple[bool, str]:
         ok, msg, _, _ = self._run_export(setting_id)
         return ok, msg
@@ -128,6 +182,31 @@ class LegacySyncService:
         if not setting:
             return False, "Configuración no encontrada"
         mode = self._normalize_mode(str(setting.get("Modo", "REEMPLAZAR_TABLA")))
+        if self.setting_targets_central_sqlite(setting):
+            msg = self._central_sqlite_block_error(setting, mode)
+            end = datetime.utcnow().isoformat(timespec="seconds")
+            self.repository.update_sync_result(setting_id, False, "Operación bloqueada por seguridad", msg)
+            self.repository.add_log(
+                {
+                    "SettingId": setting_id,
+                    "Nombre": setting["Nombre"],
+                    "AccessPath": setting["AccessPath"],
+                    "AccessTable": setting["AccessTable"],
+                    "SqlitePath": setting["SqlitePath"],
+                    "SqliteTable": setting["SqliteTable"],
+                    "Inicio": start,
+                    "Fin": end,
+                    "Ok": 0,
+                    "FilasExportadas": 0,
+                    "FilasImportadas": 0,
+                    "Mensaje": "Operación bloqueada por seguridad",
+                    "Error": msg,
+                    "ModoUsado": mode,
+                    "TablaDestinoExistia": 0,
+                    "TablaDestinoCreada": 0,
+                }
+            )
+            return False, msg
         if mode == "PLANIFICACION_HOY_EN_ADELANTE":
             return self.sync_planificacion_hoy_en_adelante(setting_id)
         ok, message, csv_path, exported = self._run_export(setting_id)
@@ -189,12 +268,19 @@ class LegacySyncService:
         self._sync_running = True
         start = datetime.utcnow()
         fecha_corte = date.today().isoformat()
-        ok_required, required_msg = self._validate_required_planificacion_settings()
-        if not ok_required:
-            return False, required_msg
-        logger.info("Sync planificación usando CENTRAL_SQLITE_DIR=%s", CENTRAL_SQLITE_DIR)
-        logger.info("Iniciando actualización planificación rápida. Fecha corte=%s", fecha_corte)
         try:
+            ok_required, required_msg = self._validate_required_planificacion_settings()
+            if not ok_required:
+                return False, required_msg
+            blocked = self.get_central_sqlite_blocked_settings(active_only=True)
+            if blocked:
+                first = blocked[0]
+                msg = self._central_sqlite_block_error(first, str(first.get("Modo", "PLANIFICACION_HOY_EN_ADELANTE")))
+                if setting_id:
+                    self.repository.update_sync_result(setting_id, False, "Operación bloqueada por seguridad", msg)
+                return False, msg
+            logger.info("Sync planificación usando CENTRAL_SQLITE_DIR=%s", CENTRAL_SQLITE_DIR)
+            logger.info("Iniciando actualización planificación rápida. Fecha corte=%s", fecha_corte)
             pedidos = self._actualizar_pedidos_desde_hoy(fecha_corte)
             id_palets, loteado = self._actualizar_loteado_desde_hoy(fecha_corte)
             lote = self._actualizar_lote_por_palets(id_palets)
@@ -250,6 +336,7 @@ class LegacySyncService:
         header = self._sanitize_headers(rows[0])
         idx = next((i for i,c in enumerate(header) if c.lower()=="idpalet"), -1)
         palets = sorted({r[idx] for r in rows[1:] if idx >= 0 and idx < len(r) and str(r[idx]).strip()})
+        self._ensure_not_central_sqlite_write(setting, str(setting.get("Modo", "PLANIFICACION_HOY_EN_ADELANTE")))
         sqlite_path = Path(setting["SqlitePath"])
         logger.info("Inicio escritura DB sqlite_path=%s tabla=%s", sqlite_path, table_name)
         with sqlite3.connect(sqlite_path, timeout=30) as conn:
@@ -270,6 +357,7 @@ class LegacySyncService:
         chunk_size = 200
         chunks = [id_palets[i:i + chunk_size] for i in range(0, len(id_palets), chunk_size)]
         setting = self._find_setting("BDLoteado.sqlite", "Lote")
+        self._ensure_not_central_sqlite_write(setting, str(setting.get("Modo", "PLANIFICACION_HOY_EN_ADELANTE")))
         sqlite_path = Path(setting["SqlitePath"])
         total_imported = 0
         failed_chunks: list[int] = []
@@ -390,6 +478,7 @@ class LegacySyncService:
         ok, msg, csv_path, _ = self._run_export_custom(setting, access_query)
         if not ok or not csv_path:
             raise RuntimeError(msg)
+        self._ensure_not_central_sqlite_write(setting, str(setting.get("Modo", "PLANIFICACION_HOY_EN_ADELANTE")))
         sqlite_path = Path(setting["SqlitePath"])
         logger.info("Inicio escritura DB sqlite_path=%s tabla=%s", sqlite_path, table_name)
         with sqlite3.connect(sqlite_path, timeout=30) as conn:
@@ -675,6 +764,15 @@ class LegacySyncService:
 
     def _import_csv_to_sqlite(self, csv_path: Path, sqlite_path: Path, table_name: str, mode: str) -> tuple[int, bool, bool]:
         mode = self._normalize_mode(mode)
+        if is_central_sqlite_path(sqlite_path):
+            logger.error(
+                "Operación destructiva bloqueada sobre SQLite central. destino=%s modo=%s legacy=%s recomendacion=%s",
+                sqlite_path,
+                mode,
+                table_name,
+                CENTRAL_SQLITE_WRITE_BLOCK_RECOMMENDATION,
+            )
+            raise PermissionError(CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE)
         if mode != "REEMPLAZAR_TABLA":
             raise ValueError("Modo no soportado todavía")
 
