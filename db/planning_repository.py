@@ -81,6 +81,33 @@ CANONICAL_ALIASES = {
     "kg": ["kg", "Kg", "Kg disponibles", "Neto", "kg_neto"],
 }
 
+
+
+def normalizar_bool_sqlite(value: Any) -> bool:
+    """Normaliza valores booleanos frecuentes de SQLite/Access a bool de Python."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    text = str(value).strip().upper()
+    if text in {"", "0", "FALSE", "F", "NO", "N"}:
+        return False
+    if text in {"1", "TRUE", "T", "YES", "Y", "SI", "S", "SÍ"}:
+        return True
+    try:
+        return float(text.replace(",", ".")) != 0
+    except Exception:
+        return True
+
+
+def _sqlite_not_cancelled_expr(column_sql: str) -> str:
+    return (
+        f"({column_sql} IS NULL OR "
+        f"UPPER(TRIM(CAST({column_sql} AS TEXT))) IN ('', '0', 'FALSE', 'F', 'NO', 'N'))"
+    )
+
 def normalizar_texto(valor: Any) -> str:
     return str(valor or "").strip()
 
@@ -213,10 +240,34 @@ class PlanningRepository:
         self._harvestsync_cache.clear()
         self._harvestsync_plantillas_calibre.clear()
         self._harvestsync_plantillas_aprovechamiento.clear()
+        self.invalidate_planning_filter_master_cache()
         if self._explicit_base_dir is None:
             self.base_dir = self._resolve_base_dir(None)
             self.db_loteado = self._db_path(DB_LOTEADO)
         logger.info("[RUNTIME] PlanningRepository cachés invalidadas snapshot=%s", self.base_dir)
+
+    def _resolve_pedidos_cancelado_field(self, pedidos_cols: list[str]) -> str | None:
+        logger.info("[PEDIDOS_SCHEMA] columnas tabla Pedidos=%s", pedidos_cols)
+        has_cancelado = "Cancelado" in pedidos_cols
+        has_canceladop = "Canceladop" in pedidos_cols
+        logger.info("[PEDIDOS_SCHEMA] existe Cancelado=%s", has_cancelado)
+        logger.info("[PEDIDOS_SCHEMA] existe Canceladop=%s", has_canceladop)
+        if has_cancelado:
+            field = "Cancelado"
+        elif has_canceladop:
+            field = "Canceladop"
+        else:
+            logger.warning("[PEDIDOS_QUERY] No existe Cancelado ni Canceladop en Pedidos; se asume no cancelado")
+            field = None
+        logger.info("[PEDIDOS_QUERY] campo cancelado usado=%s", field or "<sin filtro; asumido no cancelado>")
+        return field
+
+    def _pedidos_not_cancelled_clause(self, pedidos_cols: list[str], alias: str = "p") -> str:
+        field = self._resolve_pedidos_cancelado_field(pedidos_cols)
+        if not field:
+            return "1 = 1"
+        prefix = f'{alias}."' if alias else '"'
+        return _sqlite_not_cancelled_expr(f'{prefix}{field}"')
 
     def _resolve_base_dir(self, base_dir: str | Path | None = None) -> Path:
         if base_dir is not None:
@@ -3071,6 +3122,8 @@ class PlanningRepository:
             def scalar(sql: str, params: list[Any] | tuple[Any, ...] = ()) -> Any:
                 return conn.execute(sql, params).fetchone()[0]
 
+            pedidos_cols = [r["name"] for r in conn.execute('PRAGMA table_info("Pedidos")').fetchall()]
+            cancelado_clause = self._pedidos_not_cancelled_clause(pedidos_cols, alias="")
             total = scalar('SELECT COUNT(*) FROM "Pedidos"')
             logger.info("[DIAG Pedidos.Count] total=%s", total)
             logger.info("[DIAG Pedidos.CountByCampana] rows=%s", [dict(r) for r in conn.execute('SELECT COALESCE(CAST("Campaña" AS TEXT), "<NULL>") AS campana, COUNT(*) AS rows FROM "Pedidos" GROUP BY COALESCE(CAST("Campaña" AS TEXT), "<NULL>") ORDER BY rows DESC LIMIT 20').fetchall()])
@@ -3078,7 +3131,7 @@ class PlanningRepository:
             logger.info("[DIAG Pedidos.CountByEmpresa] rows=%s", [dict(r) for r in conn.execute('SELECT COALESCE(CAST("EMPRESA" AS TEXT), "<NULL>") AS empresa, COUNT(*) AS rows FROM "Pedidos" GROUP BY COALESCE(CAST("EMPRESA" AS TEXT), "<NULL>") ORDER BY rows DESC LIMIT 20').fetchall()])
 
             base_where = [
-                'COALESCE("Cancelado", 0) = 0',
+                cancelado_clause,
                 "UPPER(TRIM(COALESCE(\"IdPedidoLora\", ''))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')",
             ]
             params: list[Any] = []
@@ -3136,9 +3189,11 @@ class PlanningRepository:
                 logger.warning("No existe la tabla Pedidos en DBPedidos.sqlite")
                 self._log_pedidos_diagnostics(conn, pedidos_path, filters, modo_pedidos)
                 return [], kpi_vacio
+            cancelado_clause = self._pedidos_not_cancelled_clause(pedidos_cols, alias="p")
+            self.invalidate_runtime_cache()
             self._ensure_planning_indexes(conn)
 
-            query = """
+            query = f"""
                 WITH pedidos_filtrados AS (
                     SELECT
                         p."Semana",
@@ -3158,7 +3213,7 @@ class PlanningRepository:
                         p."ExigePeso",
                         p."EMPRESA"
                     FROM "Pedidos" p
-                    WHERE COALESCE(p."Cancelado", 0) = 0
+                    WHERE {cancelado_clause}
                       AND UPPER(TRIM(COALESCE(p."IdPedidoLora", ""))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')
             """
             params: list[Any] = []
@@ -3358,6 +3413,7 @@ class PlanningRepository:
                          p."IdPedidoLora" ASC,
                          p."Linea" ASC
             """
+            logger.info("[PEDIDOS_QUERY] SQL final=%s params=%s", self._format_sql_for_log(query), params)
             logger.info("[DIAG Pedidos.SQL] modo=%s sql=%s params=%s", modo_pedidos, self._format_sql_for_log(query), params)
             run_full_diagnostics = logger.isEnabledFor(logging.DEBUG) or os.environ.get("PLANNING_PEDIDOS_DIAGNOSTICS") == "1"
             if run_full_diagnostics:
@@ -3365,6 +3421,7 @@ class PlanningRepository:
             logger.debug("get_pedidos_pendientes: después de pedidos_filtrados (query construida)")
             query_t0 = time.perf_counter()
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+            logger.info("[PEDIDOS_QUERY] filas devueltas=%s", len(rows))
             logger.info("[PERF Repo.Pedidos.Query] tiempo=%.3fs rows=%s", time.perf_counter() - query_t0, len(rows))
             enrich_t0 = time.perf_counter()
             mconfecciones = self.cargar_mconfecciones(conn)
@@ -4381,6 +4438,8 @@ class PlanningRepository:
                 conn.row_factory = sqlite3.Row
                 db_eepl = self._db_path(DB_EEPPL)
                 conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
+                pedidos_cols = [r["name"] for r in conn.execute('PRAGMA table_info("Pedidos")').fetchall()]
+                cancelado_clause = self._pedidos_not_cancelled_clause(pedidos_cols, alias="p")
                 query = f"""
                     SELECT DISTINCT {target_col} AS val
                     FROM "Pedidos" p
@@ -4389,7 +4448,7 @@ class PlanningRepository:
                     LEFT JOIN dbeepl."MVariedad" mv
                       ON UPPER(TRIM(mv."Variedad")) = UPPER(TRIM(p."VarCoop"))
                      AND UPPER(TRIM(mv."CULTIVO")) = UPPER(TRIM(p."Cultivo"))
-                    WHERE COALESCE(p."Cancelado", 0) = 0
+                    WHERE {cancelado_clause}
                 """
                 params: list[Any] = []
                 for field, col in (("campana", 'p."Campaña"'), ("cultivo", 'p."Cultivo"'), ("semana", 'p."Semana"'), ("empresa", 'p."EMPRESA"'), ("var_coop", 'p."VarCoop"'), ("marca", 'p."Marca"')):
@@ -4470,8 +4529,10 @@ class PlanningRepository:
         with sqlite3.connect(pedidos_path) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute(f"ATTACH DATABASE '{eepl_path.as_posix()}' AS dbeepl")
+            pedidos_cols = [r["name"] for r in conn.execute('PRAGMA table_info("Pedidos")').fetchall()]
+            cancelado_clause = self._pedidos_not_cancelled_clause(pedidos_cols, alias="p")
 
-            for row in conn.execute('SELECT DISTINCT p."Campaña" AS Campana, p."Cultivo" AS Cultivo FROM "Pedidos" p WHERE COALESCE(p."Cancelado", 0) = 0').fetchall():
+            for row in conn.execute(f'SELECT DISTINCT p."Campaña" AS Campana, p."Cultivo" AS Cultivo FROM "Pedidos" p WHERE {cancelado_clause}').fetchall():
                 _add(row["Campana"], row["Cultivo"], "pedidos")
 
             try:
