@@ -1269,7 +1269,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         messagebox.showinfo("Actualizar foto local", "Inicio de actualización: Actualizar foto local.", parent=self)
 
         def worker() -> None:
-            result = self.update_orchestrator.update_runtime_snapshot()
+            result = self.update_orchestrator.update_local_snapshot_only()
             self.after(0, lambda: self._finish_actualizar_foto_local(result))
 
         threading.Thread(target=worker, name="ActualizarFotoLocalWorker", daemon=True).start()
