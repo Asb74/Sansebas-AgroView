@@ -2933,8 +2933,11 @@ class PlanningRepository:
             return [], None
         with sqlite3.connect(path) as conn:
             conn.row_factory = sqlite3.Row
-            db_pedidos = self._db_path(DB_PEDIDOS)
+            pedidos_path = self._db_path(DB_PEDIDOS)
+            db_pedidos = pedidos_path
             db_eepl = self._db_path(DB_EEPPL)
+            self._log_planning_read("get_stock_almacen", DB_PEDIDOS, pedidos_path, filters)
+            logger.info("[PLANNING_READ] funcion=get_stock_almacen db_name=%s path=%s exists=%s size=%s mtime=%s", DB_PEDIDOS, pedidos_path, pedidos_path.exists(), pedidos_path.stat().st_size if pedidos_path.exists() else 0, pedidos_path.stat().st_mtime if pedidos_path.exists() else None)
             conn.execute(f"ATTACH DATABASE '{db_pedidos.as_posix()}' AS dbpedidos")
             conn.execute(f"ATTACH DATABASE '{db_eepl.as_posix()}' AS dbeepl")
             eepl_tables = [r[0] for r in conn.execute("SELECT name FROM dbeepl.sqlite_master WHERE type='table'").fetchall()]
@@ -3004,7 +3007,7 @@ class PlanningRepository:
                          l.Lote, mc.MARCA, l.IdConfeccion, l.Confeccion, mv.GRUPO, mv.SUBGRUPO
             """
             sql_hash = hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
-            logger.info("[PEDIDOS_READ] snapshot_path=%s DBPedidos_path=%s DBEEPPL_path=%s bdloteado_path=%s filters=%s modo_pedidos=%s sql_hash=%s params=%s", pedidos_path.parent, pedidos_path, db_eepl, db_loteado, filters, modo_pedidos, sql_hash, params)
+            logger.info("[PEDIDOS_READ] snapshot_path=%s DBPedidos_path=%s DBEEPPL_path=%s bdloteado_path=%s filters=%s modo_pedidos=%s sql_hash=%s params=%s", pedidos_path.parent, pedidos_path, db_eepl, path, filters, "stock_almacen", sql_hash, params)
             query_t0 = time.perf_counter()
             rows = [dict(r) for r in conn.execute(query, params).fetchall()]
             logger.info("[PERF Repo.StockAlmacen.Query] tiempo=%.3fs rows=%s", time.perf_counter() - query_t0, len(rows))
@@ -3172,6 +3175,97 @@ class PlanningRepository:
         except Exception:
             logger.exception("Error ejecutando diagnóstico de pedidos pendientes")
 
+    def _log_pedidos_pendientes_filter_diagnostics(
+        self,
+        conn: sqlite3.Connection,
+        filters: dict,
+        modo_pedidos: str,
+        pedidos_cols: list[str],
+        cancelado_clause: str,
+        fecha_expr: str,
+    ) -> None:
+        try:
+            def scalar(sql: str, params: list[Any] | tuple[Any, ...] = ()) -> Any:
+                return conn.execute(sql, params).fetchone()[0]
+
+            fixed_counts = [
+                ("SELECT COUNT(*) FROM Pedidos", []),
+                ("SELECT COUNT(*) FROM Pedidos WHERE [Campaña]='2026'", []),
+                ("SELECT COUNT(*) FROM Pedidos WHERE [Cultivo]='SANDIA'", []),
+                ("SELECT COUNT(*) FROM Pedidos WHERE [EMPRESA]=1", []),
+                ("SELECT COUNT(*) FROM Pedidos WHERE [Campaña]='2026' AND [Cultivo]='SANDIA'", []),
+                ("SELECT COUNT(*) FROM Pedidos WHERE [Campaña]='2026' AND [Cultivo]='SANDIA' AND [EMPRESA]=1", []),
+            ]
+            for sql, params in fixed_counts:
+                logger.info("[DIAG PedidosPendientes.Count] sql=%s params=%s rows=%s", sql, params, scalar(sql, params))
+
+            fecha_desde = ""
+            fecha_hasta = ""
+            fecha_filter_sql = ""
+            fecha_params: list[Any] = []
+            if modo_pedidos == "10_dias":
+                fecha_desde = str(conn.execute("SELECT date('now')").fetchone()[0])
+                fecha_hasta = str(conn.execute("SELECT date('now', '+10 days')").fetchone()[0])
+                fecha_filter_sql = f"date({fecha_expr}) BETWEEN date('now') AND date('now', '+10 days')"
+            elif modo_pedidos == "todos_futuros":
+                fecha_desde = str(conn.execute("SELECT date('now')").fetchone()[0])
+                fecha_filter_sql = f"date({fecha_expr}) >= date('now')"
+            elif modo_pedidos == "rango":
+                fecha_desde = str(filters.get("fecha_desde") or "").strip()
+                fecha_hasta = str(filters.get("fecha_hasta") or "").strip()
+                parts: list[str] = []
+                if fecha_desde:
+                    parts.append(f"date({fecha_expr}) >= date(?)")
+                    fecha_params.append(fecha_desde)
+                if fecha_hasta:
+                    parts.append(f"date({fecha_expr}) <= date(?)")
+                    fecha_params.append(fecha_hasta)
+                fecha_filter_sql = " AND ".join(parts)
+            elif modo_pedidos == "semana_actual":
+                fecha_desde = f"semana {datetime.now().isocalendar()[1]}"
+                fecha_filter_sql = 'CAST(COALESCE(p."Semana", \'\') AS TEXT) = ?'
+                fecha_params.append(str(datetime.now().isocalendar()[1]))
+
+            base_where = ['UPPER(TRIM(COALESCE(p."IdPedidoLora", ""))) NOT IN (\'S/P\', \'PRECALIBRADO\', \'ESTANDAR\')']
+            base_params: list[Any] = []
+            for field, col in (
+                ("campana", 'p."Campaña"'),
+                ("cultivo", 'p."Cultivo"'),
+                ("empresa", 'p."EMPRESA"'),
+                ("semana", 'p."Semana"'),
+                ("var_coop", 'p."VarCoop"'),
+                ("marca", 'p."Marca"'),
+            ):
+                values = self._normalize_filter_values(filters.get(field))
+                if values:
+                    base_where.append(f"UPPER(TRIM(COALESCE({col}, ''))) IN ({','.join(['UPPER(TRIM(?))'] * len(values))})")
+                    base_params.extend(values)
+
+            cancelado_field = self._resolve_pedidos_cancelado_field(pedidos_cols)
+            base_sql = " AND ".join(base_where)
+            rows_before_dates = scalar(f'SELECT COUNT(*) FROM "Pedidos" p WHERE {base_sql}', base_params)
+            rows_after_dates = rows_before_dates
+            if fecha_filter_sql:
+                rows_after_dates = scalar(f'SELECT COUNT(*) FROM "Pedidos" p WHERE {base_sql} AND {fecha_filter_sql}', base_params + fecha_params)
+            rows_after_cancelados = scalar(
+                f'SELECT COUNT(*) FROM "Pedidos" p WHERE {base_sql}'
+                + (f" AND {fecha_filter_sql}" if fecha_filter_sql else "")
+                + f" AND {cancelado_clause}",
+                base_params + fecha_params,
+            )
+            logger.info(
+                "[DIAG PedidosPendientes.Filters] modo_pedidos=%s fecha_desde=%s fecha_hasta=%s campo_cancelado=%s rows_before_fecha=%s rows_after_fecha=%s rows_after_cancelados=%s",
+                modo_pedidos,
+                fecha_desde or "<sin desde>",
+                fecha_hasta or "<sin hasta>",
+                cancelado_field or "<sin filtro; asumido no cancelado>",
+                rows_before_dates,
+                rows_after_dates,
+                rows_after_cancelados,
+            )
+        except Exception:
+            logger.exception("Error ejecutando diagnóstico temporal de filtros de pedidos pendientes")
+
     def get_pedidos_pendientes(self, filters: dict, modo_pedidos: str = "10_dias") -> tuple[list[dict], dict[str, float]]:
         logger.debug("Cargando pedidos pendientes. Modo=%s Filters=%s", modo_pedidos, filters)
         t0_total = time.perf_counter()
@@ -3214,6 +3308,14 @@ class PlanningRepository:
             cancelado_clause = self._pedidos_not_cancelled_clause(pedidos_cols, alias="p")
             fecha_expr = self._fecha_expr_sql("p", "FechaSalida")
             logger.info("[PEDIDOS_QUERY] fecha_expr usado=%s", fecha_expr)
+            self._log_pedidos_pendientes_filter_diagnostics(
+                conn,
+                filters,
+                modo_pedidos,
+                pedidos_cols,
+                cancelado_clause,
+                fecha_expr,
+            )
             self._ensure_planning_indexes(conn)
 
             query = f"""
