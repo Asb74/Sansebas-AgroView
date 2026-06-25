@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from services.legacy_sync_service import LegacySyncService
-from services.runtime_database_service import RuntimeDatabaseService
+from services.runtime_database_service import RuntimeDatabaseLockedError, RuntimeDatabaseService
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +30,15 @@ class UpdateOrchestratorService:
             else:
                 logger.warning("Fin actualización foto local con errores: %s", errors)
             return result
+        except RuntimeDatabaseLockedError as exc:
+            logger.warning("Actualización foto local cancelada por bloqueo: %s", exc.locked_databases)
+            return {
+                "ok": False,
+                "errors": [str(exc)],
+                "updated": False,
+                "error_type": "runtime_databases_locked",
+                "locked_databases": exc.locked_databases,
+            }
         except Exception as exc:
             logger.exception("Error detallado en actualización foto local")
             return {"ok": False, "errors": [str(exc)], "updated": False}
@@ -55,8 +64,11 @@ class UpdateOrchestratorService:
         legacy = self.update_legacy_active()
         runtime = self.update_runtime_snapshot()
         ok = bool(legacy.get("ok")) and bool(runtime.get("ok"))
+        partial = bool(legacy.get("ok")) and runtime.get("error_type") == "runtime_databases_locked"
         if ok:
             logger.info("Fin actualización completa OK")
+        elif partial:
+            logger.warning("Actualización parcial en Actualizar todo: legacy OK, foto local cancelada por bloqueo. Runtime=%s", runtime)
         else:
             logger.warning("Fin actualización completa con errores. Legacy=%s Runtime=%s", legacy, runtime)
-        return {"ok": ok, "legacy": legacy, "runtime": runtime}
+        return {"ok": ok, "partial": partial, "legacy": legacy, "runtime": runtime}
