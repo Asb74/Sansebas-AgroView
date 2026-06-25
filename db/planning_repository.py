@@ -420,6 +420,135 @@ class PlanningRepository:
                 return col
         return None
 
+
+    @staticmethod
+    def _quote_ident(identifier: str) -> str:
+        return '"' + str(identifier).replace('"', '""') + '"'
+
+    def _normalize_empresa_filter_for_pedidos(
+        self,
+        conn: sqlite3.Connection,
+        pedidos_cols: list[str],
+        raw_empresa_filter: Any,
+        filters: dict | None = None,
+    ) -> tuple[str | None, list[str]]:
+        """Mapea el filtro de empresa UI a una columna/valor existente en Pedidos.
+
+        Si no hay una correspondencia segura, devuelve (None, []) para no aplicar
+        filtro de empresa y evitar ocultar pedidos por un código de otra tabla.
+        """
+        values = self._normalize_filter_values(raw_empresa_filter)
+        if not values:
+            return None, []
+
+        display_values: list[str] = []
+        for value in values:
+            display = self.empresa_id_to_display(value)
+            if display and display not in values and display not in display_values:
+                display_values.append(display)
+        candidates_values = values + display_values
+        candidate_cols = [
+            col
+            for col in (
+                self._find_column(pedidos_cols, ["EMPRESA", "Empresa", "empresa"]),
+                self._find_column(pedidos_cols, ["Comercializador", "COMERCIALIZADOR", "comercializador"]),
+                self._find_column(pedidos_cols, ["Plataforma", "PLATAFORMA", "plataforma"]),
+            )
+            if col
+        ]
+        # Preserva orden eliminando duplicados.
+        candidate_cols = list(dict.fromkeys(candidate_cols))
+
+        matches: list[tuple[str, list[str], int]] = []
+        for col in candidate_cols:
+            quoted = self._quote_ident(col)
+            placeholders = ",".join(["UPPER(TRIM(?))"] * len(candidates_values))
+            count = conn.execute(
+                f"""SELECT COUNT(*) FROM "Pedidos" WHERE UPPER(TRIM(COALESCE({quoted}, ''))) IN ({placeholders})""",
+                candidates_values,
+            ).fetchone()[0]
+            logger.info(
+                "[DIAG Pedidos.EmpresaMapping] columna=%s filtro_ui=%s candidatos=%s rows=%s",
+                col,
+                values,
+                candidates_values,
+                count,
+            )
+            if count:
+                matched_values = [
+                    row[0]
+                    for row in conn.execute(
+                        f'SELECT DISTINCT CAST({quoted} AS TEXT) FROM "Pedidos" '
+                        f"""WHERE UPPER(TRIM(COALESCE({quoted}, ''))) IN ({placeholders})""",
+                        candidates_values,
+                    ).fetchall()
+                ]
+                matches.append((col, matched_values, count))
+
+        if len(matches) == 1:
+            col, mapped_values, count = matches[0]
+            context_where: list[str] = []
+            context_params: list[Any] = []
+            for field, context_col in (("campana", "Campaña"), ("cultivo", "Cultivo")):
+                context_values = self._normalize_filter_values((filters or {}).get(field))
+                resolved_context_col = self._find_column(pedidos_cols, [context_col])
+                if context_values and resolved_context_col:
+                    context_where.append(
+                        f"UPPER(TRIM(COALESCE({self._quote_ident(resolved_context_col)}, ''))) "
+                        f"IN ({','.join(['UPPER(TRIM(?))'] * len(context_values))})"
+                    )
+                    context_params.extend(context_values)
+            if context_where:
+                quoted = self._quote_ident(col)
+                empresa_where = f"UPPER(TRIM(COALESCE({quoted}, ''))) IN ({','.join(['UPPER(TRIM(?))'] * len(mapped_values))})"
+                context_sql = " AND ".join(context_where)
+                rows_without_empresa = conn.execute(
+                    f'SELECT COUNT(*) FROM "Pedidos" WHERE {context_sql}',
+                    context_params,
+                ).fetchone()[0]
+                rows_with_empresa = conn.execute(
+                    f'SELECT COUNT(*) FROM "Pedidos" WHERE {context_sql} AND {empresa_where}',
+                    context_params + mapped_values,
+                ).fetchone()[0]
+                logger.info(
+                    "[DIAG Pedidos.EmpresaMappingContext] columna=%s valores=%s rows_sin_empresa=%s rows_con_empresa=%s filtros=%s",
+                    col,
+                    mapped_values,
+                    rows_without_empresa,
+                    rows_with_empresa,
+                    {k: (filters or {}).get(k) for k in ("campana", "cultivo", "empresa")},
+                )
+                if rows_without_empresa and not rows_with_empresa:
+                    logger.warning(
+                        "[PEDIDOS_QUERY] filtro empresa no aplicado: elimina todas las combinaciones Pedidos existentes columna=%s valores=%s filtros=%s",
+                        col,
+                        mapped_values,
+                        {k: (filters or {}).get(k) for k in ("campana", "cultivo", "empresa")},
+                    )
+                    return None, []
+            logger.info(
+                "[PEDIDOS_QUERY] filtro empresa mapeado columna=%s valores=%s rows=%s filtro_ui=%s",
+                col,
+                mapped_values,
+                count,
+                values,
+            )
+            return col, mapped_values
+
+        if len(matches) > 1:
+            logger.warning(
+                "[PEDIDOS_QUERY] filtro empresa no aplicado: correspondencia ambigua filtro_ui=%s matches=%s",
+                values,
+                [(col, vals, count) for col, vals, count in matches],
+            )
+        else:
+            logger.warning(
+                "[PEDIDOS_QUERY] filtro empresa no aplicado: sin correspondencia segura en Pedidos filtro_ui=%s columnas_candidatas=%s",
+                values,
+                candidate_cols,
+            )
+        return None, []
+
     @staticmethod
     def _parse_date(value: Any) -> datetime | None:
         if value is None:
@@ -3147,17 +3276,65 @@ class PlanningRepository:
             logger.info("[DIAG Pedidos.CountByCampana] rows=%s", [dict(r) for r in conn.execute('SELECT COALESCE(CAST("Campaña" AS TEXT), "<NULL>") AS campana, COUNT(*) AS rows FROM "Pedidos" GROUP BY COALESCE(CAST("Campaña" AS TEXT), "<NULL>") ORDER BY rows DESC LIMIT 20').fetchall()])
             logger.info("[DIAG Pedidos.CountByCultivo] rows=%s", [dict(r) for r in conn.execute('SELECT COALESCE(CAST("Cultivo" AS TEXT), "<NULL>") AS cultivo, COUNT(*) AS rows FROM "Pedidos" GROUP BY COALESCE(CAST("Cultivo" AS TEXT), "<NULL>") ORDER BY rows DESC LIMIT 20').fetchall()])
             logger.info("[DIAG Pedidos.CountByEmpresa] rows=%s", [dict(r) for r in conn.execute('SELECT COALESCE(CAST("EMPRESA" AS TEXT), "<NULL>") AS empresa, COUNT(*) AS rows FROM "Pedidos" GROUP BY COALESCE(CAST("EMPRESA" AS TEXT), "<NULL>") ORDER BY rows DESC LIMIT 20').fetchall()])
+            logger.info("[DIAG Pedidos.Combinations] rows=%s", [dict(r) for r in conn.execute("""
+                SELECT
+                  CAST([Campaña] AS TEXT) AS campana,
+                  UPPER(TRIM(COALESCE([Cultivo], ''))) AS cultivo,
+                  CAST([EMPRESA] AS TEXT) AS empresa,
+                  COUNT(*) AS rows
+                FROM Pedidos
+                GROUP BY
+                  CAST([Campaña] AS TEXT),
+                  UPPER(TRIM(COALESCE([Cultivo], ''))),
+                  CAST([EMPRESA] AS TEXT)
+                ORDER BY rows DESC
+                LIMIT 50
+            """).fetchall()])
+            logger.info("[DIAG Pedidos.Combinations2026] rows=%s", [dict(r) for r in conn.execute("""
+                SELECT
+                  UPPER(TRIM(COALESCE([Cultivo], ''))) AS cultivo,
+                  CAST([EMPRESA] AS TEXT) AS empresa,
+                  COUNT(*) AS rows
+                FROM Pedidos
+                WHERE CAST([Campaña] AS TEXT) = '2026'
+                GROUP BY
+                  UPPER(TRIM(COALESCE([Cultivo], ''))),
+                  CAST([EMPRESA] AS TEXT)
+                ORDER BY rows DESC
+            """).fetchall()])
+            logger.info("[DIAG Pedidos.SandiaByCampanaEmpresa] rows=%s", [dict(r) for r in conn.execute("""
+                SELECT
+                  CAST([Campaña] AS TEXT) AS campana,
+                  CAST([EMPRESA] AS TEXT) AS empresa,
+                  COUNT(*) AS rows
+                FROM Pedidos
+                WHERE UPPER(TRIM(COALESCE([Cultivo], ''))) = 'SANDIA'
+                GROUP BY
+                  CAST([Campaña] AS TEXT),
+                  CAST([EMPRESA] AS TEXT)
+                ORDER BY rows DESC
+            """).fetchall()])
 
             base_where = [
                 cancelado_clause,
                 "UPPER(TRIM(COALESCE(\"IdPedidoLora\", ''))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')",
             ]
             params: list[Any] = []
-            for field, col in (("campana", '"Campaña"'), ("cultivo", '"Cultivo"'), ("empresa", '"EMPRESA"')):
+            empresa_filter_col, empresa_filter_values = self._normalize_empresa_filter_for_pedidos(
+                conn,
+                pedidos_cols,
+                filters.get("empresa"),
+                filters,
+            )
+            for field, col in (("campana", '"Campaña"'), ("cultivo", '"Cultivo"')):
                 values = self._normalize_filter_values(filters.get(field))
                 if values:
                     base_where.append(f"UPPER(TRIM(COALESCE({col}, ''))) IN ({','.join(['UPPER(TRIM(?))'] * len(values))})")
                     params.extend(values)
+            if empresa_filter_col and empresa_filter_values:
+                col = self._quote_ident(empresa_filter_col)
+                base_where.append(f"UPPER(TRIM(COALESCE({col}, ''))) IN ({','.join(['UPPER(TRIM(?))'] * len(empresa_filter_values))})")
+                params.extend(empresa_filter_values)
             where_sql = " AND ".join(base_where)
             camp_cult_emp_count = scalar(f'SELECT COUNT(*) FROM "Pedidos" WHERE {where_sql}', params)
             logger.info("[DIAG Pedidos.FilterCount] campana+cultivo+empresa rows=%s params=%s", camp_cult_emp_count, params)
@@ -3228,10 +3405,15 @@ class PlanningRepository:
 
             base_where = ['UPPER(TRIM(COALESCE(p."IdPedidoLora", ""))) NOT IN (\'S/P\', \'PRECALIBRADO\', \'ESTANDAR\')']
             base_params: list[Any] = []
+            empresa_filter_col, empresa_filter_values = self._normalize_empresa_filter_for_pedidos(
+                conn,
+                pedidos_cols,
+                filters.get("empresa"),
+                filters,
+            )
             for field, col in (
                 ("campana", 'p."Campaña"'),
                 ("cultivo", 'p."Cultivo"'),
-                ("empresa", 'p."EMPRESA"'),
                 ("semana", 'p."Semana"'),
                 ("var_coop", 'p."VarCoop"'),
                 ("marca", 'p."Marca"'),
@@ -3240,6 +3422,10 @@ class PlanningRepository:
                 if values:
                     base_where.append(f"UPPER(TRIM(COALESCE({col}, ''))) IN ({','.join(['UPPER(TRIM(?))'] * len(values))})")
                     base_params.extend(values)
+            if empresa_filter_col and empresa_filter_values:
+                col = f'p.{self._quote_ident(empresa_filter_col)}'
+                base_where.append(f"UPPER(TRIM(COALESCE({col}, ''))) IN ({','.join(['UPPER(TRIM(?))'] * len(empresa_filter_values))})")
+                base_params.extend(empresa_filter_values)
 
             cancelado_field = self._resolve_pedidos_cancelado_field(pedidos_cols)
             base_sql = " AND ".join(base_where)
@@ -3307,6 +3493,14 @@ class PlanningRepository:
                 return [], kpi_vacio
             cancelado_clause = self._pedidos_not_cancelled_clause(pedidos_cols, alias="p")
             fecha_expr = self._fecha_expr_sql("p", "FechaSalida")
+            empresa_filter_col, empresa_filter_values = self._normalize_empresa_filter_for_pedidos(
+                conn,
+                pedidos_cols,
+                filters.get("empresa"),
+                filters,
+            )
+            empresa_select_col = empresa_filter_col or self._find_column(pedidos_cols, ["EMPRESA", "Empresa", "empresa"]) or "EMPRESA"
+            empresa_select_expr = f'p.{self._quote_ident(empresa_select_col)}'
             logger.info("[PEDIDOS_QUERY] fecha_expr usado=%s", fecha_expr)
             self._log_pedidos_pendientes_filter_diagnostics(
                 conn,
@@ -3336,7 +3530,7 @@ class PlanningRepository:
                         p."NPalet",
                         p."Cajas",
                         p."ExigePeso",
-                        p."EMPRESA"
+                        {empresa_select_expr} AS "EMPRESA"
                     FROM "Pedidos" p
                     WHERE {cancelado_clause}
                       AND UPPER(TRIM(COALESCE(p."IdPedidoLora", ""))) NOT IN ('S/P', 'PRECALIBRADO', 'ESTANDAR')
@@ -3345,7 +3539,6 @@ class PlanningRepository:
             for field, col in (
                 ("campana", 'p."Campaña"'),
                 ("cultivo", 'p."Cultivo"'),
-                ("empresa", 'p."EMPRESA"'),
                 ("semana", 'p."Semana"'),
                 ("var_coop", 'p."VarCoop"'),
                 ("marca", 'p."Marca"'),
@@ -3355,6 +3548,10 @@ class PlanningRepository:
                     placeholders = ",".join(["UPPER(TRIM(?))"] * len(values))
                     query += f" AND UPPER(TRIM(COALESCE({col}, ''))) IN ({placeholders})"
                     params.extend(values)
+            if empresa_filter_col and empresa_filter_values:
+                placeholders = ",".join(["UPPER(TRIM(?))"] * len(empresa_filter_values))
+                query += f" AND UPPER(TRIM(COALESCE(p.{self._quote_ident(empresa_filter_col)}, ''))) IN ({placeholders})"
+                params.extend(empresa_filter_values)
             if modo_pedidos == "10_dias":
                 query += f" AND date({fecha_expr}) BETWEEN date('now') AND date('now', '+10 days')"
             elif modo_pedidos == "todos_futuros":
