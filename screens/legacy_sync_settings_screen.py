@@ -60,6 +60,10 @@ class LegacySyncSettingsScreen(ttk.Frame):
         win.title("Configuración legacy")
         vars = {}
         fields = ["Nombre", "AccessPath", "AccessTable", "SqlitePath", "SqliteTable", "Modo", "Observaciones"]
+        filter_fields = [
+            "FiltroCampanaModo", "FiltroCampanaCampo", "FiltroCampanaTipo", "FiltroCampanaValorOrigen", "FiltroCampanaValorFijo",
+            "FiltroRelacionTabla", "FiltroRelacionCampoLocal", "FiltroRelacionCampoRemoto", "FiltroRelacionCampoCampana", "FiltroRelacionTipoCampana",
+        ]
         for i, f in enumerate(fields):
             ttk.Label(win, text=f).grid(row=i, column=0, sticky="w", padx=6, pady=4)
             vars[f] = tk.StringVar(value=str(data.get(f, "REEMPLAZAR_TABLA" if f == "Modo" else "")))
@@ -76,6 +80,30 @@ class LegacySyncSettingsScreen(ttk.Frame):
         ).grid(row=8, column=1, sticky="w", padx=6, pady=(0, 6))
         activa = tk.IntVar(value=int(data.get("Activa", 1)))
         ttk.Checkbutton(win, text="Activa", variable=activa).grid(row=len(fields), column=1, sticky="w", padx=6)
+
+        filter_start = len(fields) + 2
+        ttk.Label(win, text="Filtro campaña", font=("TkDefaultFont", 10, "bold")).grid(row=filter_start, column=0, sticky="w", padx=6, pady=(12, 4))
+        filtro_activo = tk.IntVar(value=int(data.get("FiltroActivo", 0) or 0))
+        ttk.Checkbutton(win, text="Filtro activo", variable=filtro_activo).grid(row=filter_start, column=1, sticky="w", padx=6, pady=(12, 4))
+        for offset, f in enumerate(filter_fields, start=1):
+            row_idx = filter_start + offset
+            ttk.Label(win, text=f).grid(row=row_idx, column=0, sticky="w", padx=6, pady=4)
+            default = ""
+            if f == "FiltroCampanaModo":
+                default = "NINGUNO"
+            elif f in {"FiltroCampanaTipo", "FiltroRelacionTipoCampana"}:
+                default = "TEXTO"
+            elif f == "FiltroCampanaValorOrigen":
+                default = "CAMPANA_ACTIVA"
+            vars[f] = tk.StringVar(value=str(data.get(f, default) or default))
+            if f == "FiltroCampanaModo":
+                ttk.Combobox(win, textvariable=vars[f], values=["NINGUNO", "DIRECTO", "PREFIJO", "RELACION"], width=67, state="readonly").grid(row=row_idx, column=1, sticky="ew", padx=6, pady=4)
+            elif f in {"FiltroCampanaTipo", "FiltroRelacionTipoCampana"}:
+                ttk.Combobox(win, textvariable=vars[f], values=["TEXTO", "ENTERO"], width=67, state="readonly").grid(row=row_idx, column=1, sticky="ew", padx=6, pady=4)
+            elif f == "FiltroCampanaValorOrigen":
+                ttk.Combobox(win, textvariable=vars[f], values=["CAMPANA_ACTIVA", "FIJO"], width=67, state="readonly").grid(row=row_idx, column=1, sticky="ew", padx=6, pady=4)
+            else:
+                ttk.Entry(win, textvariable=vars[f], width=70).grid(row=row_idx, column=1, sticky="ew", padx=6, pady=4)
         ttk.Button(win, text="Buscar Access...", command=lambda: vars["AccessPath"].set(filedialog.askopenfilename(filetypes=[("Access MDB", "*.mdb"), ("Todos", "*.*")]))).grid(row=1, column=2)
         ttk.Button(win, text="Buscar SQLite...", command=lambda: vars["SqlitePath"].set(filedialog.askopenfilename(filetypes=[("SQLite", "*.sqlite *.db"), ("Todos", "*.*")]))).grid(row=3, column=2)
         ttk.Button(win, text="Usar SQLite por defecto", command=lambda: vars["SqlitePath"].set(self.service.default_sqlite_path())).grid(row=3, column=3)
@@ -85,9 +113,12 @@ class LegacySyncSettingsScreen(ttk.Frame):
             for f in fields:
                 out[f] = vars[f].get().strip()
             out["Activa"] = int(activa.get())
+            out["FiltroActivo"] = int(filtro_activo.get())
+            for f in filter_fields:
+                out[f] = vars[f].get().strip()
             win.destroy()
 
-        ttk.Button(win, text="Guardar", command=save).grid(row=len(fields)+1, column=1, sticky="e", padx=6, pady=8)
+        ttk.Button(win, text="Guardar", command=save).grid(row=filter_start + len(filter_fields) + 1, column=1, sticky="e", padx=6, pady=8)
         win.transient(self)
         win.grab_set()
         self.wait_window(win)

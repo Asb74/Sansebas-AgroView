@@ -162,6 +162,7 @@ class LegacySyncService:
             if self.setting_targets_central_sqlite(row)
             and not self._is_pedidos_setting(row)
             and self._normalize_mode(str(row.get("Modo", "REEMPLAZAR_TABLA"))) != "REEMPLAZAR_TABLA"
+            and int(row.get("FiltroActivo", 0) or 0) != 1
         ]
 
     def _central_sqlite_block_error(self, setting: dict[str, Any], mode: str) -> str:
@@ -189,20 +190,20 @@ class LegacySyncService:
         if not setting:
             return False, "Configuración no encontrada"
         mode = self._normalize_mode(str(setting.get("Modo", "REEMPLAZAR_TABLA")))
+        if mode == "PLANIFICACION_HOY_EN_ADELANTE" and int(setting.get("FiltroActivo", 0) or 0) == 1:
+            ok, message, metrics = self.safe_sync_table(setting)
+            end = datetime.utcnow().isoformat(timespec="seconds")
+            err = "" if ok else str(metrics.get("Error") or message)
+            self.repository.update_sync_result(setting_id, ok, message, err or None)
+            self.repository.add_log({
+                "SettingId": setting_id, "Nombre": setting["Nombre"], "AccessPath": setting["AccessPath"],
+                "AccessTable": setting["AccessTable"], "SqlitePath": setting["SqlitePath"], "SqliteTable": setting["SqliteTable"],
+                "Inicio": start, "Fin": end, "Ok": 1 if ok else 0, "FilasExportadas": metrics.get("FilasExportadas", 0),
+                "FilasImportadas": metrics.get("FilasImportadas", 0), "Mensaje": message, "Error": err, "ModoUsado": metrics.get("ModoUsado", mode),
+                "TablaDestinoExistia": 1 if metrics.get("TablaDestinoExistia") else 0, "TablaDestinoCreada": 1 if metrics.get("TablaDestinoCreada") else 0,
+            })
+            return ok, message
         if mode == "PLANIFICACION_HOY_EN_ADELANTE":
-            if self._is_pedidos_setting(setting):
-                ok, message, metrics = self.safe_sync_table(setting)
-                end = datetime.utcnow().isoformat(timespec="seconds")
-                err = "" if ok else str(metrics.get("Error") or message)
-                self.repository.update_sync_result(setting_id, ok, message, err or None)
-                self.repository.add_log({
-                    "SettingId": setting_id, "Nombre": setting["Nombre"], "AccessPath": setting["AccessPath"],
-                    "AccessTable": setting["AccessTable"], "SqlitePath": setting["SqlitePath"], "SqliteTable": setting["SqliteTable"],
-                    "Inicio": start, "Fin": end, "Ok": 1 if ok else 0, "FilasExportadas": metrics.get("FilasExportadas", 0),
-                    "FilasImportadas": metrics.get("FilasImportadas", 0), "Mensaje": message, "Error": err, "ModoUsado": metrics.get("ModoUsado", mode),
-                    "TablaDestinoExistia": 1 if metrics.get("TablaDestinoExistia") else 0, "TablaDestinoCreada": 1 if metrics.get("TablaDestinoCreada") else 0,
-                })
-                return ok, message
             if self.setting_targets_central_sqlite(setting):
                 msg = self._central_sqlite_block_error(setting, mode)
                 self.repository.update_sync_result(setting_id, False, "Operación bloqueada por seguridad", msg)
@@ -253,10 +254,10 @@ class LegacySyncService:
         logger.info("[SYNC_AUDIT] Inicio nombre=%s tabla_access=%s tabla_sqlite=%s access_path=%s sqlite_destino=%s modo=%s usuario=%s timestamp_inicio=%s", setting.get("Nombre", ""), setting.get("AccessTable", ""), table_name, setting.get("AccessPath", ""), target_sqlite_path, metrics["ModoUsado"], setting.get("Usuario", ""), audit_start.isoformat(timespec="seconds"))
         try:
             self._validate_identifier(table_name)
-            partition_ctx = self._build_pedidos_partition_context(setting) if self._is_pedidos_setting(setting) else None
+            partition_ctx = self._build_campaign_filter_context(setting)
             if partition_ctx:
-                metrics["ModoUsado"] = "PARTICION_CAMPANA"
-                ok, export_msg, csv_path, exported = self._run_export_custom(setting, partition_ctx["access_sql"], output_tag=f"pedidos_campana_{partition_ctx['campana']}")
+                metrics["ModoUsado"] = f"PARTICION_CAMPANA_{partition_ctx['mode']}"
+                ok, export_msg, csv_path, exported = self._run_export_custom(setting, partition_ctx["access_sql"], output_tag=f"{table_name}_campana_{partition_ctx['campana']}")
             else:
                 ok, export_msg, csv_path, exported = self._run_export(setting_id)
             metrics["FilasExportadas"] = exported
@@ -274,7 +275,7 @@ class LegacySyncService:
             logger.info("[SYNC_AUDIT] Staging validado resultado=OK tabla=%s filas=%s columnas=%s", table_name, staging_validation["rows"], staging_validation["columns"])
             if partition_ctx:
                 replace_info = self.safe_replace_partition_from_staging(
-                    staging_sqlite_path, target_sqlite_path, table_name, partition_ctx["sqlite_column"], partition_ctx["campana"]
+                    staging_sqlite_path, target_sqlite_path, table_name, partition_ctx
                 )
             else:
                 replace_info = self._replace_table_from_staging(staging_sqlite_path, target_sqlite_path, table_name, allow_empty=allow_empty)
@@ -293,6 +294,87 @@ class LegacySyncService:
             metrics["Error"] = str(exc)
             return False, "Sincronización cancelada. La tabla anterior se ha conservado.", metrics
 
+    def _build_campaign_filter_context(self, setting: dict[str, Any]) -> dict[str, Any] | None:
+        active = int(setting.get("FiltroActivo", 0) or 0) == 1
+        mode = str(setting.get("FiltroCampanaModo", "NINGUNO") or "NINGUNO").strip().upper()
+        access_table = str(setting.get("AccessTable", "")).strip()
+        if not active or mode == "NINGUNO":
+            logger.info("[SYNC_AUDIT] filtro_activo=no modo=%s tabla=%s", mode, access_table)
+            return None
+        if mode not in {"DIRECTO", "PREFIJO", "RELACION"}:
+            raise ValueError(f"FiltroCampanaModo no soportado: {mode}")
+        campana, source = self._resolve_campaign_filter_value(setting)
+        access_sql = self._build_access_campaign_sql(setting, access_table, mode, campana)
+        delete_where, delete_params = self._build_sqlite_campaign_delete(setting, mode, campana)
+        logger.info(
+            "[SYNC_AUDIT] config_id=%s tabla=%s filtro_activo=sí modo_filtro=%s campaña=%s origen=%s tipo=%s sql_access_final=%s delete_destino=%s",
+            setting.get("Id"), access_table, mode, campana, source, setting.get("FiltroCampanaTipo"), access_sql, delete_where,
+        )
+        return {"mode": mode, "campana": campana, "source": source, "access_sql": access_sql, "delete_where": delete_where, "delete_params": delete_params}
+
+    def _resolve_campaign_filter_value(self, setting: dict[str, Any]) -> tuple[Any, str]:
+        origin = str(setting.get("FiltroCampanaValorOrigen", "CAMPANA_ACTIVA") or "CAMPANA_ACTIVA").strip().upper()
+        if origin == "FIJO":
+            value = str(setting.get("FiltroCampanaValorFijo", "") or "").strip()
+            if not value:
+                raise ValueError("FiltroCampanaValorFijo es obligatorio cuando el origen es FIJO")
+            return value, "FIJO"
+        if origin != "CAMPANA_ACTIVA":
+            raise ValueError(f"FiltroCampanaValorOrigen no soportado: {origin}")
+        campana, source = self._detect_active_campana(setting)
+        return str(campana), source
+
+    def _build_access_campaign_sql(self, setting: dict[str, Any], table: str, mode: str, campana: Any) -> str:
+        table_sql = self._quote_access_identifier(table)
+        tipo = str(setting.get("FiltroCampanaTipo", "TEXTO") or "TEXTO").strip().upper()
+        value_sql = self._format_access_value(campana, tipo)
+        if mode in {"DIRECTO", "PREFIJO"}:
+            field = str(setting.get("FiltroCampanaCampo", "") or "").strip()
+            if not field:
+                raise ValueError(f"FiltroCampanaCampo es obligatorio para modo {mode}")
+            field_sql = self._quote_access_identifier(field)
+            if mode == "DIRECTO":
+                return f"SELECT * FROM {table_sql} WHERE {field_sql} = {value_sql}"
+            if tipo == "ENTERO":
+                start = int(campana) * 1000000
+                end = (int(campana) + 1) * 1000000
+                return f"SELECT * FROM {table_sql} WHERE {field_sql} >= {start} AND {field_sql} < {end}"
+            return f"SELECT * FROM {table_sql} WHERE {field_sql} LIKE '{str(campana).replace("'", "''")}%'"
+        local = str(setting.get("FiltroRelacionCampoLocal", "") or "").strip()
+        remote_table = str(setting.get("FiltroRelacionTabla", "") or "").strip()
+        remote = str(setting.get("FiltroRelacionCampoRemoto", "") or "").strip()
+        camp_field = str(setting.get("FiltroRelacionCampoCampana", "") or "").strip()
+        camp_type = str(setting.get("FiltroRelacionTipoCampana", "TEXTO") or "TEXTO").strip().upper()
+        if not all([local, remote_table, remote, camp_field]):
+            raise ValueError("Configuración RELACION incompleta para filtro de campaña")
+        return (f"SELECT * FROM {table_sql} WHERE {self._quote_access_identifier(local)} IN ("
+                f"SELECT {self._quote_access_identifier(remote)} FROM {self._quote_access_identifier(remote_table)} "
+                f"WHERE {self._quote_access_identifier(camp_field)} = {self._format_access_value(campana, camp_type)})")
+
+    @staticmethod
+    def _format_access_value(value: Any, tipo: str) -> str:
+        if tipo == "ENTERO":
+            return str(int(value))
+        if tipo != "TEXTO":
+            raise ValueError(f"Tipo campaña no soportado: {tipo}")
+        return "'" + str(value).replace("'", "''") + "'"
+
+    def _build_sqlite_campaign_delete(self, setting: dict[str, Any], mode: str, campana: Any) -> tuple[str, tuple[Any, ...]]:
+        if mode == "RELACION":
+            raise ValueError("Modo RELACION para reemplazo particionado aún no está soportado; destino conservado")
+        field = str(setting.get("FiltroCampanaCampo", "") or "").strip()
+        if not field:
+            raise ValueError(f"FiltroCampanaCampo es obligatorio para borrado particionado modo {mode}")
+        self._validate_identifier(field)
+        quoted = self.quote_identifier(field)
+        tipo = str(setting.get("FiltroCampanaTipo", "TEXTO") or "TEXTO").strip().upper()
+        if mode == "DIRECTO":
+            return f"{quoted} = ?", (str(campana) if tipo == "TEXTO" else int(campana),)
+        if tipo == "ENTERO":
+            start = int(campana) * 1000000
+            end = (int(campana) + 1) * 1000000
+            return f"{quoted} >= ? AND {quoted} < ?", (start, end)
+        return f"{quoted} LIKE ?", (f"{campana}%",)
 
     def _is_pedidos_setting(self, setting: dict[str, Any]) -> bool:
         return str(setting.get("AccessTable", "")).strip().lower() == "pedidos" and str(setting.get("SqliteTable", "")).strip().lower() == "pedidos"
@@ -969,34 +1051,29 @@ class LegacySyncService:
         staging_sqlite_path: Path,
         target_sqlite_path: Path,
         table_name: str,
-        partition_column: str,
-        partition_value: Any,
+        partition_ctx: dict[str, Any],
     ) -> dict[str, Any]:
-        """Safely replace only one logical partition from a validated staging SQLite."""
+        """Safely replace only the campaign partition configured for this table."""
         self._validate_identifier(table_name)
-        self._validate_identifier(partition_column)
+        delete_where = str(partition_ctx.get("delete_where") or "").strip()
+        delete_params = tuple(partition_ctx.get("delete_params") or ())
+        mode = str(partition_ctx.get("mode") or "")
+        if not delete_where:
+            raise ValueError("Condición DELETE destino vacía; destino conservado")
         staging_sqlite_path = Path(staging_sqlite_path)
         target_sqlite_path = Path(target_sqlite_path)
         target_sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         started = datetime.utcnow()
         logger.info(
-            "[SYNC_AUDIT] Reemplazo parcial inicio staging=%s destino=%s tabla=%s particion=%s valor=%s",
-            staging_sqlite_path,
-            target_sqlite_path,
-            table_name,
-            partition_column,
-            partition_value,
+            "[SYNC_AUDIT] Reemplazo parcial inicio staging=%s destino=%s tabla=%s modo=%s condicion_delete=%s params=%s",
+            staging_sqlite_path, target_sqlite_path, table_name, mode, delete_where, delete_params,
         )
         staging_validation = self._validate_staging_table(staging_sqlite_path, table_name, allow_empty=False)
         staging_columns = list(staging_validation["columns"])
         staging_count = int(staging_validation["rows"])
         if staging_count <= 0:
-            logger.error("[SYNC_AUDIT] Staging vacío; no se borra nada en destino. tabla=%s", table_name)
-            raise ValueError("Staging vacío: sincronización particionada cancelada; destino conservado")
-        if partition_column not in staging_columns:
-            raise ValueError(f"Staging no contiene columna de campaña {partition_column}. Destino conservado")
+            raise ValueError("Staging vacío: no se borra nada en destino")
         quoted_table = self.quote_identifier(table_name)
-        quoted_partition = self.quote_identifier(partition_column)
         columns_sql = ", ".join(self.quote_identifier(c) for c in staging_columns)
         with sqlite3.connect(target_sqlite_path, timeout=30) as conn:
             conn.execute("PRAGMA busy_timeout = 30000")
@@ -1005,54 +1082,32 @@ class LegacySyncService:
             table_existed = self._table_exists(conn, table_name)
             total_before = self._count_rows(conn, table_name) if table_existed else 0
             partition_before = 0
-            min_fecha = max_fecha = None
-            campaigns: list[Any] = []
             if table_existed:
                 target_columns = self._table_columns(conn, table_name)
-                if partition_column not in target_columns:
-                    raise ValueError(f"Destino no contiene columna de campaña {partition_column}. Destino conservado")
                 if target_columns != staging_columns:
                     raise ValueError(f"Columnas staging/destino no coinciden. destino={target_columns} staging={staging_columns}")
-                partition_before = int(conn.execute(f"SELECT COUNT(*) FROM {quoted_table} WHERE {quoted_partition} = ?", (partition_value,)).fetchone()[0])
-                if "FechaSalida" in target_columns:
-                    min_fecha, max_fecha = conn.execute(f"SELECT MIN({self.quote_identifier('FechaSalida')}), MAX({self.quote_identifier('FechaSalida')}) FROM {quoted_table}").fetchone()
-                try:
-                    campaigns = [r[0] for r in conn.execute(f"SELECT DISTINCT {quoted_partition} FROM {quoted_table} LIMIT 20").fetchall()]
-                except Exception:
-                    campaigns = []
-            logger.info(
-                "[SYNC_AUDIT] Estado previo destino existe_db=%s existe_tabla=%s total_antes=%s particion_antes=%s min_fecha=%s max_fecha=%s campañas=%s",
-                target_sqlite_path.exists(), table_existed, total_before, partition_before, min_fecha, max_fecha, campaigns,
-            )
-            staging_alias = "staging_partition"
+                partition_before = int(conn.execute(f"SELECT COUNT(*) FROM {quoted_table} WHERE {delete_where}", delete_params).fetchone()[0])
+            logger.info("[SYNC_AUDIT] registros_antes_campaña=%s total_antes=%s", partition_before, total_before)
             conn.execute("ATTACH DATABASE ? AS staging_partition", (str(staging_sqlite_path),))
             try:
-                staging_partition_count = int(conn.execute(f"SELECT COUNT(*) FROM {staging_alias}.{quoted_table} WHERE {quoted_partition} = ?", (partition_value,)).fetchone()[0])
-                if staging_partition_count <= 0:
-                    raise ValueError("Staging no contiene filas para la campaña activa; destino conservado")
                 try:
                     conn.execute("BEGIN")
-                    logger.info("[SYNC_AUDIT] Reemplazo parcial transacción iniciada")
                     created = False
                     if not table_existed:
                         col_defs = ", ".join(f"{self.quote_identifier(c)} TEXT" for c in staging_columns)
                         conn.execute(f"CREATE TABLE {quoted_table} ({col_defs})")
                         created = True
-                        logger.info("[SYNC_AUDIT] Tabla destino no existía; creada desde staging tabla=%s", table_name)
-                    deleted = conn.execute(f"DELETE FROM {quoted_table} WHERE {quoted_partition} = ?", (partition_value,)).rowcount
-                    conn.execute(
-                        f"INSERT INTO {quoted_table} ({columns_sql}) SELECT {columns_sql} FROM {staging_alias}.{quoted_table} WHERE {quoted_partition} = ?",
-                        (partition_value,),
-                    )
+                    deleted = conn.execute(f"DELETE FROM {quoted_table} WHERE {delete_where}", delete_params).rowcount
+                    conn.execute(f"INSERT INTO {quoted_table} ({columns_sql}) SELECT {columns_sql} FROM staging_partition.{quoted_table}")
                     inserted = int(conn.execute("SELECT changes()").fetchone()[0])
-                    partition_after = int(conn.execute(f"SELECT COUNT(*) FROM {quoted_table} WHERE {quoted_partition} = ?", (partition_value,)).fetchone()[0])
+                    partition_after = int(conn.execute(f"SELECT COUNT(*) FROM {quoted_table} WHERE {delete_where}", delete_params).fetchone()[0])
                     total_after = self._count_rows(conn, table_name)
                     if partition_after <= 0:
                         raise ValueError("Validación final inválida: la campaña quedaría vacía")
                     conn.commit()
                     logger.info(
-                        "[SYNC_AUDIT] Reemplazo parcial OK borrados=%s insertados=%s particion_despues=%s total_despues=%s commit_ok=True duracion=%.2fs",
-                        deleted, inserted, partition_after, total_after, (datetime.utcnow() - started).total_seconds(),
+                        "[SYNC_AUDIT] modo_reemplazo_destino=PARTICIONADO condicion_delete=%s registros_borrados=%s registros_insertados=%s registros_despues=%s duracion_reemplazo=%.2fs",
+                        delete_where, deleted, inserted, partition_after, (datetime.utcnow() - started).total_seconds(),
                     )
                     return {
                         "TablaDestinoExistia": table_existed,
@@ -1063,6 +1118,7 @@ class LegacySyncService:
                         "RegistrosFinales": total_after,
                         "RegistrosBorradosParticion": deleted,
                         "RegistrosInsertadosParticion": inserted,
+                        "CondicionDeleteDestino": delete_where,
                     }
                 except Exception:
                     conn.rollback()

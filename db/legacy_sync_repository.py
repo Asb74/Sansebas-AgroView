@@ -10,6 +10,29 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+FILTER_COLUMNS = {
+    "FiltroCampanaModo": "TEXT NOT NULL DEFAULT 'NINGUNO'",
+    "FiltroCampanaCampo": "TEXT",
+    "FiltroCampanaTipo": "TEXT NOT NULL DEFAULT 'TEXTO'",
+    "FiltroCampanaValorOrigen": "TEXT NOT NULL DEFAULT 'CAMPANA_ACTIVA'",
+    "FiltroCampanaValorFijo": "TEXT",
+    "FiltroRelacionTabla": "TEXT",
+    "FiltroRelacionCampoLocal": "TEXT",
+    "FiltroRelacionCampoRemoto": "TEXT",
+    "FiltroRelacionCampoCampana": "TEXT",
+    "FiltroRelacionTipoCampana": "TEXT NOT NULL DEFAULT 'TEXTO'",
+    "FiltroActivo": "INTEGER NOT NULL DEFAULT 0",
+}
+
+DEFAULT_CAMPAIGN_FILTERS = {
+    "pedidos": {"FiltroActivo": 1, "FiltroCampanaModo": "DIRECTO", "FiltroCampanaCampo": "Campaña", "FiltroCampanaTipo": "TEXTO", "FiltroCampanaValorOrigen": "CAMPANA_ACTIVA"},
+    "loteado": {"FiltroActivo": 1, "FiltroCampanaModo": "DIRECTO", "FiltroCampanaCampo": "CAMPAÑA", "FiltroCampanaTipo": "ENTERO", "FiltroCampanaValorOrigen": "CAMPANA_ACTIVA"},
+    "lote": {"FiltroActivo": 1, "FiltroCampanaModo": "PREFIJO", "FiltroCampanaCampo": "IdPalet", "FiltroCampanaTipo": "ENTERO", "FiltroCampanaValorOrigen": "CAMPANA_ACTIVA"},
+    "pesosfres": {"FiltroActivo": 1, "FiltroCampanaModo": "DIRECTO", "FiltroCampanaCampo": "CAMPAÑA", "FiltroCampanaTipo": "ENTERO", "FiltroCampanaValorOrigen": "CAMPANA_ACTIVA"},
+    "datoscalibre": {"FiltroActivo": 1, "FiltroCampanaModo": "DIRECTO", "FiltroCampanaCampo": "CAMPAÑA", "FiltroCampanaTipo": "ENTERO", "FiltroCampanaValorOrigen": "CAMPANA_ACTIVA"},
+    "partidas": {"FiltroActivo": 1, "FiltroCampanaModo": "PREFIJO", "FiltroCampanaCampo": "IdPartidaP", "FiltroCampanaTipo": "TEXTO", "FiltroCampanaValorOrigen": "CAMPANA_ACTIVA"},
+}
+
 
 class LegacySyncRepository:
     def __init__(self) -> None:
@@ -41,7 +64,18 @@ class LegacySyncRepository:
                     UltimoError TEXT,
                     Observaciones TEXT,
                     FechaCreacion TEXT,
-                    FechaModificacion TEXT
+                    FechaModificacion TEXT,
+                    FiltroCampanaModo TEXT NOT NULL DEFAULT 'NINGUNO',
+                    FiltroCampanaCampo TEXT,
+                    FiltroCampanaTipo TEXT NOT NULL DEFAULT 'TEXTO',
+                    FiltroCampanaValorOrigen TEXT NOT NULL DEFAULT 'CAMPANA_ACTIVA',
+                    FiltroCampanaValorFijo TEXT,
+                    FiltroRelacionTabla TEXT,
+                    FiltroRelacionCampoLocal TEXT,
+                    FiltroRelacionCampoRemoto TEXT,
+                    FiltroRelacionCampoCampana TEXT,
+                    FiltroRelacionTipoCampana TEXT NOT NULL DEFAULT 'TEXTO',
+                    FiltroActivo INTEGER NOT NULL DEFAULT 0
                 )
                 '''
             )
@@ -68,6 +102,12 @@ class LegacySyncRepository:
                 )
                 '''
             )
+            settings_cols = {r[1] for r in conn.execute("PRAGMA table_info(LegacyTableSyncSettings)").fetchall()}
+            for column, definition in FILTER_COLUMNS.items():
+                if column not in settings_cols:
+                    conn.execute(f"ALTER TABLE LegacyTableSyncSettings ADD COLUMN {column} {definition}")
+            self._apply_default_campaign_filters(conn)
+
             cols = {r[1] for r in conn.execute("PRAGMA table_info(LegacyTableSyncLog)").fetchall()}
             if "ModoUsado" not in cols:
                 conn.execute("ALTER TABLE LegacyTableSyncLog ADD COLUMN ModoUsado TEXT")
@@ -76,6 +116,26 @@ class LegacySyncRepository:
             if "TablaDestinoCreada" not in cols:
                 conn.execute("ALTER TABLE LegacyTableSyncLog ADD COLUMN TablaDestinoCreada INTEGER DEFAULT 0")
 
+    def _apply_default_campaign_filters(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute("SELECT Id, Nombre, AccessTable, SqliteTable FROM LegacyTableSyncSettings").fetchall()
+        for row in rows:
+            names = [str(row["AccessTable"] or "").lower(), str(row["SqliteTable"] or "").lower(), str(row["Nombre"] or "").lower()]
+            defaults = next((DEFAULT_CAMPAIGN_FILTERS[name] for name in names if name in DEFAULT_CAMPAIGN_FILTERS), None)
+            if not defaults:
+                continue
+            assignments = ", ".join(f"{key}=?" for key in defaults)
+            conn.execute(f"UPDATE LegacyTableSyncSettings SET {assignments} WHERE Id=? AND COALESCE(FiltroActivo, 0)=0 AND COALESCE(FiltroCampanaModo, 'NINGUNO')='NINGUNO'", (*defaults.values(), row["Id"]))
+
+    @staticmethod
+    def _with_campaign_defaults(data: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(data)
+        names = [str(merged.get("AccessTable", "")).lower(), str(merged.get("SqliteTable", "")).lower(), str(merged.get("Nombre", "")).lower()]
+        defaults = next((DEFAULT_CAMPAIGN_FILTERS[name] for name in names if name in DEFAULT_CAMPAIGN_FILTERS), {})
+        for key, value in defaults.items():
+            if merged.get(key) in (None, ""):
+                merged[key] = value
+        return merged
+
     def get_settings(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute("SELECT * FROM LegacyTableSyncSettings ORDER BY Nombre").fetchall()
@@ -83,17 +143,25 @@ class LegacySyncRepository:
         return [dict(r) for r in rows]
 
     def add_setting(self, data: dict[str, Any]) -> int:
+        data = self._with_campaign_defaults(data)
         now = datetime.utcnow().isoformat(timespec="seconds")
         with self._connect() as conn:
             cur = conn.execute(
                 '''
                 INSERT INTO LegacyTableSyncSettings
-                (Nombre, AccessPath, AccessTable, SqlitePath, SqliteTable, Modo, Activa, Observaciones, FechaCreacion, FechaModificacion)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (Nombre, AccessPath, AccessTable, SqlitePath, SqliteTable, Modo, Activa, Observaciones, FechaCreacion, FechaModificacion,
+                 FiltroCampanaModo, FiltroCampanaCampo, FiltroCampanaTipo, FiltroCampanaValorOrigen, FiltroCampanaValorFijo,
+                 FiltroRelacionTabla, FiltroRelacionCampoLocal, FiltroRelacionCampoRemoto, FiltroRelacionCampoCampana,
+                 FiltroRelacionTipoCampana, FiltroActivo)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
                 (
                     data["Nombre"], data["AccessPath"], data["AccessTable"], data["SqlitePath"], data["SqliteTable"],
                     data.get("Modo", "REEMPLAZAR_TABLA"), int(data.get("Activa", 1)), data.get("Observaciones", ""), now, now,
+                    data.get("FiltroCampanaModo", "NINGUNO"), data.get("FiltroCampanaCampo", ""), data.get("FiltroCampanaTipo", "TEXTO"),
+                    data.get("FiltroCampanaValorOrigen", "CAMPANA_ACTIVA"), data.get("FiltroCampanaValorFijo", ""),
+                    data.get("FiltroRelacionTabla", ""), data.get("FiltroRelacionCampoLocal", ""), data.get("FiltroRelacionCampoRemoto", ""),
+                    data.get("FiltroRelacionCampoCampana", ""), data.get("FiltroRelacionTipoCampana", "TEXTO"), int(data.get("FiltroActivo", 0) or 0),
                 ),
             )
             conn.commit()
@@ -106,18 +174,26 @@ class LegacySyncRepository:
             return int(cur.lastrowid)
 
     def update_setting(self, setting_id: int, data: dict[str, Any]) -> None:
+        data = self._with_campaign_defaults(data)
         now = datetime.utcnow().isoformat(timespec="seconds")
         with self._connect() as conn:
             conn.execute(
                 '''
                 UPDATE LegacyTableSyncSettings
                 SET Nombre=?, AccessPath=?, AccessTable=?, SqlitePath=?, SqliteTable=?,
-                    Modo=?, Activa=?, Observaciones=?, FechaModificacion=?
+                    Modo=?, Activa=?, Observaciones=?, FechaModificacion=?,
+                    FiltroCampanaModo=?, FiltroCampanaCampo=?, FiltroCampanaTipo=?, FiltroCampanaValorOrigen=?, FiltroCampanaValorFijo=?,
+                    FiltroRelacionTabla=?, FiltroRelacionCampoLocal=?, FiltroRelacionCampoRemoto=?, FiltroRelacionCampoCampana=?,
+                    FiltroRelacionTipoCampana=?, FiltroActivo=?
                 WHERE Id=?
                 ''',
                 (
                     data["Nombre"], data["AccessPath"], data["AccessTable"], data["SqlitePath"], data["SqliteTable"],
-                    data.get("Modo", "REEMPLAZAR_TABLA"), int(data.get("Activa", 1)), data.get("Observaciones", ""), now, setting_id,
+                    data.get("Modo", "REEMPLAZAR_TABLA"), int(data.get("Activa", 1)), data.get("Observaciones", ""), now,
+                    data.get("FiltroCampanaModo", "NINGUNO"), data.get("FiltroCampanaCampo", ""), data.get("FiltroCampanaTipo", "TEXTO"),
+                    data.get("FiltroCampanaValorOrigen", "CAMPANA_ACTIVA"), data.get("FiltroCampanaValorFijo", ""),
+                    data.get("FiltroRelacionTabla", ""), data.get("FiltroRelacionCampoLocal", ""), data.get("FiltroRelacionCampoRemoto", ""),
+                    data.get("FiltroRelacionCampoCampana", ""), data.get("FiltroRelacionTipoCampana", "TEXTO"), int(data.get("FiltroActivo", 0) or 0), setting_id,
                 ),
             )
 
