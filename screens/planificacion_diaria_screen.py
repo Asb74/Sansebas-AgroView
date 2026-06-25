@@ -472,6 +472,26 @@ class PlanificacionDiariaScreen(ttk.Frame):
     def _cache_set(self, key: str, value) -> None:
         self._planning_cache[key] = value
 
+
+    def _log_ui_runtime(self, evento: str, extra: dict | None = None) -> None:
+        try:
+            snapshot_info = self.runtime_db_service.get_snapshot_info()
+        except Exception as exc:
+            snapshot_info = {"error": str(exc)}
+        try:
+            tab_activa = self.tabs.tab(self.tabs.select(), "text")
+        except Exception:
+            tab_activa = ""
+        try:
+            filters = self._filters_payload()
+        except Exception:
+            filters = {}
+        try:
+            cache_snapshot_identity = self._snapshot_cache_identity()
+        except Exception as exc:
+            cache_snapshot_identity = ("error", str(exc), "")
+        logging.getLogger(__name__).info("[UI_RUNTIME] evento=%s snapshot_info=%s tab_activa=%s filters=%s cache_snapshot_identity=%s thread=%s extra=%s", evento, snapshot_info, tab_activa, filters, cache_snapshot_identity, threading.current_thread().name, extra or {})
+
     def _get_pedidos_pendientes_cached(self, payload: dict, modo_pedidos: str) -> tuple[list[dict], dict]:
         logger = logging.getLogger(__name__)
         cache = self._planning_cache.setdefault("pedidos_pendientes", {})
@@ -482,15 +502,16 @@ class PlanificacionDiariaScreen(ttk.Frame):
             "snapshot_timestamp": snapshot_identity[1],
             "snapshot_label": snapshot_identity[2],
         })
+        current_value = self.runtime_db_service.current_snapshot_file.read_text(encoding="utf-8").strip() if self.runtime_db_service.current_snapshot_file.exists() else ""
         cached = cache.get(cache_key)
         if cached is not None:
             rows = cached[0] if isinstance(cached, tuple) and cached else []
-            logger.info("[CACHE Pedidos] HIT hash=%s rows=%s snapshot=%s", cache_key, len(rows), snapshot_identity)
+            logger.info("[CACHE Pedidos] HIT hash=%s rows=%s snapshot=%s current_snapshot_file_value=%s snapshot_path=%s timestamp=%s label=%s", cache_key, len(rows), snapshot_identity, current_value, snapshot_identity[0], snapshot_identity[1], snapshot_identity[2])
             return self._copy_cached_result(cached)
-        logger.info("[CACHE Pedidos] MISS hash=%s snapshot=%s", cache_key, snapshot_identity)
+        logger.info("[CACHE Pedidos] MISS hash=%s snapshot=%s current_snapshot_file_value=%s snapshot_path=%s timestamp=%s label=%s rows=0", cache_key, snapshot_identity, current_value, snapshot_identity[0], snapshot_identity[1], snapshot_identity[2])
         result = self.service.load_pedidos_pendientes(payload, modo_pedidos)
         cache[cache_key] = self._copy_cached_result(result)
-        logger.info("[CACHE Pedidos] STORE hash=%s rows=%s snapshot=%s", cache_key, len(result[0] if result else []), snapshot_identity)
+        logger.info("[CACHE Pedidos] STORE hash=%s rows=%s snapshot=%s current_snapshot_file_value=%s snapshot_path=%s timestamp=%s label=%s", cache_key, len(result[0] if result else []), snapshot_identity, current_value, snapshot_identity[0], snapshot_identity[1], snapshot_identity[2])
         return self._copy_cached_result(result)
 
     def _balance_preloaded_context(self) -> dict:
@@ -509,6 +530,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         return preloaded
 
     def load_data(self, save_filters: bool = True) -> None:
+        self._log_ui_runtime("load_data")
         tab_activa = self.tabs.tab(self.tabs.select(), "text")
         logging.getLogger(__name__).info("[TRACE Planificacion.LoadData.Start] tab=%s save_filters=%s", tab_activa, save_filters)
         perf_tab = {"Pedidos pendientes": "Pedidos", "Balance": "Balance", "Stock almacén": "StockAlmacen"}.get(tab_activa)
@@ -1268,6 +1290,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
 
     def _on_runtime_changed(self, event: RuntimeChangedEvent) -> None:
+        self._log_ui_runtime("_on_runtime_changed", {"current_snapshot": str(event.current_snapshot), "duration": event.duration_seconds})
         logging.getLogger(__name__).info("[RUNTIME] Planificación recibió RuntimeChangedEvent snapshot=%s duración=%.3fs", event.current_snapshot, event.duration_seconds)
         try:
             self.after(0, lambda: self._refresh_after_runtime_changed(event))
@@ -1275,6 +1298,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
             logging.getLogger(__name__).exception("[RUNTIME] No se pudo programar refresco visual tras cambio runtime")
 
     def _refresh_after_runtime_changed(self, _event: RuntimeChangedEvent) -> None:
+        self._log_ui_runtime("_refresh_after_runtime_changed")
         self.runtime_status_var.set("Actualizando datos...")
         self.configure(cursor="watch")
         self.update_idletasks()
@@ -1300,6 +1324,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.snapshot_info_var.set(info.get("label", "Foto de datos: No disponible"))
 
     def _actualizar_foto_local(self) -> None:
+        self._log_ui_runtime("_actualizar_foto_local")
         self.clear_planning_cache("inicio_actualizar_foto_local")
         self._btn_actualizar_foto.configure(state="disabled", text="Actualizando foto...")
         messagebox.showinfo("Actualizar foto local", "Inicio de actualización: Actualizar foto local.", parent=self)
@@ -1311,6 +1336,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         threading.Thread(target=worker, name="ActualizarFotoLocalWorker", daemon=True).start()
 
     def _finish_actualizar_foto_local(self, result: dict) -> None:
+        self._log_ui_runtime("_finish_actualizar_foto_local", {"result": result})
         self._btn_actualizar_foto.configure(state="normal", text="Actualizar foto local")
         ok = bool(result.get("ok"))
         if not ok:
@@ -1644,6 +1670,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
 
     def _actualizar_planificacion(self) -> None:
+        self._log_ui_runtime("_actualizar_planificacion")
         confirm = messagebox.askyesno(
             "Actualizar planificación",
             "¿Quieres actualizar los datos de planificación desde hoy?\n\n"
