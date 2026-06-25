@@ -3190,7 +3190,8 @@ class PlanningRepository:
                 self._log_pedidos_diagnostics(conn, pedidos_path, filters, modo_pedidos)
                 return [], kpi_vacio
             cancelado_clause = self._pedidos_not_cancelled_clause(pedidos_cols, alias="p")
-            self.invalidate_runtime_cache()
+            fecha_expr = self._fecha_expr_sql("p", "FechaSalida")
+            logger.info("[PEDIDOS_QUERY] fecha_expr usado=%s", fecha_expr)
             self._ensure_planning_indexes(conn)
 
             query = f"""
@@ -3231,17 +3232,17 @@ class PlanningRepository:
                     query += f" AND UPPER(TRIM(COALESCE({col}, ''))) IN ({placeholders})"
                     params.extend(values)
             if modo_pedidos == "10_dias":
-                query += " AND date(p.\"FechaSalida\") BETWEEN date('now') AND date('now', '+10 days')"
+                query += f" AND date({fecha_expr}) BETWEEN date('now') AND date('now', '+10 days')"
             elif modo_pedidos == "todos_futuros":
-                query += " AND date(p.\"FechaSalida\") >= date('now')"
+                query += f" AND date({fecha_expr}) >= date('now')"
             elif modo_pedidos == "rango":
                 fecha_desde = str(filters.get("fecha_desde") or "").strip()
                 fecha_hasta = str(filters.get("fecha_hasta") or "").strip()
                 if fecha_desde:
-                    query += " AND date(p.\"FechaSalida\") >= date(?)"
+                    query += f" AND date({fecha_expr}) >= date(?)"
                     params.append(fecha_desde)
                 if fecha_hasta:
-                    query += " AND date(p.\"FechaSalida\") <= date(?)"
+                    query += f" AND date({fecha_expr}) <= date(?)"
                     params.append(fecha_hasta)
             elif modo_pedidos == "semana_actual":
                 semana_actual = str(datetime.now().isocalendar()[1])
@@ -3407,8 +3408,8 @@ class PlanningRepository:
                 LEFT JOIN MConfecciones mc
                   ON CAST(mc.CODIGO AS TEXT) = CAST(p."Confeccion" AS TEXT)
             """
-            query += """
-                ORDER BY date(p."FechaSalida") ASC,
+            query += f"""
+                ORDER BY date({fecha_expr}) ASC,
                          p."Cliente" ASC,
                          p."IdPedidoLora" ASC,
                          p."Linea" ASC
