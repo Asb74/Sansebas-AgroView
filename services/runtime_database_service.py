@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+import hashlib
 import logging
 from pathlib import Path
 import shutil
@@ -14,6 +15,9 @@ from typing import Any, Callable
 from config import CENTRAL_SQLITE_DIR, CURRENT_SNAPSHOT_FILE, RUNTIME_SQLITE_DIR, RUNTIME_SNAPSHOTS_DIR, SQLITE_DATABASES
 
 logger = logging.getLogger(__name__)
+
+DIAG_SNAPSHOT_PEDIDOS = True
+SNAPSHOT_CHECKSUM_MAX_BYTES = 200 * 1024 * 1024
 
 
 class RuntimeDatabaseLockedError(RuntimeError):
@@ -205,29 +209,103 @@ class RuntimeDatabaseManager:
             return (False, [str(exc) or RuntimeDatabaseService.ERROR_MESSAGE])
 
     def create_new_snapshot(self) -> Path:
+        """Build and publish a complete snapshot from the central SQLite directory only."""
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        snapshot_dir = self.snapshots_dir / timestamp
+        final_dir = self.snapshots_dir / timestamp
+        building_dir = self.snapshots_dir / f"__building_{timestamp}"
         counter = 1
-        while snapshot_dir.exists():
-            snapshot_dir = self.snapshots_dir / f"{timestamp}_{counter:02d}"
+        while final_dir.exists() or building_dir.exists():
+            suffix = f"{counter:02d}"
+            final_dir = self.snapshots_dir / f"{timestamp}_{suffix}"
+            building_dir = self.snapshots_dir / f"__building_{timestamp}_{suffix}"
             counter += 1
-        logger.info("[RUNTIME] Creando snapshot local: %s", snapshot_dir)
-        snapshot_dir.mkdir(parents=True)
+        logger.info("[RUNTIME] Creando snapshot local atómico: build=%s final=%s origen_central=%s", building_dir, final_dir, self.central_dir)
+        building_dir.mkdir(parents=True)
         try:
             for db_name in SQLITE_DATABASES:
-                source = self.central_dir / db_name
-                destination = snapshot_dir / db_name
-                if not source.exists() or source.stat().st_size <= 0:
-                    raise RuntimeError(f"Base central vacía o inválida: {source}")
-                shutil.copy2(source, destination)
-            self._write_snapshot_info(snapshot_dir)
-            return snapshot_dir
-        except Exception:
-            shutil.rmtree(snapshot_dir, ignore_errors=True)
-            logger.warning("[RUNTIME] Snapshot incompleto eliminado: %s", snapshot_dir)
+                self._copy_central_sqlite_to_snapshot(db_name, building_dir)
+            self._write_snapshot_info(building_dir)
+            self._verify_snapshot_integrity(building_dir)
+            building_dir.rename(final_dir)
+            logger.info("[SNAPSHOT_AUDIT] publicación_atómica=OK build=%s final=%s", building_dir, final_dir)
+            return final_dir
+        except Exception as exc:
+            logger.exception("[SNAPSHOT_AUDIT] publicación_atómica=ERROR build=%s final=%s error=%s mensaje_usuario=%s", building_dir, final_dir, exc, "No se pudo crear la nueva foto local. Se conserva la anterior.")
+            shutil.rmtree(building_dir, ignore_errors=True)
+            logger.warning("[RUNTIME] Snapshot incompleto eliminado: %s", building_dir)
+            raise RuntimeError("No se pudo crear la nueva foto local. Se conserva la anterior.") from exc
+
+    def _copy_central_sqlite_to_snapshot(self, db_name: str, snapshot_dir: Path) -> None:
+        source = self.central_dir / db_name
+        destination = snapshot_dir / db_name
+        self._checkpoint_central_sqlite(source, db_name)
+        exists = source.exists()
+        source_size = source.stat().st_size if exists else -1
+        source_mtime = source.stat().st_mtime if exists else 0.0
+        logger.info("[SNAPSHOT_AUDIT] base=%s origen_central=%s existe_origen=%s tamaño_origen_antes=%s mtime_origen_antes=%s destino_snapshot=%s", db_name, source, exists, source_size, source_mtime, destination)
+        try:
+            if not exists or source_size <= 0:
+                raise RuntimeError(f"Base central vacía o inválida: {source}")
+            shutil.copy2(source, destination)
+            dest_stat = destination.stat()
+            if dest_stat.st_size != source_size:
+                raise RuntimeError(f"Tamaño distinto tras copiar {db_name}: origen={source_size} destino={dest_stat.st_size}")
+            if abs(dest_stat.st_mtime - source_mtime) > 2.0:
+                raise RuntimeError(f"mtime distinto tras copiar {db_name}: origen={source_mtime} destino={dest_stat.st_mtime}")
+            if db_name == "DBPedidos.sqlite" or source_size <= SNAPSHOT_CHECKSUM_MAX_BYTES:
+                source_hash = self._sha256_file(source)
+                dest_hash = self._sha256_file(destination)
+                if source_hash != dest_hash:
+                    raise RuntimeError(f"Checksum distinto tras copiar {db_name}")
+                logger.info("[SNAPSHOT_AUDIT] base=%s checksum_sha256=%s", db_name, source_hash)
+            logger.info("[SNAPSHOT_AUDIT] base=%s origen_central=%s existe_origen=%s tamaño_origen_antes=%s mtime_origen_antes=%s destino_snapshot=%s tamaño_destino_despues=%s mtime_destino_despues=%s resultado=OK", db_name, source, exists, source_size, source_mtime, destination, dest_stat.st_size, dest_stat.st_mtime)
+            if DIAG_SNAPSHOT_PEDIDOS and db_name == "DBPedidos.sqlite":
+                self._log_pedidos_snapshot_diagnostic(source, destination)
+        except Exception as exc:
+            logger.exception("[SNAPSHOT_AUDIT] base=%s origen_central=%s existe_origen=%s tamaño_origen_antes=%s mtime_origen_antes=%s destino_snapshot=%s resultado=ERROR error=%s", db_name, source, exists, source_size, source_mtime, destination, exc)
             raise
+
+    @staticmethod
+    def _checkpoint_central_sqlite(source: Path, db_name: str) -> None:
+        if not source.exists():
+            return
+        try:
+            with sqlite3.connect(source, timeout=30) as conn:
+                conn.execute("PRAGMA busy_timeout = 30000")
+                result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            logger.info("[SNAPSHOT_AUDIT] base=%s checkpoint_wal=OK origen_central=%s resultado=%s", db_name, source, tuple(result) if result else None)
+        except sqlite3.OperationalError as exc:
+            if "database is locked" in str(exc).lower():
+                logger.exception("[SNAPSHOT_AUDIT] base=%s checkpoint_wal=ERROR origen_central=%s error=%s", db_name, source, exc)
+                raise RuntimeError(f"SQLite central bloqueada antes de snapshot: {source}") from exc
+            raise
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _log_pedidos_snapshot_diagnostic(self, central_path: Path, snapshot_path: Path) -> None:
+        query = "SELECT VarCliente FROM Pedidos WHERE IdPedidoLora = 'PS 26/00167' LIMIT 5"
+        central_value = self._fetch_optional_pedidos_diag(central_path, query)
+        snapshot_value = self._fetch_optional_pedidos_diag(snapshot_path, query)
+        logger.debug("[SNAPSHOT_AUDIT] diagnóstico_DBPedidos IdPedidoLora=PS 26/00167 central=%s snapshot=%s", central_value, snapshot_value)
+
+    @staticmethod
+    def _fetch_optional_pedidos_diag(db_path: Path, query: str) -> list[Any] | str:
+        try:
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+                exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='Pedidos' LIMIT 1").fetchone()
+                if not exists:
+                    return "tabla Pedidos no existe"
+                return [row[0] for row in conn.execute(query).fetchall()]
+        except Exception as exc:
+            return f"error: {exc}"
 
     def activate_snapshot(self, snapshot_dir: Path, reason: str = "activate_snapshot") -> None:
         self._verify_snapshot_integrity(Path(snapshot_dir))
@@ -242,7 +320,8 @@ class RuntimeDatabaseManager:
         logger.info("[RUNTIME] Snapshot activo cambiado: %s", snapshot_dir)
 
     def _verify_snapshot_integrity(self, snapshot_dir: Path) -> None:
-        if not self._is_valid_snapshot(snapshot_dir):
+        snapshot_dir = Path(snapshot_dir)
+        if not snapshot_dir.is_dir() or not all((snapshot_dir / db_name).exists() for db_name in SQLITE_DATABASES):
             raise RuntimeError(f"Snapshot inválido o incompleto: {snapshot_dir}")
         for db_name in SQLITE_DATABASES:
             db_path = snapshot_dir / db_name
@@ -281,7 +360,7 @@ class RuntimeDatabaseManager:
 
     def cleanup_old_snapshots(self, keep: int = 3) -> None:
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
-        valid = [p for p in self.snapshots_dir.iterdir() if p.is_dir() and self._is_valid_snapshot(p)]
+        valid = [p for p in self.snapshots_dir.iterdir() if p.is_dir() and not p.name.startswith("__building_") and self._is_valid_snapshot(p)]
         active = self._resolve_current_snapshot_dir()
         valid.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         for old in valid[max(keep, 1):]:
@@ -308,12 +387,12 @@ class RuntimeDatabaseManager:
         (snapshot_dir / self.INFO_FILE).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _is_valid_snapshot(self, snapshot_dir: Path) -> bool:
-        return snapshot_dir.is_dir() and all((snapshot_dir / db_name).exists() for db_name in SQLITE_DATABASES)
+        return snapshot_dir.is_dir() and not snapshot_dir.name.startswith("__building_") and all((snapshot_dir / db_name).exists() for db_name in SQLITE_DATABASES)
 
     def _get_latest_valid_snapshot(self) -> Path | None:
         if not self.snapshots_dir.exists():
             return None
-        valid = [p for p in self.snapshots_dir.iterdir() if p.is_dir() and self._is_valid_snapshot(p)]
+        valid = [p for p in self.snapshots_dir.iterdir() if p.is_dir() and not p.name.startswith("__building_") and self._is_valid_snapshot(p)]
         return max(valid, key=lambda p: p.stat().st_mtime) if valid else None
 
 
@@ -344,5 +423,5 @@ class RuntimeDatabaseService:
             if name == "snapshot_file":
                 manager.current_snapshot_file = Path(value)
 
-    def prepare_runtime_databases(self, force: bool = False) -> tuple[bool, list[str]]:
-        return self.manager.prepare_runtime_databases(force=force)
+    def prepare_runtime_databases(self, force: bool = False, reason: str = "prepare_runtime_databases") -> tuple[bool, list[str]]:
+        return self.manager.prepare_runtime_databases(force=force, reason=reason)

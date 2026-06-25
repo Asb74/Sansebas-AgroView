@@ -431,6 +431,7 @@ conn.Close: out.Close
             else:
                 replace_info = self._replace_table_from_staging(staging_sqlite_path, target_sqlite_path, table_name, allow_empty=allow_empty)
             metrics.update(replace_info)
+            self._log_central_ready_for_snapshot(target_sqlite_path, f"safe_sync_table:{table_name}")
             metrics["FilasImportadas"] = int(staging_validation["rows"])
             if partition_ctx:
                 message = (f"Sync particionada OK. Campaña={partition_ctx['campana']} Exportados={exported} "
@@ -444,6 +445,12 @@ conn.Close: out.Close
             logger.exception("[SYNC_AUDIT] Sincronización segura cancelada. La tabla anterior se conserva. tabla=%s", table_name)
             metrics["Error"] = str(exc)
             return False, "Sincronización cancelada. La tabla anterior se ha conservado.", metrics
+
+
+    def _log_central_ready_for_snapshot(self, target_sqlite_path: Path, context: str) -> None:
+        logger.info("[SYNC_AUDIT] SQLite central commit OK contexto=%s path=%s", context, target_sqlite_path)
+        logger.info("[SYNC_AUDIT] SQLite central connection closed contexto=%s path=%s", context, target_sqlite_path)
+        logger.info("[SYNC_AUDIT] target path ready for snapshot contexto=%s path=%s exists=%s size=%s mtime=%s", context, target_sqlite_path, target_sqlite_path.exists(), target_sqlite_path.stat().st_size if target_sqlite_path.exists() else -1, target_sqlite_path.stat().st_mtime if target_sqlite_path.exists() else 0)
 
     def _build_campaign_filter_context(self, setting: dict[str, Any]) -> dict[str, Any] | None:
         active = int(setting.get("FiltroActivo", 0) or 0) == 1
@@ -620,16 +627,15 @@ conn.Close: out.Close
             id_palets, loteado = self._actualizar_loteado_desde_hoy(fecha_corte)
             lote = self._actualizar_lote_por_palets(id_palets)
             pesos = self._actualizar_pesosfres_desde_hoy(fecha_corte)
+            for db_name in ("DBPedidos.sqlite", "bdloteado.sqlite", "DBfruta.sqlite"):
+                self._log_central_ready_for_snapshot(Path(CENTRAL_SQLITE_DIR) / db_name, "sync_planificacion_hoy_en_adelante")
             elapsed = (datetime.utcnow() - start).total_seconds()
             msg = (
                 f"Planificación rápida OK. Pedidos: {pedidos} | Loteado: {loteado} | "
                 f"Lote: {lote} | PesosFres: {pesos}"
             )
             logger.info("%s | tiempo=%.2fs", msg, elapsed)
-            runtime_ok, runtime_errors = self.runtime_db.prepare_runtime_databases(force=True)
-            if not runtime_ok:
-                logger.warning("No se pudo refrescar totalmente runtime_db tras actualización legacy. Errores en: %s", runtime_errors)
-                msg = f"{msg}. {self.runtime_db.WARNING_MESSAGE}"
+            logger.info("[SYNC_AUDIT] Sincronización legacy completa; snapshot diferido al orquestador")
             if setting_id:
                 self.repository.update_sync_result(setting_id, True, msg, None)
             return True, msg
