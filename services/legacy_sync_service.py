@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 from datetime import date, datetime
+import json
 import logging
 from pathlib import Path
 import re
@@ -159,6 +160,7 @@ class LegacySyncService:
             row
             for row in settings
             if self.setting_targets_central_sqlite(row)
+            and not self._is_pedidos_setting(row)
             and self._normalize_mode(str(row.get("Modo", "REEMPLAZAR_TABLA"))) != "REEMPLAZAR_TABLA"
         ]
 
@@ -188,6 +190,19 @@ class LegacySyncService:
             return False, "Configuración no encontrada"
         mode = self._normalize_mode(str(setting.get("Modo", "REEMPLAZAR_TABLA")))
         if mode == "PLANIFICACION_HOY_EN_ADELANTE":
+            if self._is_pedidos_setting(setting):
+                ok, message, metrics = self.safe_sync_table(setting)
+                end = datetime.utcnow().isoformat(timespec="seconds")
+                err = "" if ok else str(metrics.get("Error") or message)
+                self.repository.update_sync_result(setting_id, ok, message, err or None)
+                self.repository.add_log({
+                    "SettingId": setting_id, "Nombre": setting["Nombre"], "AccessPath": setting["AccessPath"],
+                    "AccessTable": setting["AccessTable"], "SqlitePath": setting["SqlitePath"], "SqliteTable": setting["SqliteTable"],
+                    "Inicio": start, "Fin": end, "Ok": 1 if ok else 0, "FilasExportadas": metrics.get("FilasExportadas", 0),
+                    "FilasImportadas": metrics.get("FilasImportadas", 0), "Mensaje": message, "Error": err, "ModoUsado": metrics.get("ModoUsado", mode),
+                    "TablaDestinoExistia": 1 if metrics.get("TablaDestinoExistia") else 0, "TablaDestinoCreada": 1 if metrics.get("TablaDestinoCreada") else 0,
+                })
+                return ok, message
             if self.setting_targets_central_sqlite(setting):
                 msg = self._central_sqlite_block_error(setting, mode)
                 self.repository.update_sync_result(setting_id, False, "Operación bloqueada por seguridad", msg)
@@ -234,33 +249,113 @@ class LegacySyncService:
         table_name = str(setting.get("SqliteTable", "")).strip()
         target_sqlite_path = Path(str(setting.get("SqlitePath", "")))
         allow_empty = bool(int(setting.get("AllowEmpty", 0) or 0))
-        logger.info("Inicio safe sync legacy=%s tabla=%s destino=%s", setting.get("Nombre", ""), table_name, target_sqlite_path)
+        audit_start = datetime.utcnow()
+        logger.info("[SYNC_AUDIT] Inicio nombre=%s tabla_access=%s tabla_sqlite=%s access_path=%s sqlite_destino=%s modo=%s usuario=%s timestamp_inicio=%s", setting.get("Nombre", ""), setting.get("AccessTable", ""), table_name, setting.get("AccessPath", ""), target_sqlite_path, metrics["ModoUsado"], setting.get("Usuario", ""), audit_start.isoformat(timespec="seconds"))
         try:
             self._validate_identifier(table_name)
-            ok, export_msg, csv_path, exported = self._run_export(setting_id)
+            partition_ctx = self._build_pedidos_partition_context(setting) if self._is_pedidos_setting(setting) else None
+            if partition_ctx:
+                metrics["ModoUsado"] = "PARTICION_CAMPANA"
+                ok, export_msg, csv_path, exported = self._run_export_custom(setting, partition_ctx["access_sql"], output_tag=f"pedidos_campana_{partition_ctx['campana']}")
+            else:
+                ok, export_msg, csv_path, exported = self._run_export(setting_id)
             metrics["FilasExportadas"] = exported
             if not ok or not csv_path:
                 raise RuntimeError(export_msg)
-            logger.info("CSV generado tabla=%s path=%s filas_exportadas=%s", table_name, csv_path, exported)
+            logger.info("[SYNC_AUDIT] Consulta Access sql=%s params=%s csv=%s filas_exportadas=%s", partition_ctx["access_sql"] if partition_ctx else setting.get("AccessTable", ""), [], csv_path, exported)
             csv_info = self._validate_csv_for_sync(csv_path, allow_empty=allow_empty)
-            logger.info("CSV validado tabla=%s columnas=%s filas=%s", table_name, csv_info["columns"], csv_info["rows"])
+            logger.info("[SYNC_AUDIT] Validación CSV existe=%s tamaño_bytes=%s numero_columnas=%s columnas=%s filas_datos=%s resultado=OK", csv_path.exists(), csv_path.stat().st_size if csv_path.exists() else 0, len(csv_info["columns"]), csv_info["columns"], csv_info["rows"])
             staging_dir = self.temp_dir / "staging"
             staging_dir.mkdir(parents=True, exist_ok=True)
             staging_sqlite_path = staging_dir / f"{table_name}_{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}.sqlite"
             staging_info = self._import_csv_to_staging_sqlite(csv_path, staging_sqlite_path, table_name)
-            logger.info("SQLite staging creada tabla=%s path=%s", table_name, staging_sqlite_path)
-            logger.info("Filas importadas en staging tabla=%s filas=%s", table_name, staging_info["rows"])
+            logger.info("[SYNC_AUDIT] Staging creado path=%s tabla=%s columnas=%s filas_importadas=%s", staging_sqlite_path, table_name, staging_info["columns"], staging_info["rows"])
             staging_validation = self._validate_staging_table(staging_sqlite_path, table_name, allow_empty=allow_empty)
-            logger.info("Staging validada tabla=%s filas=%s columnas=%s", table_name, staging_validation["rows"], staging_validation["columns"])
-            replace_info = self._replace_table_from_staging(staging_sqlite_path, target_sqlite_path, table_name, allow_empty=allow_empty)
+            logger.info("[SYNC_AUDIT] Staging validado resultado=OK tabla=%s filas=%s columnas=%s", table_name, staging_validation["rows"], staging_validation["columns"])
+            if partition_ctx:
+                replace_info = self.safe_replace_partition_from_staging(
+                    staging_sqlite_path, target_sqlite_path, table_name, partition_ctx["sqlite_column"], partition_ctx["campana"]
+                )
+            else:
+                replace_info = self._replace_table_from_staging(staging_sqlite_path, target_sqlite_path, table_name, allow_empty=allow_empty)
             metrics.update(replace_info)
             metrics["FilasImportadas"] = int(staging_validation["rows"])
-            message = f"Sincronización segura completada. Exportados={exported} Importados={metrics['FilasImportadas']}"
+            if partition_ctx:
+                message = (f"Sync particionada OK. Campaña={partition_ctx['campana']} Exportados={exported} "
+                           f"Importados={metrics['FilasImportadas']} Antes={replace_info.get('RegistrosParticionAntes', 0)} "
+                           f"Después={replace_info.get('RegistrosParticionDespues', 0)}")
+            else:
+                message = f"Sincronización segura completada. Exportados={exported} Importados={metrics['FilasImportadas']}"
+            logger.info("[SYNC_AUDIT] Resultado final estado=OK duración_total=%.2fs filas_exportadas=%s filas_importadas=%s filas_sustituidas=%s mensaje=%s", (datetime.utcnow() - audit_start).total_seconds(), exported, metrics["FilasImportadas"], metrics.get("RegistrosInsertadosParticion", metrics.get("RegistrosFinales", 0)), message)
             return True, message, metrics
         except Exception as exc:
-            logger.exception("Sincronización segura cancelada. La tabla anterior se ha conservado. tabla=%s", table_name)
+            logger.exception("[SYNC_AUDIT] Sincronización segura cancelada. La tabla anterior se conserva. tabla=%s", table_name)
             metrics["Error"] = str(exc)
             return False, "Sincronización cancelada. La tabla anterior se ha conservado.", metrics
+
+
+    def _is_pedidos_setting(self, setting: dict[str, Any]) -> bool:
+        return str(setting.get("AccessTable", "")).strip().lower() == "pedidos" and str(setting.get("SqliteTable", "")).strip().lower() == "pedidos"
+
+    def _build_pedidos_partition_context(self, setting: dict[str, Any]) -> dict[str, Any]:
+        campana, source = self._detect_active_campana(setting)
+        access_column = self._detect_pedidos_access_campana_column(setting)
+        sqlite_column = self._detect_sqlite_column(Path(str(setting.get("SqlitePath", ""))), "Pedidos", ["Campaña", "Campana"]) or access_column
+        access_sql = f"SELECT * FROM Pedidos WHERE {self._quote_access_identifier(access_column)} = {int(campana)}"
+        logger.info("[SYNC_AUDIT] Campaña detectada campaña=%s origen=%s campo_access=%s campo_sqlite=%s sql=%s", campana, source, access_column, sqlite_column, access_sql)
+        return {"campana": int(campana), "source": source, "access_column": access_column, "sqlite_column": sqlite_column, "access_sql": access_sql}
+
+    def _detect_active_campana(self, setting: dict[str, Any]) -> tuple[int, str]:
+        filters_path = Path("config") / "planificacion_diaria_filters.json"
+        try:
+            if filters_path.exists():
+                data = json.loads(filters_path.read_text(encoding="utf-8"))
+                values = data.get("campana")
+                if isinstance(values, list):
+                    clean = [str(v).strip() for v in values if str(v).strip() and str(v).strip().upper() != "TODOS"]
+                    if len(clean) == 1 and clean[0].isdigit():
+                        return int(clean[0]), "filtro"
+                elif str(values or "").strip().isdigit():
+                    return int(str(values).strip()), "filtro"
+        except Exception:
+            logger.exception("[SYNC_AUDIT] No se pudo leer filtro actual de planificación para campaña")
+        for key in ("Campana", "Campaña", "CampanaActiva", "CampañaActiva"):
+            value = setting.get(key)
+            if str(value or "").strip().isdigit():
+                return int(str(value).strip()), "configuración"
+        return self.get_campana_actual(), "automático"
+
+    def _detect_pedidos_access_campana_column(self, setting: dict[str, Any]) -> str:
+        configured = str(setting.get("AccessCampanaColumn", "") or "").strip()
+        candidates = [configured] if configured else []
+        candidates.extend(["Campaña", "Campana"])
+        for col in candidates:
+            if col:
+                ok, _msg, csv_path, _rows = self._run_export_custom(setting, f"SELECT TOP 1 {self._quote_access_identifier(col)} FROM Pedidos", output_tag=f"detect_pedidos_{col}")
+                if ok and csv_path and csv_path.exists():
+                    return col
+        logger.warning("[SYNC_AUDIT] No se pudo detectar campo campaña en Access; se usará Campaña por defecto")
+        return "Campaña"
+
+    @staticmethod
+    def _quote_access_identifier(name: str) -> str:
+        return "[" + str(name).replace("]", "]]" ) + "]"
+
+    def _detect_sqlite_column(self, sqlite_path: Path, table_name: str, candidates: list[str]) -> str | None:
+        if not sqlite_path.exists():
+            return None
+        try:
+            with sqlite3.connect(sqlite_path, timeout=30) as conn:
+                if not self._table_exists(conn, table_name):
+                    return None
+                columns = self._table_columns(conn, table_name)
+                lowered = {c.lower(): c for c in columns}
+                for candidate in candidates:
+                    if candidate.lower() in lowered:
+                        return lowered[candidate.lower()]
+        except Exception:
+            logger.exception("[SYNC_AUDIT] Error detectando columna SQLite de campaña")
+        return None
 
     def sync_active_settings(self) -> list[tuple[int, bool, str]]:
         results = []
@@ -867,6 +962,114 @@ class LegacySyncService:
             if rows <= 0 and not allow_empty:
                 raise ValueError("Tabla staging sin registros: AllowEmpty no está habilitado")
             return {"columns": columns, "rows": rows}
+
+
+    def safe_replace_partition_from_staging(
+        self,
+        staging_sqlite_path: Path,
+        target_sqlite_path: Path,
+        table_name: str,
+        partition_column: str,
+        partition_value: Any,
+    ) -> dict[str, Any]:
+        """Safely replace only one logical partition from a validated staging SQLite."""
+        self._validate_identifier(table_name)
+        self._validate_identifier(partition_column)
+        staging_sqlite_path = Path(staging_sqlite_path)
+        target_sqlite_path = Path(target_sqlite_path)
+        target_sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        started = datetime.utcnow()
+        logger.info(
+            "[SYNC_AUDIT] Reemplazo parcial inicio staging=%s destino=%s tabla=%s particion=%s valor=%s",
+            staging_sqlite_path,
+            target_sqlite_path,
+            table_name,
+            partition_column,
+            partition_value,
+        )
+        staging_validation = self._validate_staging_table(staging_sqlite_path, table_name, allow_empty=False)
+        staging_columns = list(staging_validation["columns"])
+        staging_count = int(staging_validation["rows"])
+        if staging_count <= 0:
+            logger.error("[SYNC_AUDIT] Staging vacío; no se borra nada en destino. tabla=%s", table_name)
+            raise ValueError("Staging vacío: sincronización particionada cancelada; destino conservado")
+        if partition_column not in staging_columns:
+            raise ValueError(f"Staging no contiene columna de campaña {partition_column}. Destino conservado")
+        quoted_table = self.quote_identifier(table_name)
+        quoted_partition = self.quote_identifier(partition_column)
+        columns_sql = ", ".join(self.quote_identifier(c) for c in staging_columns)
+        with sqlite3.connect(target_sqlite_path, timeout=30) as conn:
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            table_existed = self._table_exists(conn, table_name)
+            total_before = self._count_rows(conn, table_name) if table_existed else 0
+            partition_before = 0
+            min_fecha = max_fecha = None
+            campaigns: list[Any] = []
+            if table_existed:
+                target_columns = self._table_columns(conn, table_name)
+                if partition_column not in target_columns:
+                    raise ValueError(f"Destino no contiene columna de campaña {partition_column}. Destino conservado")
+                if target_columns != staging_columns:
+                    raise ValueError(f"Columnas staging/destino no coinciden. destino={target_columns} staging={staging_columns}")
+                partition_before = int(conn.execute(f"SELECT COUNT(*) FROM {quoted_table} WHERE {quoted_partition} = ?", (partition_value,)).fetchone()[0])
+                if "FechaSalida" in target_columns:
+                    min_fecha, max_fecha = conn.execute(f"SELECT MIN({self.quote_identifier('FechaSalida')}), MAX({self.quote_identifier('FechaSalida')}) FROM {quoted_table}").fetchone()
+                try:
+                    campaigns = [r[0] for r in conn.execute(f"SELECT DISTINCT {quoted_partition} FROM {quoted_table} LIMIT 20").fetchall()]
+                except Exception:
+                    campaigns = []
+            logger.info(
+                "[SYNC_AUDIT] Estado previo destino existe_db=%s existe_tabla=%s total_antes=%s particion_antes=%s min_fecha=%s max_fecha=%s campañas=%s",
+                target_sqlite_path.exists(), table_existed, total_before, partition_before, min_fecha, max_fecha, campaigns,
+            )
+            staging_alias = "staging_partition"
+            conn.execute("ATTACH DATABASE ? AS staging_partition", (str(staging_sqlite_path),))
+            try:
+                staging_partition_count = int(conn.execute(f"SELECT COUNT(*) FROM {staging_alias}.{quoted_table} WHERE {quoted_partition} = ?", (partition_value,)).fetchone()[0])
+                if staging_partition_count <= 0:
+                    raise ValueError("Staging no contiene filas para la campaña activa; destino conservado")
+                try:
+                    conn.execute("BEGIN")
+                    logger.info("[SYNC_AUDIT] Reemplazo parcial transacción iniciada")
+                    created = False
+                    if not table_existed:
+                        col_defs = ", ".join(f"{self.quote_identifier(c)} TEXT" for c in staging_columns)
+                        conn.execute(f"CREATE TABLE {quoted_table} ({col_defs})")
+                        created = True
+                        logger.info("[SYNC_AUDIT] Tabla destino no existía; creada desde staging tabla=%s", table_name)
+                    deleted = conn.execute(f"DELETE FROM {quoted_table} WHERE {quoted_partition} = ?", (partition_value,)).rowcount
+                    conn.execute(
+                        f"INSERT INTO {quoted_table} ({columns_sql}) SELECT {columns_sql} FROM {staging_alias}.{quoted_table} WHERE {quoted_partition} = ?",
+                        (partition_value,),
+                    )
+                    inserted = int(conn.execute("SELECT changes()").fetchone()[0])
+                    partition_after = int(conn.execute(f"SELECT COUNT(*) FROM {quoted_table} WHERE {quoted_partition} = ?", (partition_value,)).fetchone()[0])
+                    total_after = self._count_rows(conn, table_name)
+                    if partition_after <= 0:
+                        raise ValueError("Validación final inválida: la campaña quedaría vacía")
+                    conn.commit()
+                    logger.info(
+                        "[SYNC_AUDIT] Reemplazo parcial OK borrados=%s insertados=%s particion_despues=%s total_despues=%s commit_ok=True duracion=%.2fs",
+                        deleted, inserted, partition_after, total_after, (datetime.utcnow() - started).total_seconds(),
+                    )
+                    return {
+                        "TablaDestinoExistia": table_existed,
+                        "TablaDestinoCreada": created,
+                        "RegistrosAnteriores": total_before,
+                        "RegistrosParticionAntes": partition_before,
+                        "RegistrosParticionDespues": partition_after,
+                        "RegistrosFinales": total_after,
+                        "RegistrosBorradosParticion": deleted,
+                        "RegistrosInsertadosParticion": inserted,
+                    }
+                except Exception:
+                    conn.rollback()
+                    logger.exception("[SYNC_AUDIT] Rollback ejecutado correctamente. La tabla anterior se conserva. tabla=%s", table_name)
+                    raise
+            finally:
+                conn.execute("DETACH DATABASE staging_partition")
 
     def _replace_table_from_staging(
         self,
