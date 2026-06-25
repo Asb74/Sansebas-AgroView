@@ -39,6 +39,8 @@ def test_prepare_runtime_databases_creates_and_activates_snapshot(tmp_path, monk
     assert active.parent == service.snapshots_dir
     assert service.current_snapshot_file.read_text(encoding="utf-8").strip() == active.name
     assert (active / "snapshot_info.txt").exists()
+    assert (active / ".ready").exists()
+    assert not (active / ".building").exists()
     assert all((active / db).exists() for db in dbs)
     assert service.get_runtime_path(dbs[0]) == active / dbs[0]
 
@@ -68,6 +70,7 @@ def test_cleanup_old_snapshots_keeps_three_latest(tmp_path, monkeypatch):
         snap.mkdir(parents=True)
         for db in dbs:
             _create_sqlite(snap / db)
+        (snap / ".ready").write_text("", encoding="utf-8")
         created.append(snap)
 
     service.cleanup_old_snapshots(keep=3)
@@ -75,6 +78,41 @@ def test_cleanup_old_snapshots_keeps_three_latest(tmp_path, monkeypatch):
     remaining = {p.name for p in service.snapshots_dir.iterdir() if p.is_dir()}
     assert len(remaining) == 3
     assert created[0].name not in remaining
+
+
+def test_is_valid_snapshot_requires_ready_marker_and_no_building_marker(tmp_path, monkeypatch):
+    service, dbs = _service(tmp_path, monkeypatch)
+    snap = service.snapshots_dir / "20260625_120000"
+    snap.mkdir(parents=True)
+    for db in dbs:
+        _create_sqlite(snap / db)
+
+    assert service._is_valid_snapshot(snap) is False
+
+    (snap / ".ready").write_text("", encoding="utf-8")
+    assert service._is_valid_snapshot(snap) is True
+
+    (snap / ".building").write_text("", encoding="utf-8")
+    assert service._is_valid_snapshot(snap) is False
+
+
+def test_cleanup_building_snapshots_removes_legacy_and_marker_builds(tmp_path, monkeypatch):
+    service, dbs = _service(tmp_path, monkeypatch)
+    legacy = service.snapshots_dir / "__building_20260625_120000"
+    marker_build = service.snapshots_dir / "20260625_120001"
+    ready = service.snapshots_dir / "20260625_120002"
+    for snap in (legacy, marker_build, ready):
+        snap.mkdir(parents=True)
+        for db in dbs:
+            _create_sqlite(snap / db)
+    (marker_build / ".building").write_text("", encoding="utf-8")
+    (ready / ".ready").write_text("", encoding="utf-8")
+
+    service.cleanup_building_snapshots()
+
+    assert not legacy.exists()
+    assert not marker_build.exists()
+    assert ready.exists()
 
 
 def test_orchestrator_marks_update_all_partial_when_previous_snapshot_is_used(tmp_path, monkeypatch):

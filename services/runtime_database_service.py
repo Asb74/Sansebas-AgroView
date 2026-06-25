@@ -11,7 +11,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import threading
-from time import perf_counter, sleep
+from time import perf_counter
 from typing import Any, Callable
 
 from config import CENTRAL_SQLITE_DIR, CURRENT_SNAPSHOT_FILE, RUNTIME_SQLITE_DIR, RUNTIME_SNAPSHOTS_DIR, SQLITE_DATABASES
@@ -80,6 +80,8 @@ class RuntimeDatabaseManager:
     _instance: "RuntimeDatabaseManager | None" = None
     _instance_lock = threading.RLock()
     INFO_FILE = "snapshot_info.txt"
+    BUILDING_MARKER = ".building"
+    READY_MARKER = ".ready"
 
     def __new__(cls) -> "RuntimeDatabaseManager":
         with cls._instance_lock:
@@ -231,7 +233,7 @@ class RuntimeDatabaseManager:
         dirs = [p for p in self.snapshots_dir.iterdir() if p.is_dir()] if self.snapshots_dir.exists() else []
         current_value = self.current_snapshot_file.read_text(encoding="utf-8").strip() if self.current_snapshot_file.exists() else ""
         resolved = self._resolve_current_snapshot_dir()
-        return {"valid_snapshots": [p.name for p in dirs if not p.name.startswith("__building_") and self._is_valid_snapshot(p)], "building_snapshots": [p.name for p in dirs if p.name.startswith("__building_")], "current_snapshot_file_value": current_value, "resolved_current_snapshot": str(resolved) if resolved else None}
+        return {"valid_snapshots": [p.name for p in dirs if self._is_valid_snapshot(p)], "building_snapshots": [p.name for p in dirs if p.name.startswith("__building_") or ((p / self.BUILDING_MARKER).exists() and not (p / self.READY_MARKER).exists())], "current_snapshot_file_value": current_value, "resolved_current_snapshot": str(resolved) if resolved else None}
 
     def prepare_runtime_databases(self, force: bool = False, reason: str = "prepare_runtime_databases", operation_id: str | None = None) -> tuple[bool, list[str]]:
         op_id = operation_id or get_runtime_operation_id() or make_operation_id(reason)
@@ -298,66 +300,56 @@ class RuntimeDatabaseManager:
         op_id = operation_id or get_runtime_operation_id() or make_operation_id("create_new_snapshot")
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         final_dir = self.snapshots_dir / timestamp
-        building_dir = self.snapshots_dir / f"__building_{timestamp}"
         counter = 1
-        while final_dir.exists() or building_dir.exists():
+        while final_dir.exists():
             suffix = f"{counter:02d}"
             final_dir = self.snapshots_dir / f"{timestamp}_{suffix}"
-            building_dir = self.snapshots_dir / f"__building_{timestamp}_{suffix}"
             counter += 1
-        logger.info("[RUNTIME] Creando snapshot local atómico: build=%s final=%s origen_central=%s", building_dir, final_dir, self.central_dir)
-        logger.info("[SNAPSHOT_PUBLISH] build_dir=%s", building_dir)
+        building_marker = final_dir / self.BUILDING_MARKER
+        ready_marker = final_dir / self.READY_MARKER
+        logger.info("[RUNTIME] Creando snapshot local directo: final=%s origen_central=%s", final_dir, self.central_dir)
         logger.info("[SNAPSHOT_PUBLISH] final_dir=%s", final_dir)
-        logger.info("[SNAPSHOT_TRACE] op_id=%s evento=START_CREATE timestamp=%s building_dir=%s final_dir=%s central_dir=%s sqlite_databases=%s", op_id, timestamp, building_dir, final_dir, self.central_dir, SQLITE_DATABASES)
-        building_dir.mkdir(parents=True)
+        logger.info("[SNAPSHOT_TRACE] op_id=%s evento=START_CREATE timestamp=%s final_dir=%s central_dir=%s sqlite_databases=%s", op_id, timestamp, final_dir, self.central_dir, SQLITE_DATABASES)
+        logger.info("[SNAPSHOT_PUBLISH] evento=CREATE_FINAL_DIR final_dir=%s", final_dir)
+        final_dir.mkdir(parents=True)
+        logger.info("[SNAPSHOT_PUBLISH] evento=MARK_BUILDING marker=%s", building_marker)
+        building_marker.write_text(datetime.now().isoformat(timespec="seconds") + "\n", encoding="utf-8")
         try:
             for db_name in SQLITE_DATABASES:
-                self._copy_central_sqlite_to_snapshot(db_name, building_dir, operation_id=op_id)
+                self._copy_central_sqlite_to_snapshot(db_name, final_dir, operation_id=op_id)
                 if DEBUG_PEDIDOS_COMPARE and db_name == "DBPedidos.sqlite":
                     self.debug_compare_dbpedidos_record(operation_id=op_id)
-            self._write_snapshot_info(building_dir)
-            logger.info("[SNAPSHOT_TRACE] op_id=%s evento=BEFORE_VERIFY_BUILDING building_dir=%s", op_id, building_dir)
+            self._write_snapshot_info(final_dir)
+            logger.info("[SNAPSHOT_TRACE] op_id=%s evento=BEFORE_VERIFY_BUILDING final_dir=%s", op_id, final_dir)
             verify_t0 = perf_counter()
-            self._verify_snapshot_files_complete(building_dir)
-            logger.info("[SNAPSHOT_TRACE] op_id=%s evento=AFTER_VERIFY_BUILDING building_dir=%s duration=%.3fs", op_id, building_dir, perf_counter() - verify_t0)
-            logger.info("[SNAPSHOT_TRACE] op_id=%s evento=BEFORE_RENAME building_dir=%s final_dir=%s building_exists=%s final_exists=%s open_connections=%s dir_listing_before=%s", op_id, building_dir, final_dir, building_dir.exists(), final_dir.exists(), self.debug_open_connections(), [p.name for p in self.snapshots_dir.iterdir()] if self.snapshots_dir.exists() else [])
-            last_exc = None
-            for attempt in range(1, 11):
-                logger.info("[SNAPSHOT_TRACE] op_id=%s evento=RENAME_ATTEMPT attempt=%s building_exists=%s final_exists=%s", op_id, attempt, building_dir.exists(), final_dir.exists())
-                try:
-                    building_dir.rename(final_dir)
-                    logger.info("[SNAPSHOT_TRACE] op_id=%s evento=AFTER_RENAME attempt=%s building_exists=%s final_exists=%s final_dir=%s dir_listing_after=%s", op_id, attempt, building_dir.exists(), final_dir.exists(), final_dir, [p.name for p in self.snapshots_dir.iterdir()] if self.snapshots_dir.exists() else [])
-                    last_exc = None
-                    break
-                except (OSError, PermissionError) as rename_exc:
-                    last_exc = rename_exc
-                    logger.warning("[SNAPSHOT_TRACE] op_id=%s evento=RENAME_ATTEMPT_ERROR attempt=%s error_type=%s errno=%s winerror=%s error=%s", op_id, attempt, type(rename_exc).__name__, getattr(rename_exc, "errno", None), getattr(rename_exc, "winerror", None), rename_exc)
-                    sleep(0.1)
-            if last_exc is not None:
-                logger.exception("[SNAPSHOT_TRACE] op_id=%s evento=RENAME_FAILED_FINAL attempts=10 building_exists=%s final_exists=%s error_type=%s errno=%s winerror=%s error=%s traceback=see_exc_info", op_id, building_dir.exists(), final_dir.exists(), type(last_exc).__name__, getattr(last_exc, "errno", None), getattr(last_exc, "winerror", None), last_exc)
-                raise RuntimeError(f"No se pudo publicar el snapshot final {final_dir.name}; no se activó la nueva foto local") from last_exc
-            if building_dir.exists() or not final_dir.exists():
-                raise RuntimeError(f"Publicación inconsistente: build_exists={building_dir.exists()} final_exists={final_dir.exists()}")
+            self._verify_snapshot_files_complete(final_dir)
+            logger.info("[SNAPSHOT_TRACE] op_id=%s evento=AFTER_VERIFY_BUILDING final_dir=%s duration=%.3fs", op_id, final_dir, perf_counter() - verify_t0)
+            logger.info("[SNAPSHOT_PUBLISH] evento=VALIDATION_OK final_dir=%s", final_dir)
+            building_marker.unlink(missing_ok=True)
+            ready_marker.write_text(datetime.now().isoformat(timespec="seconds") + "\n", encoding="utf-8")
+            logger.info("[SNAPSHOT_PUBLISH] evento=MARK_READY marker=%s", ready_marker)
             self._verify_snapshot_integrity(final_dir)
-            logger.info("[SNAPSHOT_AUDIT] publicación_atómica=OK build=%s final=%s", building_dir, final_dir)
+            logger.info("[SNAPSHOT_AUDIT] publicación=OK final=%s", final_dir)
             self._log_pedidos_snapshot_diagnostic(self.central_dir / "DBPedidos.sqlite", final_dir / "DBPedidos.sqlite", publish=True)
             if DEBUG_PEDIDOS_COMPARE:
                 self.debug_compare_dbpedidos_record(operation_id=op_id)
             active_after = self._resolve_current_snapshot_dir()
             logger.info("[SNAPSHOT_PUBLISH] current_snapshot_file=%s", self.current_snapshot_file)
             logger.info("[SNAPSHOT_PUBLISH] active_snapshot_after=%s", active_after)
+            logger.info("[SNAPSHOT_PUBLISH] evento=END_OK final_dir=%s", final_dir)
             return final_dir
         except Exception as exc:
-            logger.exception("[SNAPSHOT_AUDIT] publicación_atómica=ERROR build=%s final=%s error=%s mensaje_usuario=%s", building_dir, final_dir, exc, "No se pudo crear la nueva foto local. Se conserva la anterior.")
-            if building_dir.exists():
+            logger.exception("[SNAPSHOT_AUDIT] publicación=ERROR final=%s error=%s mensaje_usuario=%s", final_dir, exc, "No se pudo crear la nueva foto local. Se conserva la anterior.")
+            logger.info("[SNAPSHOT_PUBLISH] evento=END_ERROR final_dir=%s error=%s", final_dir, exc)
+            if final_dir.exists() and (final_dir / self.BUILDING_MARKER).exists() and not (final_dir / self.READY_MARKER).exists():
                 if DEBUG_KEEP_FAILED_BUILDING and not os.environ.get("PYTEST_CURRENT_TEST"):
-                    logger.warning("[SNAPSHOT_TRACE] op_id=%s evento=KEEP_FAILED_BUILDING build_dir=%s", op_id, building_dir)
+                    logger.warning("[SNAPSHOT_TRACE] op_id=%s evento=KEEP_FAILED_BUILDING final_dir=%s", op_id, final_dir)
                 else:
                     try:
-                        shutil.rmtree(building_dir)
-                        logger.warning("[RUNTIME] Snapshot incompleto eliminado: %s", building_dir)
+                        shutil.rmtree(final_dir)
+                        logger.warning("[RUNTIME] Snapshot incompleto eliminado: %s", final_dir)
                     except Exception:
-                        logger.exception("[SNAPSHOT_PUBLISH] warning no se pudo eliminar build_dir=%s", building_dir)
+                        logger.exception("[SNAPSHOT_PUBLISH] warning no se pudo eliminar final_dir=%s", final_dir)
             raise RuntimeError("No se pudo crear la nueva foto local. Se conserva la anterior.") from exc
 
     def _copy_central_sqlite_to_snapshot(self, db_name: str, snapshot_dir: Path, operation_id: str | None = None) -> None:
@@ -470,6 +462,7 @@ class RuntimeDatabaseManager:
         tmp = self.current_snapshot_file.with_suffix(".tmp")
         tmp.write_text(snapshot_dir.name, encoding="utf-8")
         tmp.replace(self.current_snapshot_file)
+        logger.info("[SNAPSHOT_PUBLISH] evento=ACTIVATE snapshot_dir=%s current_snapshot_file=%s", snapshot_dir, self.current_snapshot_file)
         logger.info("[RUNTIME] Snapshot activo cambiado: %s", snapshot_dir)
 
     def _verify_snapshot_files_complete(self, snapshot_dir: Path) -> None:
@@ -485,6 +478,8 @@ class RuntimeDatabaseManager:
         snapshot_dir = Path(snapshot_dir)
         if snapshot_dir.name.startswith("__building_"):
             raise RuntimeError("Snapshot temporal __building no puede usarse como snapshot activo")
+        if (snapshot_dir / self.BUILDING_MARKER).exists() or not (snapshot_dir / self.READY_MARKER).exists():
+            raise RuntimeError(f"Snapshot no publicado correctamente: {snapshot_dir}")
         if not snapshot_dir.is_dir() or not all((snapshot_dir / db_name).exists() for db_name in SQLITE_DATABASES):
             raise RuntimeError(f"Snapshot inválido o incompleto: {snapshot_dir}")
         for db_name in SQLITE_DATABASES:
@@ -525,7 +520,11 @@ class RuntimeDatabaseManager:
     def cleanup_building_snapshots(self) -> None:
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
         for building in self.snapshots_dir.iterdir():
-            if not building.is_dir() or not building.name.startswith("__building_"):
+            if not building.is_dir():
+                continue
+            is_legacy_building = building.name.startswith("__building_")
+            is_marker_building = (building / self.BUILDING_MARKER).exists() and not (building / self.READY_MARKER).exists()
+            if not (is_legacy_building or is_marker_building):
                 continue
             try:
                 shutil.rmtree(building)
@@ -576,7 +575,13 @@ class RuntimeDatabaseManager:
         (snapshot_dir / self.INFO_FILE).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def _is_valid_snapshot(self, snapshot_dir: Path) -> bool:
-        return snapshot_dir.is_dir() and not snapshot_dir.name.startswith("__building_") and all((snapshot_dir / db_name).exists() for db_name in SQLITE_DATABASES)
+        return (
+            snapshot_dir.is_dir()
+            and not snapshot_dir.name.startswith("__building_")
+            and (snapshot_dir / self.READY_MARKER).exists()
+            and not (snapshot_dir / self.BUILDING_MARKER).exists()
+            and all((snapshot_dir / db_name).exists() for db_name in SQLITE_DATABASES)
+        )
 
     def _get_latest_valid_snapshot(self) -> Path | None:
         if not self.snapshots_dir.exists():
@@ -631,7 +636,7 @@ class RuntimeDatabaseService:
         dirs = [p for p in self.snapshots_dir.iterdir() if p.is_dir()] if self.snapshots_dir.exists() else []
         current_value = self.current_snapshot_file.read_text(encoding="utf-8").strip() if self.current_snapshot_file.exists() else ""
         resolved = self._resolve_current_snapshot_dir()
-        return {"valid_snapshots": [p.name for p in dirs if not p.name.startswith("__building_") and self._is_valid_snapshot(p)], "building_snapshots": [p.name for p in dirs if p.name.startswith("__building_")], "current_snapshot_file_value": current_value, "resolved_current_snapshot": str(resolved) if resolved else None}
+        return {"valid_snapshots": [p.name for p in dirs if self._is_valid_snapshot(p)], "building_snapshots": [p.name for p in dirs if p.name.startswith("__building_") or ((p / self.BUILDING_MARKER).exists() and not (p / self.READY_MARKER).exists())], "current_snapshot_file_value": current_value, "resolved_current_snapshot": str(resolved) if resolved else None}
 
     def prepare_runtime_databases(self, force: bool = False, reason: str = "prepare_runtime_databases", operation_id: str | None = None) -> tuple[bool, list[str]]:
         return self.manager.prepare_runtime_databases(force=force, reason=reason, operation_id=operation_id)
