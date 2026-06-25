@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 import logging
 from pathlib import Path
 import shutil
-from typing import Any
+import sqlite3
+import threading
+from time import perf_counter
+from typing import Any, Callable
 
 from config import CENTRAL_SQLITE_DIR, CURRENT_SNAPSHOT_FILE, RUNTIME_SQLITE_DIR, RUNTIME_SNAPSHOTS_DIR, SQLITE_DATABASES
 
@@ -12,27 +17,91 @@ logger = logging.getLogger(__name__)
 
 
 class RuntimeDatabaseLockedError(RuntimeError):
-    """Compatibilidad: ya no se usa para reemplazos de SQLite abiertos."""
-
     def __init__(self, locked_databases: list[str]) -> None:
         self.locked_databases = locked_databases
         super().__init__(f"Bases runtime bloqueadas/en uso: {', '.join(locked_databases)}")
 
 
-class RuntimeDatabaseService:
-    SUCCESS_MESSAGE = "Se ha actualizado la foto local desde las bases SQLite centrales."
-    STARTUP_USING_CURRENT_MESSAGE = "Usando última foto local disponible."
-    STARTUP_CENTRAL_NEWER_MESSAGE = "Se detectó una SQLite central más reciente. Creando nueva foto local."
-    WARNING_MESSAGE = "No se pudo actualizar la foto local. Se usará la última foto disponible."
-    ERROR_MESSAGE = "No se pudo preparar ninguna foto local de datos."
+class RuntimeState(str, Enum):
+    INITIALIZING = "INITIALIZING"
+    READY = "READY"
+    UPDATING = "UPDATING"
+    SWITCHING_SNAPSHOT = "SWITCHING_SNAPSHOT"
+    ERROR = "ERROR"
+
+
+@dataclass(frozen=True)
+class RuntimeChangedEvent:
+    previous_snapshot: Path | None
+    current_snapshot: Path
+    started_at: datetime
+    finished_at: datetime
+    duration_seconds: float
+    caches_cleared: int
+    connections_closed: int
+    connections_opened: int
+    reason: str
+
+
+class RuntimeDatabaseManager:
+    """Central runtime coordinator for active snapshots, SQLite connections and caches."""
+
+    _instance: "RuntimeDatabaseManager | None" = None
+    _instance_lock = threading.RLock()
     INFO_FILE = "snapshot_info.txt"
 
+    def __new__(cls) -> "RuntimeDatabaseManager":
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+                cls._instance._initialized = False
+            return cls._instance
+
     def __init__(self) -> None:
+        if self._initialized:
+            return
         self.central_dir = Path(CENTRAL_SQLITE_DIR)
         self.runtime_dir = Path(RUNTIME_SQLITE_DIR)
         self.snapshots_dir = Path(RUNTIME_SNAPSHOTS_DIR)
         self.current_snapshot_file = Path(CURRENT_SNAPSHOT_FILE)
         self.snapshot_file = self.current_snapshot_file
+        self._state = RuntimeState.INITIALIZING
+        self._lock = threading.RLock()
+        self._connections: dict[str, sqlite3.Connection] = {}
+        self._cache_registry: dict[str, Callable[[], None]] = {}
+        self._listeners: dict[str, Callable[[RuntimeChangedEvent], None]] = {}
+        self._connections_opened = 0
+        self._initialized = True
+        self._set_state(RuntimeState.READY, "manager_initialized")
+
+    def _set_state(self, new_state: RuntimeState, reason: str) -> None:
+        old_state = getattr(self, "_state", RuntimeState.INITIALIZING)
+        self._state = new_state
+        logger.info("[RUNTIME] Estado anterior=%s Estado nuevo=%s reason=%s", old_state.value, new_state.value, reason)
+
+    @property
+    def state(self) -> RuntimeState:
+        return self._state
+
+    def register_cache(self, name: str, clear_callback: Callable[[], None]) -> None:
+        with self._lock:
+            self._cache_registry[name] = clear_callback
+            logger.info("[RUNTIME] Caché registrada: %s", name)
+
+    def unregister_cache(self, name: str) -> None:
+        with self._lock:
+            self._cache_registry.pop(name, None)
+            logger.info("[RUNTIME] Caché desregistrada: %s", name)
+
+    def subscribe(self, name: str, callback: Callable[[RuntimeChangedEvent], None]) -> None:
+        with self._lock:
+            self._listeners[name] = callback
+            logger.info("[RUNTIME] Listener registrado: %s", name)
+
+    def unsubscribe(self, name: str) -> None:
+        with self._lock:
+            self._listeners.pop(name, None)
+            logger.info("[RUNTIME] Listener desregistrado: %s", name)
 
     def get_current_snapshot_dir(self) -> Path:
         snapshot_dir = self._resolve_current_snapshot_dir()
@@ -42,45 +111,98 @@ class RuntimeDatabaseService:
         if ok:
             snapshot_dir = self._resolve_current_snapshot_dir()
         if snapshot_dir is None:
-            logger.error("No hay snapshot local activo disponible")
+            self._set_state(RuntimeState.ERROR, "missing_active_snapshot")
             raise RuntimeError("No hay snapshot local activo disponible")
         return snapshot_dir
 
     def get_runtime_path(self, db_name: str) -> Path:
         snapshot_dir = self.get_current_snapshot_dir()
         path = snapshot_dir / db_name
-        logger.info("Ruta SQLite runtime resuelta: %s", path)
+        logger.info("[RUNTIME] Snapshot utilizado=%s Ruta SQLite utilizada=%s", snapshot_dir, path)
         return path
+
+    def get_connection(self, db_name: str) -> sqlite3.Connection:
+        with self._lock:
+            path = self.get_runtime_path(db_name)
+            key = str(path.resolve())
+            conn = self._connections.get(key)
+            if conn is None:
+                conn = sqlite3.connect(path)
+                conn.row_factory = sqlite3.Row
+                self._connections[key] = conn
+                self._connections_opened += 1
+                logger.info("[RUNTIME] Snapshot utilizado=%s Ruta SQLite utilizada=%s Abrió nueva conexión", path.parent, path)
+            else:
+                logger.info("[RUNTIME] Snapshot utilizado=%s Ruta SQLite utilizada=%s Reutilizó conexión", path.parent, path)
+            return conn
+
+    def close_connections(self) -> int:
+        with self._lock:
+            items = list(self._connections.items())
+            self._connections.clear()
+        closed = 0
+        for key, conn in items:
+            try:
+                conn.close()
+                closed += 1
+            except Exception:
+                logger.exception("[RUNTIME] No se pudo cerrar conexión: %s", key)
+        logger.info("[RUNTIME] Conexiones cerradas=%s", closed)
+        return closed
+
+    def invalidate_all(self, reason: str = "runtime_changed") -> int:
+        cleared = 0
+        with self._lock:
+            callbacks = list(self._cache_registry.items())
+        for name, callback in callbacks:
+            try:
+                callback()
+                cleared += 1
+                logger.info("[RUNTIME] Caché limpiada: %s reason=%s", name, reason)
+            except Exception:
+                logger.exception("[RUNTIME] No se pudo limpiar caché: %s", name)
+        return cleared
+
+    def notify_runtime_changed(self, event: RuntimeChangedEvent) -> None:
+        with self._lock:
+            listeners = list(self._listeners.items())
+        for name, callback in listeners:
+            try:
+                callback(event)
+                logger.info("[RUNTIME] Listener notificado: %s", name)
+            except Exception:
+                logger.exception("[RUNTIME] Error notificando listener: %s", name)
 
     def has_current_snapshot(self) -> bool:
         return self._resolve_current_snapshot_dir() is not None
 
-    def prepare_runtime_databases(self, force: bool = False) -> tuple[bool, list[str]]:
+    def prepare_runtime_databases(self, force: bool = False, reason: str = "prepare_runtime_databases") -> tuple[bool, list[str]]:
+        started_at = datetime.now()
+        t0 = perf_counter()
+        previous = self._resolve_current_snapshot_dir()
+        connections_opened_before = self._connections_opened
         try:
-            current = self._resolve_current_snapshot_dir()
-            if not force and current is not None and not self.central_sqlite_is_newer_than_snapshot(current):
-                logger.info("Arranque: SQLite central más reciente=no. %s", self.STARTUP_USING_CURRENT_MESSAGE)
+            self._set_state(RuntimeState.UPDATING, reason)
+            if not force and previous is not None and not self.central_sqlite_is_newer_than_snapshot(previous):
+                self._set_state(RuntimeState.READY, "snapshot_already_current")
                 return True, []
-            if not force and current is not None:
-                logger.info("Arranque: SQLite central más reciente=sí. %s", self.STARTUP_CENTRAL_NEWER_MESSAGE)
-            elif not force:
-                logger.info("Arranque: no hay snapshot local activo. Creando foto local desde SQLite central.")
             snapshot_dir = self.create_new_snapshot()
-            self.activate_snapshot(snapshot_dir)
+            self._verify_snapshot_integrity(snapshot_dir)
+            self._set_state(RuntimeState.SWITCHING_SNAPSHOT, reason)
+            closed = self.close_connections()
+            self._activate_snapshot_file(snapshot_dir)
+            cleared = self.invalidate_all(reason)
+            event = RuntimeChangedEvent(previous, snapshot_dir, started_at, datetime.now(), perf_counter() - t0, cleared, closed, self._connections_opened - connections_opened_before, reason)
+            self.notify_runtime_changed(event)
             self.cleanup_old_snapshots(keep=3)
+            self._set_state(RuntimeState.READY, "snapshot_switch_ok")
+            logger.info("[RUNTIME] Resultado=OK Snapshot anterior=%s Snapshot nuevo=%s Hora inicio=%s Hora fin=%s Duración=%.3fs Repositorios invalidados=%s Número de conexiones cerradas=%s Número de conexiones abiertas=%s Número de cachés limpiadas=%s", previous, snapshot_dir, event.started_at.isoformat(), event.finished_at.isoformat(), event.duration_seconds, len(self._listeners), closed, event.connections_opened, cleared)
             return True, []
         except Exception as exc:
-            logger.exception("No se pudo crear nueva foto local: %s", exc)
-            latest = self._get_latest_valid_snapshot()
-            if latest is not None:
-                logger.warning("Usando último snapshot válido: %s", latest)
-                if self._resolve_current_snapshot_dir() is None:
-                    try:
-                        self.activate_snapshot(latest)
-                    except Exception:
-                        logger.exception("No se pudo activar el último snapshot válido: %s", latest)
-                return False, [str(exc)]
-            return False, [str(exc) or self.ERROR_MESSAGE]
+            self._set_state(RuntimeState.ERROR, reason)
+            logger.exception("[RUNTIME] Resultado=ERROR Snapshot anterior=%s Snapshot nuevo=N/D error=%s", previous, exc)
+            self._set_state(RuntimeState.READY if previous else RuntimeState.ERROR, "fallback_previous_snapshot")
+            return (False, [str(exc) or RuntimeDatabaseService.ERROR_MESSAGE])
 
     def create_new_snapshot(self) -> Path:
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -91,41 +213,46 @@ class RuntimeDatabaseService:
         while snapshot_dir.exists():
             snapshot_dir = self.snapshots_dir / f"{timestamp}_{counter:02d}"
             counter += 1
-        logger.info("Creando snapshot local: %s", snapshot_dir)
+        logger.info("[RUNTIME] Creando snapshot local: %s", snapshot_dir)
         snapshot_dir.mkdir(parents=True)
         try:
             for db_name in SQLITE_DATABASES:
                 source = self.central_dir / db_name
                 destination = snapshot_dir / db_name
-                logger.info("Copiando base SQLite a snapshot: %s -> %s", source, destination)
-                if not source.exists():
-                    raise FileNotFoundError(f"No se encontró la base central: {source}")
-                if source.stat().st_size <= 0:
+                if not source.exists() or source.stat().st_size <= 0:
                     raise RuntimeError(f"Base central vacía o inválida: {source}")
                 shutil.copy2(source, destination)
             self._write_snapshot_info(snapshot_dir)
             return snapshot_dir
         except Exception:
-            if snapshot_dir.exists():
-                shutil.rmtree(snapshot_dir, ignore_errors=True)
-                logger.warning("Snapshot incompleto eliminado: %s", snapshot_dir)
+            shutil.rmtree(snapshot_dir, ignore_errors=True)
+            logger.warning("[RUNTIME] Snapshot incompleto eliminado: %s", snapshot_dir)
             raise
 
-    def activate_snapshot(self, snapshot_dir: Path) -> None:
-        snapshot_dir = Path(snapshot_dir)
+    def activate_snapshot(self, snapshot_dir: Path, reason: str = "activate_snapshot") -> None:
+        self._verify_snapshot_integrity(Path(snapshot_dir))
+        self._activate_snapshot_file(Path(snapshot_dir))
+        self.invalidate_all(reason)
+
+    def _activate_snapshot_file(self, snapshot_dir: Path) -> None:
+        self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.current_snapshot_file.with_suffix(".tmp")
+        tmp.write_text(snapshot_dir.name, encoding="utf-8")
+        tmp.replace(self.current_snapshot_file)
+        logger.info("[RUNTIME] Snapshot activo cambiado: %s", snapshot_dir)
+
+    def _verify_snapshot_integrity(self, snapshot_dir: Path) -> None:
         if not self._is_valid_snapshot(snapshot_dir):
             raise RuntimeError(f"Snapshot inválido o incompleto: {snapshot_dir}")
-        self.runtime_dir.mkdir(parents=True, exist_ok=True)
-        self.current_snapshot_file.write_text(snapshot_dir.name, encoding="utf-8")
-        logger.info("Snapshot activado: %s", snapshot_dir)
+        for db_name in SQLITE_DATABASES:
+            db_path = snapshot_dir / db_name
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+                conn.execute("PRAGMA quick_check").fetchone()
 
     def get_snapshot_info(self) -> dict[str, Any]:
         snapshot_dir = self.get_current_snapshot_dir()
-        if snapshot_dir is None:
-            return {"timestamp": None, "label": "Foto de datos: No disponible", "path": None}
         info_file = snapshot_dir / self.INFO_FILE
-        timestamp = snapshot_dir.name.split("_")
-        raw_timestamp = "_".join(timestamp[:2]) if len(timestamp) >= 2 else snapshot_dir.name
+        raw_timestamp = snapshot_dir.name
         if info_file.exists():
             for line in info_file.read_text(encoding="utf-8").splitlines():
                 if line.startswith("created_at="):
@@ -142,30 +269,26 @@ class RuntimeDatabaseService:
         return {"timestamp": raw_timestamp, "label": label, "path": str(snapshot_dir)}
 
     def central_sqlite_is_newer_than_snapshot(self, snapshot_dir: Path | None = None) -> bool:
-        """Compare only file timestamps; do not open SQLite databases during startup."""
         snapshot_dir = snapshot_dir or self._resolve_current_snapshot_dir()
         if snapshot_dir is None:
-            logger.info("Arranque: SQLite central más reciente=sí (no hay snapshot).")
             return True
         for db_name in SQLITE_DATABASES:
             central = self.central_dir / db_name
             snapshot = snapshot_dir / db_name
-            if not central.exists() or not snapshot.exists():
-                logger.info("Arranque: SQLite central más reciente=sí (falta archivo). db=%s", db_name)
+            if not central.exists() or not snapshot.exists() or central.stat().st_mtime > snapshot.stat().st_mtime + 0.001:
                 return True
-            if central.stat().st_mtime > snapshot.stat().st_mtime + 0.001:
-                logger.info("Arranque: SQLite central más reciente=sí. db=%s central_mtime=%s snapshot_mtime=%s", db_name, central.stat().st_mtime, snapshot.stat().st_mtime)
-                return True
-        logger.info("Arranque: SQLite central más reciente=no.")
         return False
 
     def cleanup_old_snapshots(self, keep: int = 3) -> None:
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)
         valid = [p for p in self.snapshots_dir.iterdir() if p.is_dir() and self._is_valid_snapshot(p)]
+        active = self._resolve_current_snapshot_dir()
         valid.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         for old in valid[max(keep, 1):]:
+            if active and old.resolve() == active.resolve():
+                continue
             shutil.rmtree(old, ignore_errors=True)
-            logger.info("Snapshot antiguo eliminado: %s", old)
+            logger.info("[RUNTIME] Snapshot antiguo eliminado: %s", old)
 
     def _resolve_current_snapshot_dir(self) -> Path | None:
         if self.current_snapshot_file.exists():
@@ -176,11 +299,8 @@ class RuntimeDatabaseService:
                     snapshot_dir = self.snapshots_dir / snapshot_name
                 if self._is_valid_snapshot(snapshot_dir):
                     return snapshot_dir
-                logger.warning("Snapshot activo inválido o incompleto: %s", snapshot_dir)
-        latest = self._get_latest_valid_snapshot()
-        if latest is not None:
-            logger.warning("Usando último snapshot válido: %s", latest)
-        return latest
+                logger.warning("[RUNTIME] Snapshot activo inválido o incompleto: %s", snapshot_dir)
+        return self._get_latest_valid_snapshot()
 
     def _write_snapshot_info(self, snapshot_dir: Path) -> None:
         now = datetime.now().isoformat(timespec="seconds")
@@ -194,6 +314,35 @@ class RuntimeDatabaseService:
         if not self.snapshots_dir.exists():
             return None
         valid = [p for p in self.snapshots_dir.iterdir() if p.is_dir() and self._is_valid_snapshot(p)]
-        if not valid:
-            return None
-        return max(valid, key=lambda p: p.stat().st_mtime)
+        return max(valid, key=lambda p: p.stat().st_mtime) if valid else None
+
+
+class RuntimeDatabaseService:
+    SUCCESS_MESSAGE = "Se ha actualizado la foto local desde las bases SQLite centrales."
+    STARTUP_USING_CURRENT_MESSAGE = "Usando última foto local disponible."
+    STARTUP_CENTRAL_NEWER_MESSAGE = "Se detectó una SQLite central más reciente. Creando nueva foto local."
+    WARNING_MESSAGE = "No se pudo actualizar la foto local. Se usará la última foto disponible."
+    ERROR_MESSAGE = "No se pudo preparar ninguna foto local de datos."
+    INFO_FILE = RuntimeDatabaseManager.INFO_FILE
+
+    def __init__(self) -> None:
+        self.manager = RuntimeDatabaseManager()
+        self.central_dir = self.manager.central_dir
+        self.runtime_dir = self.manager.runtime_dir
+        self.snapshots_dir = self.manager.snapshots_dir
+        self.current_snapshot_file = self.manager.current_snapshot_file
+        self.snapshot_file = self.current_snapshot_file
+
+    def __getattr__(self, name: str):
+        return getattr(self.manager, name)
+
+    def __setattr__(self, name: str, value) -> None:
+        object.__setattr__(self, name, value)
+        manager = self.__dict__.get("manager")
+        if manager is not None and name in {"central_dir", "runtime_dir", "snapshots_dir", "current_snapshot_file", "snapshot_file"}:
+            setattr(manager, name, Path(value))
+            if name == "snapshot_file":
+                manager.current_snapshot_file = Path(value)
+
+    def prepare_runtime_databases(self, force: bool = False) -> tuple[bool, list[str]]:
+        return self.manager.prepare_runtime_databases(force=force)

@@ -19,7 +19,8 @@ from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
 from services.planning_service import PlanningService
-from services.runtime_database_service import RuntimeDatabaseService
+from services.runtime_cache_service import register_runtime_cache, unregister_runtime_cache
+from services.runtime_database_service import RuntimeChangedEvent, RuntimeDatabaseService
 from services.update_orchestrator_service import UpdateOrchestratorService
 from widgets.data_table import DataTable
 from widgets.screen_header import ScreenHeader
@@ -63,6 +64,10 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self._planning_cache = self._new_planning_cache()
         self._filter_options_cache: dict[tuple, list[str]] = {}
         self.sim_policy_vars: dict[str, tk.BooleanVar] = {}
+        self._runtime_listener_name = f"PlanificacionDiariaScreen:{id(self)}"
+        self._runtime_cache_name = f"PlanificacionDiariaScreenCache:{id(self)}"
+        register_runtime_cache(self._runtime_cache_name, lambda: self.clear_planning_cache("runtime_changed"))
+        self.runtime_db_service.subscribe(self._runtime_listener_name, self._on_runtime_changed)
         self._build_ui()
         self._load_filters()
         self._load_filter_options(contextual=True)
@@ -221,6 +226,8 @@ class PlanificacionDiariaScreen(ttk.Frame):
         ttk.Label(self.campo_tab, textvariable=self.kpi_campo, style="KPI.TLabel").pack(anchor="w", pady=(0, 2))
         ttk.Label(self.campo_tab, textvariable=self.last_update).pack(anchor="w", pady=(0, 2))
         ttk.Label(self.campo_tab, textvariable=self.snapshot_info_var).pack(anchor="w", pady=(0, 6))
+        self.runtime_status_var = tk.StringVar(value="")
+        ttk.Label(self.campo_tab, textvariable=self.runtime_status_var, foreground="#8a6d3b").pack(anchor="w", pady=(0, 6))
         self.campo_table = DataTable(self.campo_tab, ["Cultivo", "Campaña", "Fecha carga", "Semana", "Socio", "Variedad", "Grupo varietal", "Boleta", "Plataforma", "Empresa", "Restricciones", "Color", "Kg campo", "Estado aprovechamiento", "Nº calibres aprovechamiento", "Kg estimados calculados"])
         self.campo_table.pack(fill="both", expand=True)
         ttk.Button(self.campo_tab, text="Ver aprovechamiento", command=self._ver_aprovechamiento_campo).pack(anchor="e", pady=(6, 0))
@@ -1258,6 +1265,35 @@ class PlanificacionDiariaScreen(ttk.Frame):
         del_btn = ttk.Button(btnbar, text="Eliminar estimado", command=delete_selected)
         del_btn.pack(side="right", padx=(6, 0))
         render()
+
+
+    def _on_runtime_changed(self, event: RuntimeChangedEvent) -> None:
+        logging.getLogger(__name__).info("[RUNTIME] Planificación recibió RuntimeChangedEvent snapshot=%s duración=%.3fs", event.current_snapshot, event.duration_seconds)
+        try:
+            self.after(0, lambda: self._refresh_after_runtime_changed(event))
+        except Exception:
+            logging.getLogger(__name__).exception("[RUNTIME] No se pudo programar refresco visual tras cambio runtime")
+
+    def _refresh_after_runtime_changed(self, _event: RuntimeChangedEvent) -> None:
+        self.runtime_status_var.set("Actualizando datos...")
+        self.configure(cursor="watch")
+        self.update_idletasks()
+        try:
+            self._refresh_snapshot_info_label()
+            self.clear_planning_cache("runtime_changed_event")
+            self._load_filter_options(contextual=True)
+            self._reload_with_invalidated_cache("runtime_changed_event", save_filters=True)
+        finally:
+            self.runtime_status_var.set("")
+            self.configure(cursor="")
+
+    def destroy(self) -> None:
+        unregister_runtime_cache(getattr(self, "_runtime_cache_name", ""))
+        try:
+            self.runtime_db_service.unsubscribe(getattr(self, "_runtime_listener_name", ""))
+        except Exception:
+            logging.getLogger(__name__).exception("[RUNTIME] No se pudo desregistrar listener de planificación")
+        super().destroy()
 
     def _refresh_snapshot_info_label(self) -> None:
         info = self.runtime_db_service.get_snapshot_info()

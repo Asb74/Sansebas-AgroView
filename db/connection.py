@@ -29,6 +29,12 @@ def get_connection() -> sqlite3.Connection:
 
 
 def get_runtime_database_path(db_name: str) -> Path:
-    from services.runtime_database_service import RuntimeDatabaseService
+    from services.runtime_database_service import RuntimeDatabaseManager
 
-    return RuntimeDatabaseService().get_runtime_path(db_name)
+    return RuntimeDatabaseManager().get_runtime_path(db_name)
+
+
+def get_runtime_connection(db_name: str) -> sqlite3.Connection:
+    from services.runtime_database_service import RuntimeDatabaseManager
+
+    return RuntimeDatabaseManager().get_connection(db_name)
