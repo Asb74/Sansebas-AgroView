@@ -4,7 +4,6 @@ import logging
 from typing import Any
 
 from services.legacy_sync_service import CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE, LegacySyncService
-from services.runtime_cache_service import clear_runtime_caches
 from services.runtime_database_service import RuntimeDatabaseLockedError, RuntimeDatabaseService
 
 logger = logging.getLogger(__name__)
@@ -95,9 +94,6 @@ class UpdateOrchestratorService:
         try:
             ok, errors = self.runtime_database_service.prepare_runtime_databases(force=force)
             result = {"ok": ok, "errors": errors, "updated": ok, "using_previous_snapshot": (not ok and self.runtime_database_service.has_current_snapshot())}
-            if ok:
-                clear_runtime_caches(cache_reason)
-                logger.info("Cachés limpiadas tras activar snapshot. reason=%s", cache_reason)
             return result
         except RuntimeDatabaseLockedError as exc:
             logger.warning("Actualización foto local cancelada por bloqueo: %s", exc.locked_databases)

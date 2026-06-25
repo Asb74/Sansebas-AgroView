@@ -16,6 +16,7 @@ from typing import Any
 
 from config import DB_CALIDAD, DB_EEPPL, DB_FRUTA, DB_LOTEADO, DB_PEDIDOS
 from db.connection import get_connection
+from services.runtime_cache_service import register_runtime_cache
 from services.runtime_database_service import RuntimeDatabaseService
 from services.pedidos_previstos_service import cargar_pedidos_previstos_filtrados
 from utils.number_utils import to_float_safe
@@ -196,15 +197,26 @@ class PlanningRepository:
 
     def __init__(self, base_dir: str | Path | None = None) -> None:
         self.runtime_db_service = RuntimeDatabaseService()
+        self._explicit_base_dir = Path(base_dir) if base_dir is not None else None
         self.base_dir = self._resolve_base_dir(base_dir)
-        logger.info("Snapshot activo usado por PlanningRepository: %s", self.base_dir)
+        logger.info("[RUNTIME] Snapshot activo usado por PlanningRepository: %s", self.base_dir)
         self.db_loteado = self._db_path(DB_LOTEADO)
+        register_runtime_cache(f"PlanningRepository:{id(self)}", self.invalidate_runtime_cache)
         self._harvestsync_client = None
         self._harvestsync_unavailable = False
         self._harvestsync_cache: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         self._harvestsync_plantillas_calibre: dict[str, list[str]] = {}
         self._harvestsync_plantillas_aprovechamiento: dict[str, list[str]] = {}
         self.ensure_aprovechamientos_estimados_schema()
+
+    def invalidate_runtime_cache(self) -> None:
+        self._harvestsync_cache.clear()
+        self._harvestsync_plantillas_calibre.clear()
+        self._harvestsync_plantillas_aprovechamiento.clear()
+        if self._explicit_base_dir is None:
+            self.base_dir = self._resolve_base_dir(None)
+            self.db_loteado = self._db_path(DB_LOTEADO)
+        logger.info("[RUNTIME] PlanningRepository cachés invalidadas snapshot=%s", self.base_dir)
 
     def _resolve_base_dir(self, base_dir: str | Path | None = None) -> Path:
         if base_dir is not None:
@@ -225,8 +237,12 @@ class PlanningRepository:
         return resolved
 
     def _db_path(self, filename: str) -> Path:
-        path = self.base_dir / filename
-        logger.info("Ruta SQLite usada por PlanningRepository: %s", path)
+        if self._explicit_base_dir is None and not (os.environ.get("PYTEST_CURRENT_TEST") and self.base_dir.name == ".pytest_missing_snapshot"):
+            path = self.runtime_db_service.get_runtime_path(filename)
+            self.base_dir = path.parent
+        else:
+            path = self.base_dir / filename
+        logger.info("[RUNTIME] PlanningRepository Snapshot utilizado=%s Ruta SQLite utilizada=%s", path.parent, path)
         return path
 
     @staticmethod
