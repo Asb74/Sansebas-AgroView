@@ -1296,11 +1296,13 @@ class CommercialPdfReportService:
 
     def _estado_priority(self, row: dict) -> int:
         estado = str(self._value(row, "Estado") or "").strip().upper()
-        if estado in {"PENDIENTE", "PARCIAL", "EN CURSO"}:
+        if estado == "PENDIENTE":
             return 0
+        if estado in {"PARCIAL", "EN CURSO"}:
+            return 1
         if estado in {"TERMINADO", "COMPLETO"}:
             return 2
-        return 1
+        return 3
 
     def _compact_confeccion(self, row: dict, max_len: int = 18) -> str:
         value = self._value(row, "Grupo confección") or self._value(row, "Confección")
@@ -1310,12 +1312,17 @@ class CommercialPdfReportService:
         columns = ["Fecha", "Cliente", "Pedido", "Variedad", "Grupo", "Calibre", "Conf.", "Palets", "Kg pend.", "Estado", "Obs."]
         data = [columns]
         styles = []
-        pending_rows = [r for r in rows if self._sum([r], "Kg pendiente") > 0]
-        completed_rows = [r for r in rows if r not in pending_rows]
-        ordered = sorted(pending_rows, key=lambda x: (self._safe_date(self._value(x, "Fecha salida")) or date.max, self._estado_priority(x), -self._sum([x], "Kg pendiente")))
-        remaining = max(0, 120 - len(ordered))
-        ordered += sorted(completed_rows, key=lambda x: (self._safe_date(self._value(x, "Fecha salida")) or date.max, self._estado_priority(x), -self._sum([x], "Kg pendiente")))[:remaining]
+        ordered = sorted(
+            rows,
+            key=lambda x: (
+                self._safe_date(self._value(x, "Fecha salida")) or date.max,
+                self._estado_priority(x),
+                -self._sum([x], "Kg pendiente"),
+            ),
+        )
+        previous_date = None
         for r in ordered[:120]:
+            row_date = self._safe_date(self._value(r, "Fecha salida"))
             sin_conf = str(self._value(r, "Origen cálculo") or "").strip().upper() == "ESTIMADO_SIN_CONFECCION"
             data.append([
                 self._format_date_es(self._value(r, "Fecha salida")),
@@ -1330,11 +1337,15 @@ class CommercialPdfReportService:
                 self._short_text(self._value(r, "Estado"), 14) or "-",
                 "Sin conf." if sin_conf else "",
             ])
-            estado = str(self._value(r, "Estado") or "").upper()
-            if estado in {"TERMINADO", "COMPLETO"}:
-                styles.append((len(data) - 1, "VERDE"))
-            elif sin_conf:
-                styles.append((len(data) - 1, "AMARILLO"))
+            row_idx = len(data) - 1
+            estado = str(self._value(r, "Estado") or "").strip().upper()
+            if previous_date is not None and row_date != previous_date:
+                styles.append((row_idx, "PEDIDO_DAY_BREAK"))
+            if estado in {"PARCIAL", "EN CURSO"}:
+                styles.append((row_idx, "PEDIDO_PARCIAL"))
+            elif estado in {"TERMINADO", "COMPLETO"}:
+                styles.append((row_idx, "PEDIDO_TERMINADO"))
+            previous_date = row_date
         story.append(Paragraph("DETALLE OPERATIVO DE PEDIDOS", self._normal))
         story.append(Paragraph("Detalle operativo resumido. Para auditoría completa usar exportación Excel.", self._normal))
         story.append(self._table(data, row_styles=styles, col_widths=[2.0*cm, 4.2*cm, 2.4*cm, 3.4*cm, 3.0*cm, 1.7*cm, 3.0*cm, 1.8*cm, 2.4*cm, 2.1*cm, 2.0*cm], right_cols=[7, 8], center_cols=[0, 9], font_size=6.5))
@@ -2113,13 +2124,19 @@ class CommercialPdfReportService:
                 style += [("FONTNAME", (0,i), (-1,i), "Helvetica-Bold"), ("BACKGROUND", (0,i), (-1,i), colors.HexColor(self.COLOR_LIGHT_BG))]
         color_map = {
             "VERDE": self.COLOR_GREEN, "AMARILLO": self.COLOR_YELLOW, "ROJO": self.COLOR_RED, "GRIS": self.COLOR_GREY,
+            "PEDIDO_PARCIAL": "#FFF3CD", "PEDIDO_TERMINADO": "#D4EDDA",
             "HARVESTSYNC": "#D9EAF7", "REAL_PESOSFRES": "#E2F0D9", "LOTEADO": "#E7E6E6",
             "MANUAL": "#FFF2CC", "ESTIMADO_MANUAL": "#FFF2CC", "SIN_APROVECHAMIENTO": "#F4CCCC",
             "GRUPO_APROVECHAMIENTO": "#D9EAF7", "SUBTOTAL_APROVECHAMIENTO": "#EAF3F8", "TOTAL_APROVECHAMIENTO": "#D9D9D9",
         }
         for row_idx, marker in row_styles or []:
             marker_text = str(marker).upper()
-            if marker_text in color_map:
+            if marker_text == "PEDIDO_DAY_BREAK":
+                style.append(("LINEABOVE", (0, row_idx), (-1, row_idx), 1.4, colors.HexColor("#9DC3E6")))
+            elif marker_text in {"PEDIDO_PARCIAL", "PEDIDO_TERMINADO"}:
+                style.append(("BACKGROUND", (0, row_idx), (-1, row_idx), colors.HexColor(color_map[marker_text])))
+                style.append(("FONTNAME", (9, row_idx), (9, row_idx), "Helvetica-Bold"))
+            elif marker_text in color_map:
                 style.append(("BACKGROUND", (0, row_idx), (-1, row_idx), colors.HexColor(color_map[marker_text])))
                 if marker_text in {"GRUPO_APROVECHAMIENTO", "SUBTOTAL_APROVECHAMIENTO", "TOTAL_APROVECHAMIENTO"}:
                     style.append(("FONTNAME", (0, row_idx), (-1, row_idx), "Helvetica-Bold"))
