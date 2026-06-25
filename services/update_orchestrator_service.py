@@ -44,7 +44,8 @@ class UpdateOrchestratorService:
             return {"ok": False, "partial": False, "blocked": True, "stopped": True, "legacy": legacy, "runtime": {"ok": False, "skipped": True}}
         runtime = self._create_snapshot_after_legacy(legacy, "update_from_access_then_snapshot")
         ok = bool(legacy.get("ok")) and bool(runtime.get("ok"))
-        partial = bool(legacy.get("ok")) and bool(runtime.get("using_previous_snapshot"))
+        partial = (not ok) and int(legacy.get("ok_count", 0) or 0) > 0 and bool(runtime.get("ok"))
+        partial = partial or (bool(legacy.get("ok")) and bool(runtime.get("using_previous_snapshot")))
         logger.info("Actualización desde Access finalizada. ok=%s partial=%s legacy=%s runtime=%s", ok, partial, legacy, runtime)
         return {"ok": ok, "partial": partial, "legacy": legacy, "runtime": runtime, "message": ACCESS_UPDATE_SUCCESS_MESSAGE if ok else ""}
 
@@ -68,9 +69,10 @@ class UpdateOrchestratorService:
             ok_count = sum(1 for _, ok, _ in results if ok)
             fail_count = len(results) - ok_count
             result: dict[str, Any] = {"ok": fail_count == 0, "results": results, "ok_count": ok_count, "fail_count": fail_count, "total": len(results)}
-            if snapshot_after and result["ok"]:
+            if snapshot_after and (result["ok"] or ok_count > 0):
                 result["runtime"] = self._create_snapshot_after_legacy(result, "update_legacy_active")
-                result["ok"] = bool(result["runtime"].get("ok"))
+                result["partial"] = (not result["ok"]) and ok_count > 0 and bool(result["runtime"].get("ok"))
+                result["ok"] = bool(result["ok"] and result["runtime"].get("ok"))
             logger.info("Fin actualización legacy activas. OK=%s Fallidas=%s Total=%s", ok_count, fail_count, len(results))
             return result
         except Exception as exc:
@@ -82,8 +84,8 @@ class UpdateOrchestratorService:
         return self.update_from_access_then_snapshot()
 
     def _create_snapshot_after_legacy(self, legacy: dict[str, Any], reason: str) -> dict[str, Any]:
-        if not legacy.get("ok"):
-            logger.warning("Snapshot después de legacy omitido por errores. reason=%s", reason)
+        if not legacy.get("ok") and int(legacy.get("ok_count", 0) or 0) <= 0:
+            logger.warning("Snapshot después de legacy omitido porque no hay sincronizaciones válidas. reason=%s", reason)
             return {"ok": False, "skipped": True}
         logger.info("Snapshot creado después de legacy iniciado. reason=%s", reason)
         runtime = self._create_snapshot(force=True, cache_reason=reason)
@@ -92,7 +94,7 @@ class UpdateOrchestratorService:
 
     def _create_snapshot(self, force: bool, cache_reason: str) -> dict[str, Any]:
         try:
-            ok, errors = self.runtime_database_service.prepare_runtime_databases(force=force)
+            ok, errors = self.runtime_database_service.prepare_runtime_databases(force=force, reason=cache_reason)
             result = {"ok": ok, "errors": errors, "updated": ok, "using_previous_snapshot": (not ok and self.runtime_database_service.has_current_snapshot())}
             return result
         except RuntimeDatabaseLockedError as exc:
