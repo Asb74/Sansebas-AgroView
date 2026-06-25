@@ -20,6 +20,7 @@ from openpyxl.utils import get_column_letter
 
 from services.planning_service import PlanningService
 from services.runtime_database_service import RuntimeDatabaseService
+from services.update_orchestrator_service import UpdateOrchestratorService
 from widgets.data_table import DataTable
 from widgets.screen_header import ScreenHeader
 from widgets.date_picker import DatePickerPopup
@@ -41,6 +42,7 @@ class PlanificacionDiariaScreen(ttk.Frame):
         self.on_back = on_back
         self.service = PlanningService()
         self.runtime_db_service = RuntimeDatabaseService()
+        self.update_orchestrator = UpdateOrchestratorService(runtime_database_service=self.runtime_db_service)
         self.capacity_service = ProductionCapacityService()
         self.commercial_pdf_service = CommercialPdfReportService()
         self.fecha_desde_var = tk.StringVar()
@@ -1239,10 +1241,26 @@ class PlanificacionDiariaScreen(ttk.Frame):
 
     def _actualizar_foto_local(self) -> None:
         self.service.invalidate_planning_filter_master_cache()
-        ok, errors = self.runtime_db_service.prepare_runtime_databases(force=True)
+        self._btn_actualizar_foto.configure(state="disabled", text="Actualizando foto...")
+        messagebox.showinfo("Actualizar foto local", "Inicio de actualización: Actualizar foto local.", parent=self)
+
+        def worker() -> None:
+            result = self.update_orchestrator.update_runtime_snapshot()
+            self.after(0, lambda: self._finish_actualizar_foto_local(result))
+
+        threading.Thread(target=worker, name="ActualizarFotoLocalWorker", daemon=True).start()
+
+    def _finish_actualizar_foto_local(self, result: dict) -> None:
+        self._btn_actualizar_foto.configure(state="normal", text="Actualizar foto local")
+        ok = bool(result.get("ok"))
         if not ok:
-            messagebox.showwarning("Planificación diaria", self.runtime_db_service.WARNING_MESSAGE, parent=self)
-            logging.getLogger(__name__).warning("No se pudo actualizar foto local en: %s", errors)
+            messagebox.showwarning(
+                "Actualizar foto local",
+                "Resultado final: no se pudo actualizar completamente la foto local. Revisa el log.",
+                parent=self,
+            )
+        else:
+            messagebox.showinfo("Actualizar foto local", "Resultado final: la foto local se actualizó correctamente.", parent=self)
         self._refresh_snapshot_info_label()
         self._reload_with_invalidated_cache("actualizar_foto_local", save_filters=True)
 
