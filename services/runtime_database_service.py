@@ -190,11 +190,22 @@ class RuntimeDatabaseManager:
             if not force and previous is not None and not self.central_sqlite_is_newer_than_snapshot(previous):
                 self._set_state(RuntimeState.READY, "snapshot_already_current")
                 return True, []
+            self.cleanup_building_snapshots()
             snapshot_dir = self.create_new_snapshot()
+            if snapshot_dir.name.startswith("__building_"):
+                raise RuntimeError("create_new_snapshot devolvió un snapshot temporal __building")
+            if not snapshot_dir.exists():
+                raise RuntimeError(f"Snapshot publicado no existe: {snapshot_dir}")
             self._verify_snapshot_integrity(snapshot_dir)
             self._set_state(RuntimeState.SWITCHING_SNAPSHOT, reason)
             closed = self.close_connections()
             self._activate_snapshot_file(snapshot_dir)
+            current_snapshot_name = self.current_snapshot_file.read_text(encoding="utf-8").strip()
+            if current_snapshot_name != snapshot_dir.name:
+                raise RuntimeError(f"CURRENT_SNAPSHOT_FILE apunta a {current_snapshot_name!r}, no a {snapshot_dir.name!r}")
+            active_after = self._resolve_current_snapshot_dir()
+            logger.info("[SNAPSHOT_PUBLISH] current_snapshot_file=%s valor=%s", self.current_snapshot_file, current_snapshot_name)
+            logger.info("[SNAPSHOT_PUBLISH] active_snapshot_after=%s", active_after)
             cleared = self.invalidate_all(reason)
             event = RuntimeChangedEvent(previous, snapshot_dir, started_at, datetime.now(), perf_counter() - t0, cleared, closed, self._connections_opened - connections_opened_before, reason)
             self.notify_runtime_changed(event)
@@ -222,19 +233,38 @@ class RuntimeDatabaseManager:
             building_dir = self.snapshots_dir / f"__building_{timestamp}_{suffix}"
             counter += 1
         logger.info("[RUNTIME] Creando snapshot local atómico: build=%s final=%s origen_central=%s", building_dir, final_dir, self.central_dir)
+        logger.info("[SNAPSHOT_PUBLISH] build_dir=%s", building_dir)
+        logger.info("[SNAPSHOT_PUBLISH] final_dir=%s", final_dir)
         building_dir.mkdir(parents=True)
         try:
             for db_name in SQLITE_DATABASES:
                 self._copy_central_sqlite_to_snapshot(db_name, building_dir)
             self._write_snapshot_info(building_dir)
-            self._verify_snapshot_integrity(building_dir)
-            building_dir.rename(final_dir)
+            self._verify_snapshot_files_complete(building_dir)
+            logger.info("[SNAPSHOT_PUBLISH] before_rename exists_build=%s exists_final=%s", building_dir.exists(), final_dir.exists())
+            try:
+                building_dir.rename(final_dir)
+            except OSError as rename_exc:
+                logger.exception("[SNAPSHOT_PUBLISH] rename_error build=%s final=%s exists_build=%s exists_final=%s open_connections=%s", building_dir, final_dir, building_dir.exists(), final_dir.exists(), self._open_connection_paths_for_snapshot(building_dir, final_dir))
+                raise RuntimeError(f"No se pudo publicar el snapshot final {final_dir.name}; no se activó la nueva foto local") from rename_exc
+            logger.info("[SNAPSHOT_PUBLISH] after_rename exists_build=%s exists_final=%s", building_dir.exists(), final_dir.exists())
+            if building_dir.exists() or not final_dir.exists():
+                raise RuntimeError(f"Publicación inconsistente: build_exists={building_dir.exists()} final_exists={final_dir.exists()}")
+            self._verify_snapshot_integrity(final_dir)
             logger.info("[SNAPSHOT_AUDIT] publicación_atómica=OK build=%s final=%s", building_dir, final_dir)
+            self._log_pedidos_snapshot_diagnostic(self.central_dir / "DBPedidos.sqlite", final_dir / "DBPedidos.sqlite", publish=True)
+            active_after = self._resolve_current_snapshot_dir()
+            logger.info("[SNAPSHOT_PUBLISH] current_snapshot_file=%s", self.current_snapshot_file)
+            logger.info("[SNAPSHOT_PUBLISH] active_snapshot_after=%s", active_after)
             return final_dir
         except Exception as exc:
             logger.exception("[SNAPSHOT_AUDIT] publicación_atómica=ERROR build=%s final=%s error=%s mensaje_usuario=%s", building_dir, final_dir, exc, "No se pudo crear la nueva foto local. Se conserva la anterior.")
-            shutil.rmtree(building_dir, ignore_errors=True)
-            logger.warning("[RUNTIME] Snapshot incompleto eliminado: %s", building_dir)
+            if building_dir.exists():
+                try:
+                    shutil.rmtree(building_dir)
+                    logger.warning("[RUNTIME] Snapshot incompleto eliminado: %s", building_dir)
+                except Exception:
+                    logger.exception("[SNAPSHOT_PUBLISH] warning no se pudo eliminar build_dir=%s", building_dir)
             raise RuntimeError("No se pudo crear la nueva foto local. Se conserva la anterior.") from exc
 
     def _copy_central_sqlite_to_snapshot(self, db_name: str, snapshot_dir: Path) -> None:
@@ -290,11 +320,14 @@ class RuntimeDatabaseManager:
                 digest.update(chunk)
         return digest.hexdigest()
 
-    def _log_pedidos_snapshot_diagnostic(self, central_path: Path, snapshot_path: Path) -> None:
-        query = "SELECT VarCliente FROM Pedidos WHERE IdPedidoLora = 'PS 26/00167' LIMIT 5"
+    def _log_pedidos_snapshot_diagnostic(self, central_path: Path, snapshot_path: Path, publish: bool = False) -> None:
+        query = "SELECT VarCliente FROM Pedidos WHERE IdPedidoLora = 'PS 26/00167'"
         central_value = self._fetch_optional_pedidos_diag(central_path, query)
         snapshot_value = self._fetch_optional_pedidos_diag(snapshot_path, query)
-        logger.debug("[SNAPSHOT_AUDIT] diagnóstico_DBPedidos IdPedidoLora=PS 26/00167 central=%s snapshot=%s", central_value, snapshot_value)
+        if publish:
+            logger.info("[SNAPSHOT_PUBLISH] DBPedidos central=%s final=%s", central_value, snapshot_value)
+        else:
+            logger.debug("[SNAPSHOT_AUDIT] diagnóstico_DBPedidos IdPedidoLora=PS 26/00167 central=%s snapshot=%s", central_value, snapshot_value)
 
     @staticmethod
     def _fetch_optional_pedidos_diag(db_path: Path, query: str) -> list[Any] | str:
@@ -313,14 +346,27 @@ class RuntimeDatabaseManager:
         self.invalidate_all(reason)
 
     def _activate_snapshot_file(self, snapshot_dir: Path) -> None:
+        if Path(snapshot_dir).name.startswith("__building_"):
+            raise RuntimeError("No se puede activar un snapshot temporal __building")
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         tmp = self.current_snapshot_file.with_suffix(".tmp")
         tmp.write_text(snapshot_dir.name, encoding="utf-8")
         tmp.replace(self.current_snapshot_file)
         logger.info("[RUNTIME] Snapshot activo cambiado: %s", snapshot_dir)
 
+    def _verify_snapshot_files_complete(self, snapshot_dir: Path) -> None:
+        snapshot_dir = Path(snapshot_dir)
+        if not snapshot_dir.is_dir() or not all((snapshot_dir / db_name).exists() for db_name in SQLITE_DATABASES):
+            raise RuntimeError(f"Snapshot inválido o incompleto: {snapshot_dir}")
+        for db_name in SQLITE_DATABASES:
+            db_path = snapshot_dir / db_name
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+                conn.execute("PRAGMA quick_check").fetchone()
+
     def _verify_snapshot_integrity(self, snapshot_dir: Path) -> None:
         snapshot_dir = Path(snapshot_dir)
+        if snapshot_dir.name.startswith("__building_"):
+            raise RuntimeError("Snapshot temporal __building no puede usarse como snapshot activo")
         if not snapshot_dir.is_dir() or not all((snapshot_dir / db_name).exists() for db_name in SQLITE_DATABASES):
             raise RuntimeError(f"Snapshot inválido o incompleto: {snapshot_dir}")
         for db_name in SQLITE_DATABASES:
@@ -357,6 +403,31 @@ class RuntimeDatabaseManager:
             if not central.exists() or not snapshot.exists() or central.stat().st_mtime > snapshot.stat().st_mtime + 0.001:
                 return True
         return False
+
+    def cleanup_building_snapshots(self) -> None:
+        self.snapshots_dir.mkdir(parents=True, exist_ok=True)
+        for building in self.snapshots_dir.iterdir():
+            if not building.is_dir() or not building.name.startswith("__building_"):
+                continue
+            try:
+                shutil.rmtree(building)
+                logger.info("[SNAPSHOT_PUBLISH] build_dir antiguo eliminado=%s", building)
+            except Exception:
+                logger.warning("[SNAPSHOT_PUBLISH] warning no se pudo eliminar build_dir antiguo=%s", building, exc_info=True)
+
+    def _open_connection_paths_for_snapshot(self, *snapshot_dirs: Path) -> list[str]:
+        roots = [str(path.resolve()) for path in snapshot_dirs if path.exists()]
+        open_paths: list[str] = []
+        with self._lock:
+            keys = list(self._connections.keys())
+        for key in keys:
+            try:
+                resolved = str(Path(key).resolve())
+            except Exception:
+                resolved = key
+            if any(resolved.startswith(root) for root in roots):
+                open_paths.append(resolved)
+        return open_paths
 
     def cleanup_old_snapshots(self, keep: int = 3) -> None:
         self.snapshots_dir.mkdir(parents=True, exist_ok=True)

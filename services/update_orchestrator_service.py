@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from config import DB_LOTEADO
 from services.legacy_sync_service import CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE, LegacySyncService
 from services.runtime_database_service import RuntimeDatabaseLockedError, RuntimeDatabaseService
 
@@ -95,6 +96,20 @@ class UpdateOrchestratorService:
     def _create_snapshot(self, force: bool, cache_reason: str) -> dict[str, Any]:
         try:
             ok, errors = self.runtime_database_service.prepare_runtime_databases(force=force, reason=cache_reason)
+            active_snapshot = self.runtime_database_service.get_current_snapshot_dir() if ok else None
+            current_snapshot_value = ""
+            current_snapshot_file = self.runtime_database_service.current_snapshot_file
+            if current_snapshot_file.exists():
+                current_snapshot_value = current_snapshot_file.read_text(encoding="utf-8").strip()
+            planning_repository_path = active_snapshot / DB_LOTEADO if active_snapshot is not None else None
+            logger.info(
+                "[SNAPSHOT_PUBLISH] orchestrator runtime_ok=%s active_snapshot=%s current_snapshot_file=%s current_snapshot_value=%s planning_repository_path=%s",
+                ok,
+                active_snapshot,
+                current_snapshot_file,
+                current_snapshot_value,
+                planning_repository_path,
+            )
             result = {"ok": ok, "errors": errors, "updated": ok, "using_previous_snapshot": (not ok and self.runtime_database_service.has_current_snapshot())}
             return result
         except RuntimeDatabaseLockedError as exc:
