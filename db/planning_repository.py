@@ -104,10 +104,7 @@ def normalizar_bool_sqlite(value: Any) -> bool:
 
 
 def _sqlite_not_cancelled_expr(column_sql: str) -> str:
-    return (
-        f"({column_sql} IS NULL OR "
-        f"UPPER(TRIM(CAST({column_sql} AS TEXT))) IN ('', '0', 'FALSE', 'F', 'NO', 'N'))"
-    )
+    return f"COALESCE({column_sql}, 0) = 0"
 
 def normalizar_texto(valor: Any) -> str:
     return str(valor or "").strip()

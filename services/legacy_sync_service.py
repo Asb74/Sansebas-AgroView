@@ -28,6 +28,27 @@ CENTRAL_SQLITE_WRITE_BLOCK_MESSAGE = (
 CENTRAL_SQLITE_WRITE_BLOCK_RECOMMENDATION = "Usar sincronización segura/staging."
 
 
+def normalize_cancelado(value: Any) -> int:
+    """Normalize Access/SQLite Cancelado values to 0/1 integers."""
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if float(value) in (1.0, -1.0):
+            return 1
+        if float(value) == 0.0:
+            return 0
+    text = str(value).strip()
+    normalized = text.casefold()
+    if normalized in {"", "0", "0.0", "false", "falso", "no", "n"}:
+        return 0
+    if normalized in {"1", "1.0", "-1", "-1.0", "true", "verdadero", "si", "sí", "s"}:
+        return 1
+    logger.warning("[WARNING Cancelado] valor_original=%r", value)
+    return 0
+
+
 def _normalize_path_for_safety(path: Path | str) -> str:
     raw = str(path or "").strip().replace("/", "\\")
     while "\\\\" in raw[2:]:
@@ -431,6 +452,10 @@ conn.Close: out.Close
             else:
                 replace_info = self._replace_table_from_staging(staging_sqlite_path, target_sqlite_path, table_name, allow_empty=allow_empty)
             metrics.update(replace_info)
+            with sqlite3.connect(target_sqlite_path, timeout=30) as audit_conn:
+                audit_conn.execute("PRAGMA busy_timeout = 30000")
+                self._normalize_pedidos_cancelado_in_db(audit_conn, table_name)
+                audit_conn.commit()
             self._log_central_ready_for_snapshot(target_sqlite_path, f"safe_sync_table:{table_name}")
             metrics["FilasImportadas"] = int(staging_validation["rows"])
             if partition_ctx:
@@ -912,6 +937,7 @@ conn.Close: out.Close
                 after_delete_count = int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {sqlite_where}", sqlite_where_params).fetchone()[0])
                 logger.info("[PEDIDOS_SYNC_AUDIT] fase=after_delete campana_count=%s", after_delete_count)
             imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, table_name, conn=conn)
+            self._normalize_pedidos_cancelado_in_db(conn, table_name)
             total_after = self._count_rows(conn, table_name)
             after_diag = self._filtered_table_diagnostics(conn, table_name, diagnostics)
             if require_exported_rows and imported <= 0:
@@ -1146,6 +1172,84 @@ conn.Close: out.Close
             return False, self._build_export_error_message(result, command, vbs_path, mdb_path, csv_path, log_path), None, 0
         return True, "Exportación OK", csv_path, self._read_exported_rows(log_path)
 
+    def _prepare_rows_for_import(self, table_name: str, header: list[str], data_rows: list[list[str]]) -> tuple[list[tuple[Any, ...]], dict[str, int]]:
+        normalized_rows: list[tuple[Any, ...]] = []
+        metrics = {"filas_convertidas": 0, "texto_a_0": 0, "texto_a_1": 0, "valores_desconocidos": 0}
+        cancelado_idx = next((idx for idx, col in enumerate(header) if col == "Cancelado"), None) if table_name.lower() == "pedidos" else None
+        false_text = {"", "0", "0.0", "false", "falso", "no", "n"}
+        true_text = {"1", "1.0", "-1", "-1.0", "true", "verdadero", "si", "sí", "s"}
+        for row in data_rows:
+            values: list[Any] = list(row[: len(header)] + [""] * (len(header) - len(row)))
+            if cancelado_idx is not None:
+                original = values[cancelado_idx]
+                normalized = normalize_cancelado(original)
+                if original != normalized:
+                    metrics["filas_convertidas"] += 1
+                text = "" if original is None else str(original).strip().casefold()
+                is_known_number = isinstance(original, (int, float, bool)) and float(original) in (0.0, 1.0, -1.0)
+                if text in false_text and not isinstance(original, (int, float, bool)):
+                    metrics["texto_a_0"] += 1
+                elif text in true_text and not isinstance(original, (int, float, bool)):
+                    metrics["texto_a_1"] += 1
+                elif text not in false_text | true_text and not is_known_number:
+                    metrics["valores_desconocidos"] += 1
+                values[cancelado_idx] = normalized
+            normalized_rows.append(tuple(values))
+        if cancelado_idx is not None:
+            logger.info(
+                "[CanceladoNormalize] filas_convertidas=%s texto_a_0=%s texto_a_1=%s valores_desconocidos=%s",
+                metrics["filas_convertidas"], metrics["texto_a_0"], metrics["texto_a_1"], metrics["valores_desconocidos"],
+            )
+        return normalized_rows, metrics
+
+    def _column_type_for_import(self, table_name: str, column: str) -> str:
+        if table_name.lower() == "pedidos" and column == "Cancelado":
+            return "INTEGER"
+        return "TEXT"
+
+    def _normalize_pedidos_cancelado_in_db(self, conn: sqlite3.Connection, table_name: str) -> None:
+        if table_name.lower() != "pedidos" or not self._table_exists(conn, table_name):
+            return
+        cols = self._table_columns(conn, table_name)
+        if "Cancelado" not in cols:
+            logger.warning("[CanceladoAudit] columna Cancelado no encontrada en Pedidos")
+            return
+        table = self.quote_identifier(table_name)
+        before_non_integer = int(conn.execute(f"""
+            SELECT COUNT(*) FROM {table}
+            WHERE CAST(Cancelado AS TEXT) NOT IN ('0', '1') OR Cancelado IS NULL
+        """).fetchone()[0])
+        case_sql = """
+            CASE
+            WHEN lower(trim(CAST(Cancelado AS TEXT))) IN ('1', '-1', 'true', 'verdadero', 'si', 'sí', 's') THEN 1
+            WHEN lower(trim(CAST(Cancelado AS TEXT))) IN ('0', '', 'false', 'falso', 'no', 'n') THEN 0
+            ELSE 0
+            END
+        """
+        cancelado_type = next((str(r[2] or "") for r in conn.execute(f"PRAGMA table_info({table})").fetchall() if r[1] == "Cancelado"), "")
+        if cancelado_type.upper() != "INTEGER":
+            tmp_name = "__tmp_pedidos_cancelado_integer"
+            tmp = self.quote_identifier(tmp_name)
+            conn.execute(f"DROP TABLE IF EXISTS {tmp}")
+            col_defs = ", ".join(
+                f"{self.quote_identifier(col)} {'INTEGER' if col == 'Cancelado' else 'TEXT'}"
+                for col in cols
+            )
+            select_cols = ", ".join(
+                case_sql + " AS " + self.quote_identifier(col) if col == "Cancelado" else self.quote_identifier(col)
+                for col in cols
+            )
+            insert_cols = ", ".join(self.quote_identifier(col) for col in cols)
+            conn.execute(f"CREATE TABLE {tmp} ({col_defs})")
+            conn.execute(f"INSERT INTO {tmp} ({insert_cols}) SELECT {select_cols} FROM {table}")
+            conn.execute(f"DROP TABLE {table}")
+            conn.execute(f"ALTER TABLE {tmp} RENAME TO {table}")
+        else:
+            conn.execute(f"UPDATE {table} SET Cancelado = {case_sql}")
+        logger.info("[CanceladoNormalize] filas_convertidas=%s texto_a_0=%s texto_a_1=%s valores_desconocidos=%s", before_non_integer, 0, 0, 0)
+        audit = [tuple(r) for r in conn.execute(f"SELECT Cancelado, COUNT(*) FROM {table} GROUP BY Cancelado").fetchall()]
+        logger.info("[CanceladoAudit] %s", audit)
+
     def _import_csv_to_sqlite_append(self, csv_path: Path, sqlite_path: Path, table_name: str, conn: sqlite3.Connection | None = None) -> tuple[int, bool, bool]:
         rows = self._read_csv_rows(csv_path)
         if not rows:
@@ -1160,10 +1264,11 @@ conn.Close: out.Close
                 new_conn.execute("PRAGMA busy_timeout = 30000")
                 new_conn.execute("PRAGMA journal_mode = WAL")
                 new_conn.execute("PRAGMA synchronous = NORMAL")
-                new_conn.executemany(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", [tuple(r[:len(header)] + [""]*(len(header)-len(r))) for r in data_rows])
+                new_conn.executemany(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", self._prepare_rows_for_import(table_name, header, data_rows)[0])
+                self._normalize_pedidos_cancelado_in_db(new_conn, table_name)
                 new_conn.commit()
         else:
-            conn.executemany(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", [tuple(r[:len(header)] + [""]*(len(header)-len(r))) for r in data_rows])
+            conn.executemany(f"INSERT INTO {table} ({columns}) VALUES ({placeholders})", self._prepare_rows_for_import(table_name, header, data_rows)[0])
         return len(data_rows), True, False
 
     @staticmethod
@@ -1275,7 +1380,7 @@ conn.Close: out.Close
         data_rows = rows[1:]
         sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         table = self.quote_identifier(table_name)
-        col_defs = ", ".join(f"{self.quote_identifier(c)} TEXT" for c in header)
+        col_defs = ", ".join(f"{self.quote_identifier(c)} {self._column_type_for_import(table_name, c)}" for c in header)
         columns = ", ".join(self.quote_identifier(c) for c in header)
         placeholders = ",".join(["?"] * len(header))
 
@@ -1288,7 +1393,7 @@ conn.Close: out.Close
             conn.execute(f"CREATE TABLE {table} ({col_defs})")
             conn.executemany(
                 f"INSERT INTO {table} ({columns}) VALUES ({placeholders})",
-                [tuple(r[: len(header)] + [""] * (len(header) - len(r))) for r in data_rows],
+                self._prepare_rows_for_import(table_name, header, data_rows)[0],
             )
             conn.commit()
         return len(data_rows), table_existed, True
@@ -1325,10 +1430,10 @@ conn.Close: out.Close
         if staging_sqlite_path.exists():
             staging_sqlite_path.unlink()
         table = self.quote_identifier(table_name)
-        col_defs = ", ".join(f"{self.quote_identifier(c)} TEXT" for c in header)
+        col_defs = ", ".join(f"{self.quote_identifier(c)} {self._column_type_for_import(table_name, c)}" for c in header)
         columns = ", ".join(self.quote_identifier(c) for c in header)
         placeholders = ",".join(["?"] * len(header))
-        normalized_rows = [tuple(r[: len(header)] + [""] * (len(header) - len(r))) for r in data_rows]
+        normalized_rows, _cancelado_metrics = self._prepare_rows_for_import(table_name, header, data_rows)
         with sqlite3.connect(staging_sqlite_path, timeout=30) as conn:
             conn.execute("PRAGMA busy_timeout = 30000")
             conn.execute(f"CREATE TABLE {table} ({col_defs})")
@@ -1549,10 +1654,10 @@ conn.Close: out.Close
         rows = self._read_and_validate_csv_for_replace(csv_path, allow_empty=allow_empty)
         header = self._sanitize_headers(rows[0])
         data_rows = rows[1:]
-        col_defs = ", ".join(f"{self.quote_identifier(c)} TEXT" for c in header)
+        col_defs = ", ".join(f"{self.quote_identifier(c)} {self._column_type_for_import(table_name, c)}" for c in header)
         columns = ", ".join(self.quote_identifier(c) for c in header)
         placeholders = ",".join(["?"] * len(header))
-        normalized_rows = [tuple(r[: len(header)] + [""] * (len(header) - len(r))) for r in data_rows]
+        normalized_rows, _cancelado_metrics = self._prepare_rows_for_import(table_name, header, data_rows)
         logger.info("CSV validado tabla=%s columnas=%s filas=%s", table_name, header, len(data_rows))
 
         with sqlite3.connect(sqlite_path, timeout=30) as conn:
