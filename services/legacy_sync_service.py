@@ -652,12 +652,17 @@ conn.Close: out.Close
             id_palets, loteado = self._actualizar_loteado_desde_hoy(fecha_corte)
             lote = self._actualizar_lote_por_palets(id_palets)
             pesos = self._actualizar_pesosfres_desde_hoy(fecha_corte)
+            campana, campana_source = self._resolve_planificacion_campana(self._find_setting("DBfruta.sqlite", "PesosFres"))
+            logger.info("Planificación DBfruta usando campaña=%s origen=%s para DatosCalibre/Partidas", campana, campana_source)
+            datos_calibre = self._actualizar_datos_calibre_campana(campana)
+            partidas = self._actualizar_partidas_campana(campana)
             for db_name in ("DBPedidos.sqlite", "bdloteado.sqlite", "DBfruta.sqlite"):
                 self._log_central_ready_for_snapshot(Path(CENTRAL_SQLITE_DIR) / db_name, "sync_planificacion_hoy_en_adelante")
             elapsed = (datetime.utcnow() - start).total_seconds()
             msg = (
                 f"Planificación rápida OK. Pedidos: {pedidos} | Loteado: {loteado} | "
-                f"Lote: {lote} | PesosFres: {pesos}"
+                f"Lote: {lote} | PesosFres: {pesos} | DatosCalibre OK=1 Export/Import: {datos_calibre} | "
+                f"Partidas OK=1 Export/Import: {partidas}"
             )
             logger.info("%s | tiempo=%.2fs", msg, elapsed)
             logger.info("[SYNC_AUDIT] Sincronización legacy completa; snapshot diferido al orquestador")
@@ -802,6 +807,45 @@ conn.Close: out.Close
     def _actualizar_pesosfres_desde_hoy(self, fecha_corte: str) -> int:
         return self._sync_filtered_table("DBfruta.sqlite", "PesosFres", f"SELECT * FROM PesosFres WHERE Fcarga >= #{fecha_corte}#", "date(Fcarga) >= date('now')")
 
+    def _actualizar_datos_calibre_campana(self, campana: int) -> int:
+        last_error = ""
+        for column in ("CAMPAÑA", "Campaña", "Campana"):
+            for value in (str(campana), f"'{campana}'"):
+                query = f"SELECT * FROM [DatosCalibre] WHERE [{column}] = {value}"
+                try:
+                    imported = self._sync_filtered_table(
+                        "DBfruta.sqlite",
+                        "DatosCalibre",
+                        query,
+                        f"CAST({self.quote_identifier(column)} AS TEXT) = ?",
+                        (str(campana),),
+                    )
+                    logger.info("[LEGACY_SYNC] DatosCalibre filtro_ok columna=%s valor=%s importados=%s", column, value, imported)
+                    return imported
+                except Exception as exc:
+                    last_error = str(exc)
+                    logger.warning("[LEGACY_SYNC] DatosCalibre fallback falló columna=%s valor=%s error=%s", column, value, exc)
+        raise RuntimeError(f"DatosCalibre no pudo sincronizar campaña {campana}; tabla anterior conservada. Último error: {last_error}")
+
+    def _actualizar_partidas_campana(self, campana: int) -> int:
+        last_error = ""
+        for wildcard in ("%", "*"):
+            query = f"SELECT * FROM [Partidas] WHERE [IdPartidaP] LIKE '{campana}{wildcard}'"
+            try:
+                imported = self._sync_filtered_table(
+                    "DBfruta.sqlite",
+                    "Partidas",
+                    query,
+                    f"CAST({self.quote_identifier('IdPartidaP')} AS TEXT) LIKE ?",
+                    (f"{campana}%",),
+                )
+                logger.info("[LEGACY_SYNC] Partidas filtro_ok wildcard=%s importados=%s", wildcard, imported)
+                return imported
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning("[LEGACY_SYNC] Partidas fallback falló wildcard=%s error=%s", wildcard, exc)
+        raise RuntimeError(f"Partidas no pudo sincronizar campaña {campana}; tabla anterior conservada. Último error: {last_error}")
+
     def _resolve_planificacion_campana(self, setting: dict[str, Any]) -> tuple[int, str]:
         """Resolve the campaign used by the fast planning refresh."""
         return self._detect_active_campana(setting)
@@ -859,6 +903,7 @@ conn.Close: out.Close
         if not temp_dir.exists():
             return False, self._build_missing_path_error("Carpeta temporal no existe", vbs_path, mdb_path, csv_path, log_path), None, 0
         command = self._build_vbs_command(vbs_path, mdb_path, setting["AccessTable"], csv_path, log_path)
+        self._log_vbs_export_arguments(command)
         result = subprocess.run(
             command,
             capture_output=True,
@@ -1167,6 +1212,7 @@ conn.Close: out.Close
         if missing:
             return False, "Rutas inválidas para exportación:\n" + "\n".join(missing), None, 0
         command = self._build_vbs_command(vbs_path, mdb_path, setting["AccessTable"], csv_path, log_path)
+        self._log_vbs_export_arguments(command)
         result = subprocess.run(command, capture_output=True, text=True, encoding="cp1252", timeout=120)
         if result.returncode != 0:
             return False, self._build_export_error_message(result, command, vbs_path, mdb_path, csv_path, log_path), None, 0
@@ -1272,6 +1318,14 @@ conn.Close: out.Close
         return len(data_rows), True, False
 
     @staticmethod
+    def _log_vbs_export_arguments(command: list[str]) -> None:
+        sql_query = command[4] if len(command) > 4 else ""
+        logger.info("[VBS_EXPORT] arg_count=%s", max(len(command) - 2, 0))
+        for idx, arg in enumerate(command[2:]):
+            logger.info("[VBS_EXPORT] arg%s=%s", idx, arg)
+        logger.info("[VBS_EXPORT] sql_query=%s", sql_query)
+
+    @staticmethod
     def get_cscript_path() -> str:
         candidates = [
             r"C:\Windows\SysWOW64\cscript.exe",
@@ -1321,6 +1375,13 @@ conn.Close: out.Close
         extra: str = "",
     ) -> str:
         extra_block = f"{extra}\n\n" if extra else ""
+        log_content = ""
+        try:
+            if log_path.exists():
+                log_content = log_path.read_text(encoding="cp1252", errors="replace")
+        except Exception as exc:
+            log_content = f"No se pudo leer LOG: {exc}"
+        log_block = f"\nLOG VBS:\n{log_content}\n" if log_content else ""
         return (
             f"{extra_block}"
             "VBS falló.\n\n"
@@ -1330,7 +1391,8 @@ conn.Close: out.Close
             f"Ruta CSV temporal: {csv_path}\n"
             f"Ruta LOG: {log_path}\n\n"
             f"STDOUT:\n{result.stdout}\n\n"
-            f"STDERR:\n{result.stderr}\n\n"
+            f"STDERR:\n{result.stderr}\n"
+            f"{log_block}\n"
             f"Comando:\n{' '.join(command)}"
         )
 
