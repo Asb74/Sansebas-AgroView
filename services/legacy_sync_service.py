@@ -661,7 +661,40 @@ conn.Close: out.Close
             self._sync_running = False
 
     def _actualizar_pedidos_desde_hoy(self, fecha_corte: str) -> int:
-        return self._sync_filtered_table("DBPedidos.sqlite", "Pedidos", f"SELECT * FROM Pedidos WHERE FechaSalida >= #{fecha_corte}#", "date(FechaSalida) >= date('now')")
+        # Pedidos no se sincroniza por FechaSalida >= hoy en el modo rápido:
+        # si Access/SQLite representan FechaSalida con formatos distintos, el
+        # DELETE parcial puede no coincidir con lo exportado y deja la tabla
+        # incoherente para planificación. Se refresca la partición completa de
+        # la campaña actual, que es suficientemente acotada y mantiene el mismo
+        # criterio lógico en Access y SQLite.
+        setting = self._find_setting("DBPedidos.sqlite", "Pedidos")
+        campana, source = self._resolve_planificacion_campana(setting)
+        campana_text = str(campana)
+        access_campana_col = self._detect_pedidos_access_campana_column(setting)
+        campana_access_value = campana_text.replace("'", "''")
+        access_query = (
+            "SELECT * FROM Pedidos WHERE "
+            f"CStr({self._quote_access_identifier(access_campana_col)}) = '{campana_access_value}'"
+        )
+        sqlite_path = Path(setting["SqlitePath"])
+        sqlite_campana_col = self._detect_sqlite_column(sqlite_path, "Pedidos", [access_campana_col, "Campaña", "Campana"]) or access_campana_col
+        sqlite_where = f"CAST({self.quote_identifier(sqlite_campana_col)} AS TEXT) = ?"
+        logger.info(
+            "Pedidos planificación rápida por campaña=%s origen_campaña=%s access_col=%s sqlite_col=%s fecha_corte_original=%s",
+            campana_text,
+            source,
+            access_campana_col,
+            sqlite_campana_col,
+            fecha_corte,
+        )
+        return self._sync_filtered_table(
+            "DBPedidos.sqlite",
+            "Pedidos",
+            access_query,
+            sqlite_where,
+            sqlite_where_params=(campana_text,),
+            diagnostics={"campana": campana_text},
+        )
 
     def _actualizar_loteado_desde_hoy(self, fecha_corte: str) -> tuple[list[str], int]:
         table_name = "Loteado"
@@ -820,25 +853,102 @@ conn.Close: out.Close
 
 
 
-    def _sync_filtered_table(self, sqlite_name: str, table_name: str, access_query: str, sqlite_where: str) -> int:
+    def _sync_filtered_table(
+        self,
+        sqlite_name: str,
+        table_name: str,
+        access_query: str,
+        sqlite_where: str,
+        sqlite_where_params: tuple[Any, ...] = (),
+        diagnostics: dict[str, Any] | None = None,
+    ) -> int:
         setting = self._find_setting(sqlite_name, table_name)
-        ok, msg, csv_path, _ = self._run_export_custom(setting, access_query)
+        ok, msg, csv_path, exported = self._run_export_custom(setting, access_query)
         if not ok or not csv_path:
             raise RuntimeError(msg)
         self._ensure_not_central_sqlite_write(setting, str(setting.get("Modo", "PLANIFICACION_HOY_EN_ADELANTE")))
         sqlite_path = Path(setting["SqlitePath"])
+        table = self.quote_identifier(table_name)
         logger.info("Inicio escritura DB sqlite_path=%s tabla=%s", sqlite_path, table_name)
         with sqlite3.connect(sqlite_path, timeout=30) as conn:
             conn.execute("PRAGMA busy_timeout = 30000")
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
+            total_before = self._count_rows(conn, table_name) if self._table_exists(conn, table_name) else 0
+            rows_to_delete = int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {sqlite_where}", sqlite_where_params).fetchone()[0])
+            before_diag = self._filtered_table_diagnostics(conn, table_name, diagnostics)
+            logger.info(
+                "[SYNC_AUDIT %s.before] total=%s filas_a_borrar=%s exportadas_access=%s diag=%s criterio_sqlite=%s params=%s",
+                table_name,
+                total_before,
+                rows_to_delete,
+                exported,
+                before_diag,
+                sqlite_where,
+                sqlite_where_params,
+            )
             conn.execute("BEGIN")
-            deleted = conn.execute(f"DELETE FROM {self.quote_identifier(table_name)} WHERE {sqlite_where}").rowcount
+            deleted = conn.execute(f"DELETE FROM {table} WHERE {sqlite_where}", sqlite_where_params).rowcount
             imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, table_name, conn=conn)
+            total_after = self._count_rows(conn, table_name)
+            after_diag = self._filtered_table_diagnostics(conn, table_name, diagnostics)
             conn.commit()
         logger.info("Fin escritura DB sqlite_path=%s tabla=%s", sqlite_path, table_name)
-        logger.info("Tabla=%s query=%s borrados=%s importados=%s", table_name, access_query, deleted, imported)
+        logger.info(
+            "[SYNC_AUDIT %s.after] query=%s total_antes=%s filas_a_borrar=%s borrados=%s exportadas_access=%s importadas=%s total_despues=%s diag=%s",
+            table_name,
+            access_query,
+            total_before,
+            rows_to_delete,
+            deleted,
+            exported,
+            imported,
+            total_after,
+            after_diag,
+        )
         return imported
+
+    def _filtered_table_diagnostics(self, conn: sqlite3.Connection, table_name: str, diagnostics: dict[str, Any] | None = None) -> dict[str, Any]:
+        if table_name.lower() != "pedidos" or not self._table_exists(conn, table_name):
+            return {}
+        campana = str((diagnostics or {}).get("campana") or self.get_campana_actual())
+        cols = self._table_columns(conn, table_name)
+        campana_col = self._pick_column(cols, ["Campaña", "Campana"])
+        cultivo_col = self._pick_column(cols, ["Cultivo", "Producto", "Articulo", "Artículo"])
+        empresa_col = self._pick_column(cols, ["Empresa", "IdEmpresa", "CodEmpresa"])
+        fecha_col = self._pick_column(cols, ["FechaSalida", "Fecha Salida"])
+        diag: dict[str, Any] = {}
+        if campana_col:
+            campana_sql = f"CAST({self.quote_identifier(campana_col)} AS TEXT) = ?"
+            diag[f"campana_{campana}"] = int(conn.execute(f"SELECT COUNT(*) FROM {self.quote_identifier(table_name)} WHERE {campana_sql}", (campana,)).fetchone()[0])
+            if cultivo_col and empresa_col:
+                diag[f"campana_{campana}_sandia_empresa_1"] = int(conn.execute(
+                    f"SELECT COUNT(*) FROM {self.quote_identifier(table_name)} WHERE {campana_sql} "
+                    f"AND UPPER(TRIM(CAST({self.quote_identifier(cultivo_col)} AS TEXT))) = 'SANDIA' "
+                    f"AND CAST({self.quote_identifier(empresa_col)} AS TEXT) = '1'",
+                    (campana,),
+                ).fetchone()[0])
+        if fecha_col:
+            fecha_expr = self._fecha_expr_sqlite("", fecha_col)
+            diag["proximos_10_dias"] = int(conn.execute(
+                f"SELECT COUNT(*) FROM {self.quote_identifier(table_name)} WHERE date({fecha_expr}) BETWEEN date('now') AND date('now', '+10 days')"
+            ).fetchone()[0])
+        return diag
+
+    @staticmethod
+    def _pick_column(columns: list[str], candidates: list[str]) -> str | None:
+        lowered = {c.lower(): c for c in columns}
+        for candidate in candidates:
+            if candidate.lower() in lowered:
+                return lowered[candidate.lower()]
+        return None
+
+    def _fecha_expr_sqlite(self, alias: str, col: str) -> str:
+        prefix = f'{alias}.' if alias else ''
+        raw = f'COALESCE({prefix}{self.quote_identifier(col)}, "")'
+        ymd_iso = f"substr({raw},1,4)||'-'||substr({raw},6,2)||'-'||substr({raw},9,2)"
+        ymd_dmy = f"substr({raw},7,4)||'-'||substr({raw},4,2)||'-'||substr({raw},1,2)"
+        return f"CASE WHEN length({raw}) >= 10 AND substr({raw},5,1)='-' THEN {ymd_iso} WHEN length({raw}) >= 10 AND substr({raw},3,1)='/' THEN {ymd_dmy} ELSE {raw} END"
 
     def _find_setting(self, sqlite_name: str, sqlite_table: str) -> dict[str, Any]:
         settings = self.repository.get_settings()
