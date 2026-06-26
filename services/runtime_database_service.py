@@ -23,6 +23,8 @@ DEBUG_KEEP_FAILED_BUILDING = True
 DEBUG_PEDIDOS_COMPARE = True
 _RUNTIME_OPERATION_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("runtime_operation_id", default=None)
 SNAPSHOT_CHECKSUM_MAX_BYTES = 200 * 1024 * 1024
+PEDIDOS_SNAPSHOT_CAMPAIGN = "2026"
+PEDIDOS_SNAPSHOT_EMPTY_MESSAGE = "No se creó foto local porque DBPedidos.sqlite no contiene pedidos de la campaña 2026."
 
 
 def make_operation_id(operation_name: str) -> str:
@@ -310,6 +312,14 @@ class RuntimeDatabaseManager:
         logger.info("[RUNTIME] Creando snapshot local directo: final=%s origen_central=%s", final_dir, self.central_dir)
         logger.info("[SNAPSHOT_PUBLISH] final_dir=%s", final_dir)
         logger.info("[SNAPSHOT_TRACE] op_id=%s evento=START_CREATE timestamp=%s final_dir=%s central_dir=%s sqlite_databases=%s", op_id, timestamp, final_dir, self.central_dir, SQLITE_DATABASES)
+        central_pedidos = self.central_dir / "DBPedidos.sqlite"
+        central_campaign_count = self._count_pedidos_campaign(central_pedidos, PEDIDOS_SNAPSHOT_CAMPAIGN)
+        if central_campaign_count is not None and central_campaign_count <= 0:
+            logger.error(
+                "[SNAPSHOT_PEDIDOS_AUDIT] central_path=%s snapshot_path=%s central_campana_2026=%s snapshot_campana_2026=%s",
+                central_pedidos, final_dir / "DBPedidos.sqlite", central_campaign_count, "not_copied",
+            )
+            raise RuntimeError(PEDIDOS_SNAPSHOT_EMPTY_MESSAGE)
         logger.info("[SNAPSHOT_PUBLISH] evento=CREATE_FINAL_DIR final_dir=%s", final_dir)
         final_dir.mkdir(parents=True)
         logger.info("[SNAPSHOT_PUBLISH] evento=MARK_BUILDING marker=%s", building_marker)
@@ -382,6 +392,14 @@ class RuntimeDatabaseManager:
             logger.info("[SNAPSHOT_AUDIT] base=%s origen_central=%s existe_origen=%s tamaño_origen_antes=%s mtime_origen_antes=%s destino_snapshot=%s tamaño_destino_despues=%s mtime_destino_despues=%s resultado=OK", db_name, source, exists, source_size, source_mtime, destination, dest_stat.st_size, dest_stat.st_mtime)
             if DIAG_SNAPSHOT_PEDIDOS and db_name == "DBPedidos.sqlite":
                 self._log_pedidos_snapshot_diagnostic(source, destination)
+                central_campaign_count = self._count_pedidos_campaign(source, PEDIDOS_SNAPSHOT_CAMPAIGN)
+                snapshot_campaign_count = self._count_pedidos_campaign(destination, PEDIDOS_SNAPSHOT_CAMPAIGN)
+                logger.info(
+                    "[SNAPSHOT_PEDIDOS_AUDIT] central_path=%s snapshot_path=%s central_campana_2026=%s snapshot_campana_2026=%s",
+                    source, destination, central_campaign_count, snapshot_campaign_count,
+                )
+                if central_campaign_count is not None and snapshot_campaign_count is not None and central_campaign_count > 0 and snapshot_campaign_count <= 0:
+                    raise RuntimeError("Error crítico de copia: DBPedidos.sqlite central contiene campaña 2026 pero el snapshot no.")
         except Exception as exc:
             logger.exception("[SNAPSHOT_AUDIT] base=%s origen_central=%s existe_origen=%s tamaño_origen_antes=%s mtime_origen_antes=%s destino_snapshot=%s resultado=ERROR error=%s", db_name, source, exists, source_size, source_mtime, destination, exc)
             raise
@@ -429,6 +447,26 @@ class RuntimeDatabaseManager:
         except Exception as exc:
             return f"error: {exc}"
 
+
+    @staticmethod
+    def _count_pedidos_campaign(db_path: Path, campana: str) -> int | None:
+        try:
+            if not db_path.exists():
+                return None
+            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
+                exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='Pedidos' LIMIT 1").fetchone()
+                if not exists:
+                    return None
+                columns = [str(row[1]) for row in conn.execute("PRAGMA table_info(Pedidos)").fetchall()]
+                lowered = {column.lower(): column for column in columns}
+                campana_col = lowered.get("campaña") or lowered.get("campana")
+                if not campana_col:
+                    return None
+                quoted = '"' + campana_col.replace('"', '""') + '"'
+                return int(conn.execute(f"SELECT COUNT(*) FROM Pedidos WHERE CAST({quoted} AS TEXT)=?", (str(campana),)).fetchone()[0])
+        except Exception:
+            logger.exception("[SNAPSHOT_PEDIDOS_AUDIT] error contando campaña pedidos path=%s campana=%s", db_path, campana)
+            return 0
 
     def debug_compare_dbpedidos_record(self, id_pedido: str = "PS 26/00167", operation_id: str | None = None) -> None:
         op_id = operation_id or get_runtime_operation_id()

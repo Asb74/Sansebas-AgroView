@@ -355,7 +355,7 @@ conn.Close: out.Close
             })
             return ok, message
         if mode == "PLANIFICACION_HOY_EN_ADELANTE":
-            if self.setting_targets_central_sqlite(setting):
+            if self.setting_targets_central_sqlite(setting) and not self._is_pedidos_setting(setting):
                 msg = self._central_sqlite_block_error(setting, mode)
                 self.repository.update_sync_result(setting_id, False, "Operación bloqueada por seguridad", msg)
                 return False, msg
@@ -674,7 +674,7 @@ conn.Close: out.Close
         campana_access_value = campana_text.replace("'", "''")
         access_query = (
             "SELECT * FROM Pedidos WHERE "
-            f"CStr({self._quote_access_identifier(access_campana_col)}) = '{campana_access_value}'"
+            f"{self._quote_access_identifier(access_campana_col)} = '{campana_access_value}'"
         )
         sqlite_path = Path(setting["SqlitePath"])
         sqlite_campana_col = self._detect_sqlite_column(sqlite_path, "Pedidos", [access_campana_col, "Campaña", "Campana"]) or access_campana_col
@@ -694,6 +694,8 @@ conn.Close: out.Close
             sqlite_where,
             sqlite_where_params=(campana_text,),
             diagnostics={"campana": campana_text},
+            allow_central_write=True,
+            require_exported_rows=True,
         )
 
     def _actualizar_loteado_desde_hoy(self, fecha_corte: str) -> tuple[list[str], int]:
@@ -774,6 +776,10 @@ conn.Close: out.Close
 
     def _actualizar_pesosfres_desde_hoy(self, fecha_corte: str) -> int:
         return self._sync_filtered_table("DBfruta.sqlite", "PesosFres", f"SELECT * FROM PesosFres WHERE Fcarga >= #{fecha_corte}#", "date(Fcarga) >= date('now')")
+
+    def _resolve_planificacion_campana(self, setting: dict[str, Any]) -> tuple[int, str]:
+        """Resolve the campaign used by the fast planning refresh."""
+        return self._detect_active_campana(setting)
 
     @staticmethod
     def get_campana_actual(base_date: date | None = None) -> int:
@@ -861,12 +867,17 @@ conn.Close: out.Close
         sqlite_where: str,
         sqlite_where_params: tuple[Any, ...] = (),
         diagnostics: dict[str, Any] | None = None,
+        allow_central_write: bool = False,
+        require_exported_rows: bool = False,
     ) -> int:
         setting = self._find_setting(sqlite_name, table_name)
         ok, msg, csv_path, exported = self._run_export_custom(setting, access_query)
         if not ok or not csv_path:
             raise RuntimeError(msg)
-        self._ensure_not_central_sqlite_write(setting, str(setting.get("Modo", "PLANIFICACION_HOY_EN_ADELANTE")))
+        if require_exported_rows and exported <= 0:
+            raise RuntimeError("Pedidos no exportó registros para la campaña activa; se conserva DBPedidos.sqlite anterior.")
+        if not allow_central_write:
+            self._ensure_not_central_sqlite_write(setting, str(setting.get("Modo", "PLANIFICACION_HOY_EN_ADELANTE")))
         sqlite_path = Path(setting["SqlitePath"])
         table = self.quote_identifier(table_name)
         logger.info("Inicio escritura DB sqlite_path=%s tabla=%s", sqlite_path, table_name)
@@ -887,11 +898,33 @@ conn.Close: out.Close
                 sqlite_where,
                 sqlite_where_params,
             )
+            if table_name.lower() == "pedidos":
+                campana_audit = str((diagnostics or {}).get("campana") or (sqlite_where_params[0] if sqlite_where_params else self.get_campana_actual()))
+                campana_count = int(before_diag.get(f"campana_{campana_audit}", rows_to_delete))
+                logger.info(
+                    "[PEDIDOS_SYNC_AUDIT] fase=before_delete central_path=%s campana=%s total=%s campana_count=%s",
+                    sqlite_path, campana_audit, total_before, campana_count,
+                )
             conn.execute("BEGIN")
             deleted = conn.execute(f"DELETE FROM {table} WHERE {sqlite_where}", sqlite_where_params).rowcount
+            if table_name.lower() == "pedidos":
+                campana_audit = str((diagnostics or {}).get("campana") or (sqlite_where_params[0] if sqlite_where_params else self.get_campana_actual()))
+                after_delete_count = int(conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {sqlite_where}", sqlite_where_params).fetchone()[0])
+                logger.info("[PEDIDOS_SYNC_AUDIT] fase=after_delete campana_count=%s", after_delete_count)
             imported, _, _ = self._import_csv_to_sqlite_append(csv_path, sqlite_path, table_name, conn=conn)
             total_after = self._count_rows(conn, table_name)
             after_diag = self._filtered_table_diagnostics(conn, table_name, diagnostics)
+            if require_exported_rows and imported <= 0:
+                raise RuntimeError("Pedidos importó 0 registros para la campaña activa; rollback y DBPedidos.sqlite anterior conservado.")
+            if table_name.lower() == "pedidos":
+                campana_audit = str((diagnostics or {}).get("campana") or (sqlite_where_params[0] if sqlite_where_params else self.get_campana_actual()))
+                campana_count_after = int(after_diag.get(f"campana_{campana_audit}", 0))
+                logger.info(
+                    "[PEDIDOS_SYNC_AUDIT] fase=after_import exportados=%s importados=%s campana_count=%s",
+                    exported, imported, campana_count_after,
+                )
+                if campana_count_after <= 0:
+                    raise RuntimeError(f"Pedidos quedó sin registros de campaña {campana_audit}; rollback y DBPedidos.sqlite anterior conservado.")
             conn.commit()
         logger.info("Fin escritura DB sqlite_path=%s tabla=%s", sqlite_path, table_name)
         logger.info(
