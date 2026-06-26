@@ -154,3 +154,124 @@ def test_normalize_pedidos_cancelado_in_existing_db(tmp_path):
         rows = conn.execute('SELECT Cancelado, COUNT(*) FROM Pedidos GROUP BY Cancelado ORDER BY Cancelado').fetchall()
 
     assert rows == [(0, 3), (1, 3)]
+
+class _FakeLegacyDefaultsRepository:
+    def __init__(self, settings):
+        self.settings = settings
+        self.added = []
+        self.updated = []
+
+    def get_settings(self):
+        return [dict(setting) for setting in self.settings]
+
+    def add_setting(self, data):
+        self.added.append(dict(data))
+        stored = dict(data)
+        stored.setdefault("Id", len(self.settings) + 1)
+        self.settings.append(stored)
+        return stored["Id"]
+
+    def update_setting(self, setting_id, data):
+        self.updated.append((setting_id, dict(data)))
+        for index, setting in enumerate(self.settings):
+            if setting.get("Id") == setting_id:
+                self.settings[index] = dict(data)
+                self.settings[index]["Id"] = setting_id
+                break
+
+
+def _planificacion_service_with_settings(monkeypatch, settings):
+    service = LegacySyncService.__new__(LegacySyncService)
+    service.repository = _FakeLegacyDefaultsRepository(settings)
+    paths = {
+        "Pedidos": r"C:\usuario\pedidos.mdb",
+        "Loteado": r"C:\usuario\loteado.mdb",
+        "PesosFres": r"C:\usuario\fruta.mdb",
+    }
+    monkeypatch.setattr(
+        service,
+        "_find_existing_access_path",
+        lambda _settings, names: paths.get(names[0]),
+    )
+    return service
+
+
+def test_default_planificacion_settings_skip_existing_by_nombre_without_duplicate(monkeypatch):
+    settings = [
+        {
+            "Id": 1,
+            "Nombre": "Pedidos",
+            "AccessPath": r"D:\manual\pedidos.mdb",
+            "AccessTable": "Pedidos",
+            "SqlitePath": r"D:\manual\DBPedidos.sqlite",
+            "SqliteTable": "Pedidos",
+            "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
+            "Activa": 1,
+        }
+    ]
+    service = _planificacion_service_with_settings(monkeypatch, settings)
+
+    service.ensure_default_planificacion_settings()
+    service.ensure_default_planificacion_settings()
+
+    pedidos = [setting for setting in service.repository.settings if setting["Nombre"] == "Pedidos"]
+    assert len(pedidos) == 1
+    assert pedidos[0]["AccessPath"] == r"D:\manual\pedidos.mdb"
+    assert pedidos[0]["SqlitePath"] == r"D:\manual\DBPedidos.sqlite"
+
+
+def test_default_planificacion_settings_updates_only_empty_essential_fields(monkeypatch):
+    settings = [
+        {
+            "Id": 1,
+            "Nombre": "Pedidos",
+            "AccessPath": r"D:\manual\pedidos.mdb",
+            "AccessTable": "",
+            "SqlitePath": r"D:\manual\DBPedidos.sqlite",
+            "SqliteTable": "",
+            "Modo": "",
+            "Activa": None,
+        }
+    ]
+    service = _planificacion_service_with_settings(monkeypatch, settings)
+
+    service.ensure_default_planificacion_settings()
+
+    assert service.repository.updated
+    updated = service.repository.updated[0][1]
+    assert updated["AccessPath"] == r"D:\manual\pedidos.mdb"
+    assert updated["SqlitePath"] == r"D:\manual\DBPedidos.sqlite"
+    assert updated["AccessTable"] == "Pedidos"
+    assert updated["SqliteTable"] == "Pedidos"
+    assert updated["Modo"] == "PLANIFICACION_HOY_EN_ADELANTE"
+    assert updated["Activa"] == 1
+
+
+def test_default_planificacion_settings_recovers_unique_nombre_integrity_error(monkeypatch):
+    class RaceRepository(_FakeLegacyDefaultsRepository):
+        def add_setting(self, data):
+            if data["Nombre"] == "Pedidos":
+                self.settings.append(
+                    {
+                        "Id": 99,
+                        "Nombre": "Pedidos",
+                        "AccessPath": r"D:\manual\pedidos.mdb",
+                        "AccessTable": "Pedidos",
+                        "SqlitePath": r"D:\manual\DBPedidos.sqlite",
+                        "SqliteTable": "Pedidos",
+                        "Modo": "PLANIFICACION_HOY_EN_ADELANTE",
+                        "Activa": 1,
+                    }
+                )
+                raise sqlite3.IntegrityError(
+                    "UNIQUE constraint failed: LegacyTableSyncSettings.Nombre"
+                )
+            return super().add_setting(data)
+
+    service = _planificacion_service_with_settings(monkeypatch, [])
+    service.repository = RaceRepository([])
+
+    service.ensure_default_planificacion_settings()
+
+    pedidos = [setting for setting in service.repository.settings if setting["Nombre"] == "Pedidos"]
+    assert len(pedidos) == 1

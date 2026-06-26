@@ -160,22 +160,96 @@ class LegacySyncService:
             },
         ]
         for default in defaults:
-            sqlite_file = Path(default["SqlitePath"]).name.lower()
-            sqlite_table = default["SqliteTable"].lower()
-            access_table = default["AccessTable"].lower()
-            exists = any(
-                Path(str(s.get("SqlitePath", ""))).name.lower() == sqlite_file
-                and str(s.get("SqliteTable", "")).lower() == sqlite_table
-                and str(s.get("AccessTable", "")).lower() == access_table
-                for s in settings
-            )
-            if exists:
+            existing = self._find_existing_planificacion_setting(settings, default)
+            if existing:
+                action = self._complete_default_planificacion_setting(existing, default)
+                logger.info(
+                    "[LEGACY_DEFAULTS] existente nombre=%s acción=%s",
+                    default["Nombre"],
+                    action,
+                )
                 continue
+
             data = dict(default)
-            self.repository.add_setting(data)
+            try:
+                self.repository.add_setting(data)
+            except sqlite3.IntegrityError as exc:
+                if not self._is_unique_nombre_integrity_error(exc):
+                    raise
+                refreshed_settings = self.repository.get_settings()
+                existing_by_name = self._find_setting_by_name(refreshed_settings, default["Nombre"])
+                logger.warning(
+                    "[LEGACY_DEFAULTS] UNIQUE Nombre al crear nombre=%s; se usa configuración existente",
+                    default["Nombre"],
+                    exc_info=True,
+                )
+                if existing_by_name:
+                    action = self._complete_default_planificacion_setting(existing_by_name, default)
+                    logger.info(
+                        "[LEGACY_DEFAULTS] existente nombre=%s acción=%s",
+                        default["Nombre"],
+                        action,
+                    )
+                    settings = refreshed_settings
+                    continue
+                raise
             settings.append(data)
             logger.info("Configuración legacy creada automáticamente: %s", default["Nombre"])
 
+    @staticmethod
+    def _setting_name(setting: dict[str, Any]) -> str:
+        return str(setting.get("Nombre", "")).strip().casefold()
+
+    @staticmethod
+    def _setting_table_tuple(setting: dict[str, Any]) -> tuple[str, str, str]:
+        return (
+            Path(str(setting.get("SqlitePath", ""))).name.strip().casefold(),
+            str(setting.get("SqliteTable", "")).strip().casefold(),
+            str(setting.get("AccessTable", "")).strip().casefold(),
+        )
+
+    def _find_setting_by_name(
+        self, settings: list[dict[str, Any]], nombre: str
+    ) -> dict[str, Any] | None:
+        normalized_name = str(nombre or "").strip().casefold()
+        return next((s for s in settings if self._setting_name(s) == normalized_name), None)
+
+    def _find_existing_planificacion_setting(
+        self, settings: list[dict[str, Any]], default: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        existing_by_name = self._find_setting_by_name(settings, str(default.get("Nombre", "")))
+        if existing_by_name:
+            return existing_by_name
+        default_tuple = self._setting_table_tuple(default)
+        return next((s for s in settings if self._setting_table_tuple(s) == default_tuple), None)
+
+    @staticmethod
+    def _is_empty_essential_value(value: Any) -> bool:
+        return value is None or (isinstance(value, str) and not value.strip())
+
+    def _complete_default_planificacion_setting(
+        self, existing: dict[str, Any], default: dict[str, Any]
+    ) -> str:
+        essential_fields = ("Nombre", "AccessPath", "AccessTable", "SqlitePath", "SqliteTable", "Modo", "Activa")
+        merged = dict(existing)
+        changed = False
+        for field in essential_fields:
+            if self._is_empty_essential_value(merged.get(field)):
+                merged[field] = default.get(field)
+                changed = True
+
+        setting_id = merged.get("Id")
+        if not changed or setting_id is None:
+            return "skip"
+
+        self.repository.update_setting(int(setting_id), merged)
+        existing.update(merged)
+        return "update"
+
+    @staticmethod
+    def _is_unique_nombre_integrity_error(exc: sqlite3.IntegrityError) -> bool:
+        message = str(exc).casefold()
+        return "unique constraint failed" in message and "legacytablesyncsettings.nombre" in message
 
     def list_sqlite_tables(self, sqlite_path: str) -> list[str]:
         path = Path(str(sqlite_path or "").strip())
